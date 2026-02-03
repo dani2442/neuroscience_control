@@ -1,0 +1,16 @@
+[project]
+name = "neuroscience-control"
+version = "0.1.0"
+description = "Brain dynamics simulation and control using Coupled Hopf and Neural SDE models"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "dotenv>=0.9.9",
+    "ipykernel>=7.1.0",
+    "matplotlib>=3.10.8",
+    "numpy>=2.4.2",
+    "scipy>=1.15.0",
+    "torch>=2.10.0",
+    "torchsde>=0.2.6",
+    "tqdm>=4.67.2",
+]
