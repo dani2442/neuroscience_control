@@ -196,18 +196,12 @@ def save_model_and_figures(hopf_model, hopf_metrics, dataset, cfg: HopfConfig, d
 def main():
     """Main execution function."""
     parser = argparse.ArgumentParser(description="Train Coupled Hopf Model")
-    parser.add_argument("--data-path", type=str, default="data/ts_young/ts_young_TR0.72.mat",
-                        help="Path to data file")
-    parser.add_argument("--wandb-project", type=str, default="neuroscience-control",
-                        help="Wandb project name")
-    parser.add_argument("--experiment-name", type=str, default="hopf",
-                        help="Experiment name")
-    parser.add_argument("--no-wandb", action="store_true",
-                        help="Disable wandb logging")
-    parser.add_argument("--device", type=str, default="auto",
-                        help="Device (auto, cuda, cpu)")
-    parser.add_argument("--seed", type=int, default=42,
-                        help="Random seed")
+    parser.add_argument("--data-path", type=str, default="data/ts_young/ts_young_TR0.72.mat", help="Path to data file")
+    parser.add_argument("--wandb-project", type=str, default="neuroscience-control", help="Wandb project name")
+    parser.add_argument("--experiment-name", type=str, default="hopf", help="Experiment name")
+    parser.add_argument("--no-wandb", action="store_true", help="Disable wandb logging")
+    parser.add_argument("--device", type=str, default="auto", help="Device (auto, cuda, cpu)")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
     args = parser.parse_args()
     
     print("="*60)
@@ -233,40 +227,29 @@ def main():
     # Initialize wandb
     init_wandb(cfg)
     
-    try:
-        # Step 1: Load data
-        dataset = load_data(cfg, device)
-        
-        # Step 2: Train via grid search
-        hopf_model, hopf_metrics, best_params = train_hopf_grid_search(dataset, cfg, device)
-        
-        # Step 3: Save model and figures
-        checkpoint_path = save_model_and_figures(hopf_model, hopf_metrics, dataset, cfg, device)
-        
-        print("\n" + "="*60)
-        print("HOPF TRAINING COMPLETED SUCCESSFULLY")
-        print("="*60)
-        print(f"\nBest parameters: {best_params}")
-        print(f"Final metrics: {hopf_metrics}")
-        print(f"Model saved to: {checkpoint_path}")
-        print(f"Figures saved to: {FIGURES_DIR}")
-        
-        return {
-            "model": hopf_model,
-            "metrics": hopf_metrics,
-            "params": best_params,
-            "checkpoint": checkpoint_path
-        }
-        
-    except Exception as e:
-        print(f"\nError during execution: {e}")
-        import traceback
-        traceback.print_exc()
-        raise
-    finally:
-        # Finish wandb run
-        if wandb.run is not None:
-            wandb.finish()
+    # Step 1: Load data
+    dataset = load_data(cfg, device)
+    
+    # Step 2: Train via grid search
+    hopf_model, hopf_metrics, best_params = train_hopf_grid_search(dataset, cfg, device)
+    
+    # Step 3: Save model and figures
+    checkpoint_path = save_model_and_figures(hopf_model, hopf_metrics, dataset, cfg, device)
+    
+    print("\n" + "="*60)
+    print("HOPF TRAINING COMPLETED SUCCESSFULLY")
+    print("="*60)
+    print(f"\nBest parameters: {best_params}")
+    print(f"Final metrics: {hopf_metrics}")
+    print(f"Model saved to: {checkpoint_path}")
+    print(f"Figures saved to: {FIGURES_DIR}")
+    
+    return {
+        "model": hopf_model,
+        "metrics": hopf_metrics,
+        "params": best_params,
+        "checkpoint": checkpoint_path
+    }
 
 
 if __name__ == "__main__":

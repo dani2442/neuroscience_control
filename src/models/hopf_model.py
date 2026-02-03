@@ -49,7 +49,7 @@ class HopfSDEFunc(nn.Module):
         
         # Store references to parameters (will be updated by parent model)
         self.a = a
-        self.g = g
+        self.global_coupling = g  # Renamed to avoid shadowing the g() method required by torchsde
         self.omega = omega
         self.structural_connectivity = structural_connectivity
     
@@ -77,8 +77,8 @@ class HopfSDEFunc(nn.Module):
         
         # Coupling: G * C @ z (in complex form)
         # For real matrices and complex z: (C @ z) = C @ real + i * C @ imag
-        coupling_real = self.g * torch.matmul(y_real, self.structural_connectivity.T)
-        coupling_imag = self.g * torch.matmul(y_imag, self.structural_connectivity.T)
+        coupling_real = self.global_coupling * torch.matmul(y_real, self.structural_connectivity.T)
+        coupling_imag = self.global_coupling * torch.matmul(y_imag, self.structural_connectivity.T)
         
         drift_real = local_real + coupling_real
         drift_imag = local_imag + coupling_imag
@@ -198,7 +198,7 @@ class CoupledHopfModel(BaseNeuroscienceModel):
     def _update_sde_func_params(self):
         """Update SDE function parameters from model parameters."""
         self.sde_func.a = self.a
-        self.sde_func.g = self.g
+        self.sde_func.global_coupling = self.g
         self.sde_func.omega = self.omega
         self.sde_func.structural_connectivity = self.structural_connectivity
     

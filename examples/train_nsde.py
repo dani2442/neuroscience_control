@@ -16,17 +16,11 @@ import os
 import matplotlib
 matplotlib.use('Agg')  # Non-interactive backend
 import matplotlib.pyplot as plt
+import wandb
 
 # Set up proxy before importing wandb
 os.environ["HTTP_PROXY"] = "http://proxy.nhr.fau.de:80"
 os.environ["HTTPS_PROXY"] = "http://proxy.nhr.fau.de:80"
-
-try:
-    import wandb
-    HAS_WANDB = True
-except ImportError:
-    HAS_WANDB = False
-    wandb = None
 
 # Import project modules
 from src.dataset import NeuroscienceDataset, create_data_loaders
@@ -97,8 +91,7 @@ def create_loaders(dataset, cfg: NeuralSDEConfig, device: str):
     return train_loader, val_loader, test_loader, window_size
 
 
-def train_neural_sde(dataset, train_loader, val_loader, test_loader, 
-                     window_size: int, cfg: NeuralSDEConfig, device: str):
+def train_neural_sde(dataset, train_loader, val_loader, test_loader, window_size: int, cfg: NeuralSDEConfig, device: str):
     """Train Neural SDE model using backpropagation."""
     print(f"\n{'='*60}")
     print("STEP 2: Training Neural SDE Model (Backpropagation)")
@@ -146,8 +139,7 @@ def train_neural_sde(dataset, train_loader, val_loader, test_loader,
     return sde_model, trainer, metrics_store, test_metrics
 
 
-def fine_tune_model(sde_model, train_loader, val_loader, 
-                    window_size: int, cfg: NeuralSDEConfig, device: str):
+def fine_tune_model(sde_model, train_loader, val_loader, window_size: int, cfg: NeuralSDEConfig, device: str):
     """Fine-tune trained model."""
     if not cfg.fine_tune:
         return sde_model, None
@@ -173,7 +165,7 @@ def fine_tune_model(sde_model, train_loader, val_loader,
     )
     
     # Log fine-tuning metrics to wandb
-    if HAS_WANDB and cfg.use_wandb and wandb.run is not None:
+    if cfg.use_wandb and wandb.run is not None:
         wandb.log({"fine_tuning/completed": True})
     
     return sde_model, ft_metrics
@@ -197,7 +189,7 @@ def save_model_and_figures(sde_model, metrics_store, test_metrics,
     print(f"Model saved to {checkpoint_path}")
     
     # Log model artifact to wandb
-    if HAS_WANDB and cfg.use_wandb and wandb.run is not None:
+    if cfg.use_wandb and wandb.run is not None:
         artifact = wandb.Artifact(f"nsde_model_{cfg.run_name}", type="model")
         artifact.add_file(str(checkpoint_path))
         wandb.log_artifact(artifact)
@@ -212,7 +204,7 @@ def save_model_and_figures(sde_model, metrics_store, test_metrics,
     print(f"Final metrics: {final_metrics}")
     
     # Log final metrics to wandb
-    if HAS_WANDB and cfg.use_wandb and wandb.run is not None:
+    if cfg.use_wandb and wandb.run is not None:
         for k, v in final_metrics.items():
             wandb.summary[f"final_{k}"] = v
     
@@ -224,7 +216,7 @@ def save_model_and_figures(sde_model, metrics_store, test_metrics,
         use_pdf=True
     )
     
-    if HAS_WANDB and cfg.use_wandb and wandb.run is not None:
+    if cfg.use_wandb and wandb.run is not None:
         wandb.log({"figures/fc_comparison": wandb.Image(fig)})
     plt.close()
     
@@ -237,7 +229,7 @@ def save_model_and_figures(sde_model, metrics_store, test_metrics,
         use_pdf=True
     )
     
-    if HAS_WANDB and cfg.use_wandb and wandb.run is not None:
+    if cfg.use_wandb and wandb.run is not None:
         wandb.log({"figures/timeseries": wandb.Image(fig)})
     plt.close()
     
@@ -248,7 +240,7 @@ def save_model_and_figures(sde_model, metrics_store, test_metrics,
         use_pdf=True
     )
     
-    if HAS_WANDB and cfg.use_wandb and wandb.run is not None:
+    if cfg.use_wandb and wandb.run is not None:
         wandb.log({"figures/training_curves": wandb.Image(fig)})
     plt.close()
     
@@ -260,28 +252,17 @@ def save_model_and_figures(sde_model, metrics_store, test_metrics,
 def main():
     """Main execution function."""
     parser = argparse.ArgumentParser(description="Train Neural SDE Model")
-    parser.add_argument("--data-path", type=str, default="data/ts_young/ts_young_TR0.72.mat",
-                        help="Path to data file")
-    parser.add_argument("--wandb-project", type=str, default="neuroscience-control",
-                        help="Wandb project name")
-    parser.add_argument("--experiment-name", type=str, default="neural_sde",
-                        help="Experiment name")
-    parser.add_argument("--no-wandb", action="store_true",
-                        help="Disable wandb logging")
-    parser.add_argument("--device", type=str, default="auto",
-                        help="Device (auto, cuda, cpu)")
-    parser.add_argument("--seed", type=int, default=42,
-                        help="Random seed")
-    parser.add_argument("--n-epochs", type=int, default=50,
-                        help="Number of training epochs")
-    parser.add_argument("--lr", type=float, default=1e-3,
-                        help="Learning rate")
-    parser.add_argument("--hidden-dim", type=int, default=32,
-                        help="Hidden dimension")
-    parser.add_argument("--batch-size", type=int, default=16,
-                        help="Batch size")
-    parser.add_argument("--fine-tune", action="store_true",
-                        help="Enable fine-tuning after training")
+    parser.add_argument("--data-path", type=str, default="data/ts_young/ts_young_TR0.72.mat", help="Path to data file")
+    parser.add_argument("--wandb-project", type=str, default="neuroscience-control", help="Wandb project name")
+    parser.add_argument("--experiment-name", type=str, default="neural_sde", help="Experiment name")
+    parser.add_argument("--no-wandb", action="store_true", help="Disable wandb logging")
+    parser.add_argument("--device", type=str, default="auto", help="Device (auto, cuda, cpu)")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--n-epochs", type=int, default=50, help="Number of training epochs")
+    parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
+    parser.add_argument("--hidden-dim", type=int, default=32, help="Hidden dimension")
+    parser.add_argument("--batch-size", type=int, default=16, help="Batch size")
+    parser.add_argument("--fine-tune", action="store_true", help="Enable fine-tuning after training")
     args = parser.parse_args()
     
     print("="*60)
@@ -309,59 +290,44 @@ def main():
     torch.manual_seed(cfg.seed)
     np.random.seed(cfg.seed)
     
-    trainer = None
+    # Step 1: Load data
+    dataset = load_data(cfg, device)
     
-    try:
-        # Step 1: Load data
-        dataset = load_data(cfg, device)
-        
-        # Create data loaders
-        train_loader, val_loader, test_loader, window_size = create_loaders(dataset, cfg, device)
-        
-        # Step 2: Train Neural SDE
-        sde_model, trainer, metrics_store, test_metrics = train_neural_sde(
-            dataset, train_loader, val_loader, test_loader, 
-            window_size, cfg, device
-        )
-        
-        # Step 3: Fine-tune (optional)
-        sde_model, ft_metrics = fine_tune_model(
-            sde_model, train_loader, val_loader,
-            window_size, cfg, device
-        )
-        
-        # Step 4: Save model and figures
-        checkpoint_path, final_metrics = save_model_and_figures(
-            sde_model, metrics_store, test_metrics,
-            dataset, cfg, device
-        )
-        
-        print("\n" + "="*60)
-        print("NEURAL SDE TRAINING COMPLETED SUCCESSFULLY")
-        print("="*60)
-        print(f"\nTest metrics: {test_metrics}")
-        print(f"Final metrics: {final_metrics}")
-        print(f"Model saved to: {checkpoint_path}")
-        print(f"Figures saved to: {FIGURES_DIR}")
-        
-        return {
-            "model": sde_model,
-            "metrics": final_metrics,
-            "test_metrics": test_metrics,
-            "checkpoint": checkpoint_path
-        }
-        
-    except Exception as e:
-        print(f"\nError during execution: {e}")
-        import traceback
-        traceback.print_exc()
-        raise
-    finally:
-        # Finish wandb run
-        if trainer is not None:
-            trainer.finish()
-        elif HAS_WANDB and wandb.run is not None:
-            wandb.finish()
+    # Create data loaders
+    train_loader, val_loader, test_loader, window_size = create_loaders(dataset, cfg, device)
+    
+    # Step 2: Train Neural SDE
+    sde_model, trainer, metrics_store, test_metrics = train_neural_sde(
+        dataset, train_loader, val_loader, test_loader, 
+        window_size, cfg, device
+    )
+    
+    # Step 3: Fine-tune (optional)
+    sde_model, ft_metrics = fine_tune_model(
+        sde_model, train_loader, val_loader,
+        window_size, cfg, device
+    )
+    
+    # Step 4: Save model and figures
+    checkpoint_path, final_metrics = save_model_and_figures(
+        sde_model, metrics_store, test_metrics,
+        dataset, cfg, device
+    )
+    
+    print("\n" + "="*60)
+    print("NEURAL SDE TRAINING COMPLETED SUCCESSFULLY")
+    print("="*60)
+    print(f"\nTest metrics: {test_metrics}")
+    print(f"Final metrics: {final_metrics}")
+    print(f"Model saved to: {checkpoint_path}")
+    print(f"Figures saved to: {FIGURES_DIR}")
+    
+    return {
+        "model": sde_model,
+        "metrics": final_metrics,
+        "test_metrics": test_metrics,
+        "checkpoint": checkpoint_path
+    }
 
 
 if __name__ == "__main__":
