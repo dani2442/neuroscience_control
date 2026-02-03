@@ -271,24 +271,15 @@ def print_summary(results: dict):
 def main():
     """Main execution function."""
     parser = argparse.ArgumentParser(description="Compare trained models")
-    parser.add_argument("--data-path", type=str, default="data/ts_young/ts_young_TR0.72.mat",
-                        help="Path to data file")
-    parser.add_argument("--hopf-checkpoint", type=str, default="checkpoints/hopf_best.pt",
-                        help="Path to Hopf model checkpoint")
-    parser.add_argument("--nsde-checkpoint", type=str, default="checkpoints/nsde_best.pt",
-                        help="Path to Neural SDE model checkpoint")
-    parser.add_argument("--wandb-project", type=str, default="neuroscience-control",
-                        help="Wandb project name")
-    parser.add_argument("--run-name", type=str, default="model_comparison",
-                        help="Run name for wandb")
-    parser.add_argument("--no-wandb", action="store_true",
-                        help="Disable wandb logging")
-    parser.add_argument("--device", type=str, default="auto",
-                        help="Device (auto, cuda, cpu)")
-    parser.add_argument("--n-simulations", type=int, default=10,
-                        help="Number of simulations for evaluation")
-    parser.add_argument("--output-path", type=str, default="results/comparison_results.json",
-                        help="Path to save comparison results")
+    parser.add_argument("--data-path", type=str, default="data/ts_young/ts_young_TR0.72.mat", help="Path to data file")
+    parser.add_argument("--hopf-checkpoint", type=str, default="checkpoints/hopf_best.pt", help="Path to Hopf model checkpoint")
+    parser.add_argument("--nsde-checkpoint", type=str, default="checkpoints/nsde_best.pt", help="Path to Neural SDE model checkpoint")
+    parser.add_argument("--wandb-project", type=str, default="neuroscience-control", help="Wandb project name")
+    parser.add_argument("--run-name", type=str, default="model_comparison", help="Run name for wandb")
+    parser.add_argument("--no-wandb", action="store_true", help="Disable wandb logging")
+    parser.add_argument("--device", type=str, default="auto", help="Device (auto, cuda, cpu)")
+    parser.add_argument("--n-simulations", type=int, default=10, help="Number of simulations for evaluation")
+    parser.add_argument("--output-path", type=str, default="results/comparison_results.json", help="Path to save comparison results")
     args = parser.parse_args()
     
     print("="*60)
