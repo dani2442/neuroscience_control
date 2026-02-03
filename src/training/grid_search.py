@@ -168,9 +168,7 @@ class GridSearch:
     def _save_results(self):
         """Save grid search results."""
         results_data = {
-            'param_grid': {k: [float(v) if isinstance(v, (int, float)) else v 
-                              for v in vals] 
-                          for k, vals in self.param_grid.items()},
+            'param_grid': {k: [float(v) if isinstance(v, (int, float)) else v for v in vals] for k, vals in self.param_grid.items()},
             'n_simulations': self.n_simulations,
             'results': self.results,
             'best_params': self.best_params,
