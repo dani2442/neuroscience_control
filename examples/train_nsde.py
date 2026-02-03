@@ -25,7 +25,7 @@ os.environ["HTTPS_PROXY"] = "http://proxy.nhr.fau.de:80"
 # Import project modules
 from src.dataset import NeuroscienceDataset, create_data_loaders
 from src.models import NeuralSDE
-from src.metrics import compute_all_fc_metrics
+from src.metrics import compute_all_fc_metrics, compute_dynamics_fit_metrics
 from src.training import Trainer, FineTuner, NeuralSDEConfig
 from src.utils import (
     plot_fc_comparison,
@@ -56,7 +56,8 @@ def load_data(cfg: NeuralSDEConfig, device: str):
     dataset = NeuroscienceDataset(
         filepath=cfg.data_path,
         normalize=True,
-        device=device
+        device=device,
+        max_subjects=cfg.max_subjects
     )
     
     print(f"Loaded dataset:")
@@ -201,6 +202,19 @@ def save_model_and_figures(sde_model, metrics_store, test_metrics,
     
     # Final metrics
     final_metrics = compute_all_fc_metrics(sde_fc.unsqueeze(0), target_fc.unsqueeze(0))
+    target_ts = dataset.timeseries[: sde_ts.shape[0]]
+    dyn_metrics = compute_dynamics_fit_metrics(
+        sde_ts,
+        target_ts,
+        tr=cfg.tr,
+        f_lo=cfg.f_lo,
+        f_hi=cfg.f_hi,
+        fcd_win_sec=cfg.fcd_win_sec,
+        fcd_step_sec=cfg.fcd_step_sec,
+        compute_fcd=cfg.compute_fcd_metrics,
+        compute_metastability=cfg.compute_metastability_metrics
+    )
+    final_metrics.update(dyn_metrics)
     print(f"Final metrics: {final_metrics}")
     
     # Log final metrics to wandb
@@ -263,6 +277,14 @@ def main():
     parser.add_argument("--hidden-dim", type=int, default=32, help="Hidden dimension")
     parser.add_argument("--batch-size", type=int, default=16, help="Batch size")
     parser.add_argument("--fine-tune", action="store_true", help="Enable fine-tuning after training")
+    parser.add_argument("--max-subjects", type=int, default=None, help="Limit number of subjects (first N)")
+    parser.add_argument("--tr", type=float, default=0.72, help="Repetition time in seconds")
+    parser.add_argument("--f-lo", type=float, default=0.04, help="Bandpass low cutoff (Hz)")
+    parser.add_argument("--f-hi", type=float, default=0.07, help="Bandpass high cutoff (Hz)")
+    parser.add_argument("--fcd-win-sec", type=float, default=60.0, help="FCD window length in seconds")
+    parser.add_argument("--fcd-step-sec", type=float, default=2.0, help="FCD window step in seconds")
+    parser.add_argument("--no-fcd", action="store_true", help="Disable FCD metrics")
+    parser.add_argument("--no-metastability", action="store_true", help="Disable metastability metrics")
     args = parser.parse_args()
     
     print("="*60)
@@ -282,7 +304,15 @@ def main():
         lr=args.lr,
         hidden_dim=args.hidden_dim,
         batch_size=args.batch_size,
-        fine_tune=args.fine_tune
+        fine_tune=args.fine_tune,
+        max_subjects=args.max_subjects,
+        tr=args.tr,
+        f_lo=args.f_lo,
+        f_hi=args.f_hi,
+        fcd_win_sec=args.fcd_win_sec,
+        fcd_step_sec=args.fcd_step_sec,
+        compute_fcd_metrics=not args.no_fcd,
+        compute_metastability_metrics=not args.no_metastability
     )
     
     # Setup

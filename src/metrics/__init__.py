@@ -8,8 +8,10 @@ from .fc_metrics import (
 )
 from .timeseries_metrics import (
     power_spectrum_distance,
-    temporal_correlation
+    temporal_correlation,
+    compute_all_timeseries_metrics
 )
+from .dynamics_metrics import compute_dynamics_fit_metrics
 from .metrics_store import MetricsStore
 
 __all__ = [
@@ -19,5 +21,7 @@ __all__ = [
     "compute_all_fc_metrics",
     "power_spectrum_distance",
     "temporal_correlation",
+    "compute_all_timeseries_metrics",
+    "compute_dynamics_fit_metrics",
     "MetricsStore",
 ]

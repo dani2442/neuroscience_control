@@ -1,19 +1,56 @@
 """Trainer class for backpropagation-based training."""
 
-import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader
-from typing import Dict, Optional, Callable, Any, Union
-from pathlib import Path
-import time
 import dataclasses
+import math
 import os
+import time
+from pathlib import Path
+from typing import Dict, Optional, Callable
+
+import torch
+from torch.utils.data import DataLoader
+from tqdm import tqdm
 import wandb
 
 from ..models.base_model import BaseNeuroscienceModel
-from ..metrics import fc_correlation, fc_mse, compute_all_fc_metrics
+from ..metrics import (
+    fc_correlation,
+    fc_mse,
+    compute_all_fc_metrics,
+    compute_all_timeseries_metrics,
+    compute_dynamics_fit_metrics
+)
 from ..metrics.metrics_store import MetricsStore
 from .config import TrainingConfig
+
+FC_METRICS = ("loss", "fc_correlation", "fc_mse", "fc_upper_corr")
+TS_METRICS = ("power_spectrum_distance", "temporal_correlation", "autocorr_distance")
+DYN_METRICS = ("fcd_ks", "metastability_diff")
+ALL_METRICS = FC_METRICS + TS_METRICS + DYN_METRICS
+WANDB_EPOCH_METRICS = ALL_METRICS + ("metrics_sampled_batches",)
+
+
+class _MetricAccumulator:
+    def __init__(self) -> None:
+        self.sums: Dict[str, float] = {}
+        self.counts: Dict[str, int] = {}
+
+    def update(self, metrics: Dict[str, float]) -> None:
+        for key, value in metrics.items():
+            if value is None:
+                continue
+            if isinstance(value, float) and math.isnan(value):
+                continue
+            if isinstance(value, torch.Tensor):
+                value = value.item()
+            self.sums[key] = self.sums.get(key, 0.0) + float(value)
+            self.counts[key] = self.counts.get(key, 0) + 1
+
+    def average(self, key: str) -> float:
+        count = self.counts.get(key, 0)
+        if count == 0:
+            return float("nan")
+        return self.sums[key] / count
 
 
 class Trainer:
@@ -60,6 +97,7 @@ class Trainer:
         self.loss_fn_name = loss_fn
         self.cfg = cfg
         self.use_wandb = use_wandb
+        self.metrics_sample_batches = cfg.metrics_sample_batches if cfg is not None else 1
         
         # Set up optimizer
         if optimizer is None:
@@ -112,6 +150,13 @@ class Trainer:
             config=dataclasses.asdict(cfg),
             settings=settings
         )
+
+        # Ensure all epoch metrics are tracked against epoch
+        wandb.define_metric("epoch")
+        wandb.define_metric("train/*", step_metric="epoch")
+        wandb.define_metric("val/*", step_metric="epoch")
+        wandb.define_metric("best/*", step_metric="epoch")
+        wandb.define_metric("test/*", step_metric="epoch")
         
         # Watch model for gradient logging
         wandb.watch(self.model, log="all", log_freq=100)
@@ -124,6 +169,32 @@ class Trainer:
             log_dict = {f"{prefix}/{k}" if prefix else k: v for k, v in metrics.items()}
             log_dict["epoch"] = step
             wandb.log(log_dict, step=step)
+
+    def _normalize_epoch_metrics(self, metrics: Dict[str, float]) -> Dict[str, float]:
+        """Ensure a consistent set of epoch metrics for wandb logging."""
+        normalized = {key: metrics.get(key, float("nan")) for key in WANDB_EPOCH_METRICS}
+        for key, value in metrics.items():
+            if key not in normalized:
+                normalized[key] = value
+        return normalized
+
+    def _log_wandb_epoch(
+        self,
+        train_metrics: Dict[str, float],
+        val_metrics: Dict[str, float],
+        step: int
+    ) -> None:
+        """Log train/val metrics together for a single epoch."""
+        if self.wandb_run is None:
+            return
+        train_metrics = self._normalize_epoch_metrics(train_metrics)
+        val_metrics = self._normalize_epoch_metrics(val_metrics)
+        log_dict = {
+            **{f"train/{k}": v for k, v in train_metrics.items()},
+            **{f"val/{k}": v for k, v in val_metrics.items()},
+            "epoch": step
+        }
+        wandb.log(log_dict, step=step)
     
     def _log_wandb_artifact(self, filepath: str, name: str, artifact_type: str = "model"):
         """Log artifact to wandb."""
@@ -149,12 +220,143 @@ class Trainer:
             )
         else:
             raise ValueError(f"Unknown loss function: {loss_fn}")
+
+    def _dynamics_kwargs(self) -> Dict[str, float | bool]:
+        if self.cfg is None:
+            return {}
+        return {
+            "tr": self.cfg.tr,
+            "f_lo": self.cfg.f_lo,
+            "f_hi": self.cfg.f_hi,
+            "fcd_win_sec": self.cfg.fcd_win_sec,
+            "fcd_step_sec": self.cfg.fcd_step_sec,
+            "compute_fcd": self.cfg.compute_fcd_metrics,
+            "compute_metastability": self.cfg.compute_metastability_metrics
+        }
+
+    def _should_compute_expensive(self, batch_idx: int) -> bool:
+        limit = self.metrics_sample_batches
+        if limit is None:
+            return True
+        if limit <= 0:
+            return False
+        return batch_idx < limit
+
+    def _compute_batch_metrics(
+        self,
+        fc_pred: torch.Tensor,
+        fc_targets: torch.Tensor,
+        ts_pred: torch.Tensor,
+        ts_target: torch.Tensor,
+        loss: torch.Tensor,
+        compute_expensive: bool
+    ) -> Dict[str, float]:
+        metrics = compute_all_fc_metrics(fc_pred, fc_targets)
+        metrics["loss"] = float(loss.item())
+
+        if compute_expensive:
+            metrics.update(compute_all_timeseries_metrics(ts_pred, ts_target))
+            dyn_metrics = compute_dynamics_fit_metrics(
+                ts_pred,
+                ts_target,
+                **self._dynamics_kwargs()
+            )
+            metrics.update(dyn_metrics)
+
+        return metrics
+
+    def _run_epoch(
+        self,
+        loader: DataLoader,
+        n_steps: int,
+        dt: float,
+        epoch: int,
+        n_epochs: int,
+        train: bool,
+        verbose: bool
+    ) -> Dict[str, float]:
+        if train:
+            self.model.train()
+        else:
+            self.model.eval()
+
+        accumulator = _MetricAccumulator()
+        sampled_batches = 0
+
+        iterable = loader
+        if verbose:
+            phase = "train" if train else "val"
+            iterable = tqdm(
+                loader,
+                desc=f"Epoch {epoch + 1}/{n_epochs} [{phase}]",
+                leave=False,
+                dynamic_ncols=True
+            )
+
+        for batch_idx, batch in enumerate(iterable):
+            windows, fc_targets, _ = batch
+            windows = windows.to(self.device)
+            fc_targets = fc_targets.to(self.device)
+
+            batch_size = windows.shape[0]
+            n_timepoints = windows.shape[2]
+
+            if train:
+                self.optimizer.zero_grad()
+
+            simulated = self.model.forward(
+                initial_state=None,
+                n_steps=n_timepoints,
+                dt=dt,
+                batch_size=batch_size
+            )
+
+            fc_pred = self.model.compute_fc(simulated)
+            loss = self.loss_fn(fc_pred, fc_targets)
+
+            if train:
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                self.optimizer.step()
+
+            compute_expensive = self._should_compute_expensive(batch_idx)
+            if compute_expensive:
+                sampled_batches += 1
+
+            with torch.no_grad():
+                metrics = self._compute_batch_metrics(
+                    fc_pred.detach(),
+                    fc_targets,
+                    simulated.detach(),
+                    windows,
+                    loss,
+                    compute_expensive
+                )
+            accumulator.update(metrics)
+
+            if verbose:
+                postfix = {
+                    "loss": f"{accumulator.average('loss'):.4f}",
+                    "fc_corr": f"{accumulator.average('fc_correlation'):.4f}"
+                }
+                iterable.set_postfix(postfix)
+
+        metrics = {name: accumulator.average(name) for name in ALL_METRICS}
+        if self.metrics_sample_batches is None:
+            metrics["metrics_sampled_batches"] = len(loader)
+        else:
+            metrics["metrics_sampled_batches"] = sampled_batches
+
+        return metrics
     
     def train_epoch(
         self,
         train_loader: DataLoader,
         n_steps: int = 100,
-        dt: float = 0.01
+        dt: float = 0.01,
+        epoch: int = 0,
+        n_epochs: int = 1,
+        verbose: bool = False
     ) -> Dict[str, float]:
         """
         Train for one epoch.
@@ -163,67 +365,32 @@ class Trainer:
             train_loader: Training data loader
             n_steps: Simulation steps
             dt: Time step
+            epoch: Current epoch index
+            n_epochs: Total number of epochs
+            verbose: Show tqdm progress bars
             
         Returns:
             Dictionary of training metrics
         """
-        self.model.train()
-        total_loss = 0
-        total_fc_corr = 0
-        n_batches = 0
-        
-        for batch in train_loader:
-            windows, fc_targets, _ = batch
-            windows = windows.to(self.device)
-            fc_targets = fc_targets.to(self.device)
-            
-            batch_size = windows.shape[0]
-            n_timepoints = windows.shape[2]
-            
-            self.optimizer.zero_grad()
-            
-            # Simulate from model
-            # Use first timepoint as initial condition for some models
-            simulated = self.model.forward(
-                initial_state=None,
-                n_steps=n_timepoints,
-                dt=dt,
-                batch_size=batch_size
-            )
-            
-            # Compute FC from simulated
-            fc_pred = self.model.compute_fc(simulated)
-            
-            # Compute loss
-            loss = self.loss_fn(fc_pred, fc_targets)
-            
-            # Backward pass
-            loss.backward()
-            
-            # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-            
-            self.optimizer.step()
-            
-            # Metrics
-            with torch.no_grad():
-                fc_corr = fc_correlation(fc_pred, fc_targets)
-            
-            total_loss += loss.item()
-            total_fc_corr += fc_corr.item()
-            n_batches += 1
-        
-        return {
-            'loss': total_loss / n_batches,
-            'fc_correlation': total_fc_corr / n_batches
-        }
+        return self._run_epoch(
+            loader=train_loader,
+            n_steps=n_steps,
+            dt=dt,
+            epoch=epoch,
+            n_epochs=n_epochs,
+            train=True,
+            verbose=verbose
+        )
     
     @torch.no_grad()
     def validate(
         self,
         val_loader: DataLoader,
         n_steps: int = 100,
-        dt: float = 0.01
+        dt: float = 0.01,
+        epoch: int = 0,
+        n_epochs: int = 1,
+        verbose: bool = False
     ) -> Dict[str, float]:
         """
         Validate model.
@@ -232,46 +399,22 @@ class Trainer:
             val_loader: Validation data loader
             n_steps: Simulation steps
             dt: Time step
+            epoch: Current epoch index
+            n_epochs: Total number of epochs
+            verbose: Show tqdm progress bars
             
         Returns:
             Dictionary of validation metrics
         """
-        self.model.eval()
-        total_loss = 0
-        total_fc_corr = 0
-        n_batches = 0
-        
-        for batch in val_loader:
-            windows, fc_targets, _ = batch
-            windows = windows.to(self.device)
-            fc_targets = fc_targets.to(self.device)
-            
-            batch_size = windows.shape[0]
-            n_timepoints = windows.shape[2]
-            
-            # Simulate
-            simulated = self.model.forward(
-                initial_state=None,
-                n_steps=n_timepoints,
-                dt=dt,
-                batch_size=batch_size
-            )
-            
-            # Compute FC
-            fc_pred = self.model.compute_fc(simulated)
-            
-            # Compute metrics
-            loss = self.loss_fn(fc_pred, fc_targets)
-            fc_corr = fc_correlation(fc_pred, fc_targets)
-            
-            total_loss += loss.item()
-            total_fc_corr += fc_corr.item()
-            n_batches += 1
-        
-        return {
-            'loss': total_loss / n_batches,
-            'fc_correlation': total_fc_corr / n_batches
-        }
+        return self._run_epoch(
+            loader=val_loader,
+            n_steps=n_steps,
+            dt=dt,
+            epoch=epoch,
+            n_epochs=n_epochs,
+            train=False,
+            verbose=verbose
+        )
     
     def train(
         self,
@@ -315,16 +458,29 @@ class Trainer:
         
         for epoch in range(n_epochs):
             # Train
-            train_metrics = self.train_epoch(train_loader, n_steps, dt)
+            train_metrics = self.train_epoch(
+                train_loader,
+                n_steps=n_steps,
+                dt=dt,
+                epoch=epoch,
+                n_epochs=n_epochs,
+                verbose=verbose
+            )
             self.metrics_store.log_train(epoch, train_metrics)
             
             # Validate
-            val_metrics = self.validate(val_loader, n_steps, dt)
+            val_metrics = self.validate(
+                val_loader,
+                n_steps=n_steps,
+                dt=dt,
+                epoch=epoch,
+                n_epochs=n_epochs,
+                verbose=verbose
+            )
             self.metrics_store.log_val(epoch, val_metrics)
             
             # Log to wandb
-            self._log_wandb(train_metrics, epoch, prefix="train")
-            self._log_wandb(val_metrics, epoch, prefix="val")
+            self._log_wandb_epoch(train_metrics, val_metrics, epoch)
             self._log_wandb({"best_val_loss": self.best_val_loss}, epoch, prefix="best")
             
             # Check for best model

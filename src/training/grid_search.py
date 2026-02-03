@@ -8,10 +8,10 @@ from pathlib import Path
 import json
 from tqdm import tqdm
 
-from ..models.hopf_model import CoupledHopfModel
-from ..models.base_model import BaseNeuroscienceModel
-from ..metrics import fc_correlation, fc_mse, compute_all_fc_metrics
-from ..dataset import NeuroscienceDataset
+from src.models.hopf_model import CoupledHopfModel
+from src.models.base_model import BaseNeuroscienceModel
+from src.metrics import fc_correlation, fc_mse, compute_all_fc_metrics
+from src.dataset import NeuroscienceDataset
 
 
 class GridSearch:

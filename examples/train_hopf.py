@@ -26,7 +26,7 @@ import wandb
 # Import project modules
 from src.dataset import NeuroscienceDataset
 from src.models import CoupledHopfModel
-from src.metrics import compute_all_fc_metrics
+from src.metrics import compute_all_fc_metrics, compute_dynamics_fit_metrics
 from src.training import grid_search_hopf, HopfConfig
 from src.utils import (
     plot_fc_comparison,
@@ -73,7 +73,8 @@ def load_data(cfg: HopfConfig, device: str):
     dataset = NeuroscienceDataset(
         filepath=cfg.data_path,
         normalize=True,
-        device=device
+        device=device,
+        max_subjects=cfg.max_subjects
     )
     
     print(f"Loaded dataset:")
@@ -124,6 +125,19 @@ def train_hopf_grid_search(dataset, cfg: HopfConfig, device: str):
         hopf_fc_mean = hopf_fc.mean(dim=0)
     
     hopf_metrics = compute_all_fc_metrics(hopf_fc_mean.unsqueeze(0), target_fc.unsqueeze(0))
+    target_ts = dataset.timeseries[: hopf_ts.shape[0]]
+    dyn_metrics = compute_dynamics_fit_metrics(
+        hopf_ts,
+        target_ts,
+        tr=cfg.tr,
+        f_lo=cfg.f_lo,
+        f_hi=cfg.f_hi,
+        fcd_win_sec=cfg.fcd_win_sec,
+        fcd_step_sec=cfg.fcd_step_sec,
+        compute_fcd=cfg.compute_fcd_metrics,
+        compute_metastability=cfg.compute_metastability_metrics
+    )
+    hopf_metrics.update(dyn_metrics)
     print(f"Hopf model metrics: {hopf_metrics}")
     
     # Log final metrics to wandb
@@ -202,6 +216,14 @@ def main():
     parser.add_argument("--no-wandb", action="store_true", help="Disable wandb logging")
     parser.add_argument("--device", type=str, default="auto", help="Device (auto, cuda, cpu)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--max-subjects", type=int, default=None, help="Limit number of subjects (first N)")
+    parser.add_argument("--tr", type=float, default=0.72, help="Repetition time in seconds")
+    parser.add_argument("--f-lo", type=float, default=0.04, help="Bandpass low cutoff (Hz)")
+    parser.add_argument("--f-hi", type=float, default=0.07, help="Bandpass high cutoff (Hz)")
+    parser.add_argument("--fcd-win-sec", type=float, default=60.0, help="FCD window length in seconds")
+    parser.add_argument("--fcd-step-sec", type=float, default=2.0, help="FCD window step in seconds")
+    parser.add_argument("--no-fcd", action="store_true", help="Disable FCD metrics")
+    parser.add_argument("--no-metastability", action="store_true", help="Disable metastability metrics")
     args = parser.parse_args()
     
     print("="*60)
@@ -216,7 +238,15 @@ def main():
         use_wandb=not args.no_wandb,
         device=args.device,
         seed=args.seed,
-        dt=0.1
+        dt=0.1,
+        max_subjects=args.max_subjects,
+        tr=args.tr,
+        f_lo=args.f_lo,
+        f_hi=args.f_hi,
+        fcd_win_sec=args.fcd_win_sec,
+        fcd_step_sec=args.fcd_step_sec,
+        compute_fcd_metrics=not args.no_fcd,
+        compute_metastability_metrics=not args.no_metastability
     )
     
     # Setup

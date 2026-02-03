@@ -47,7 +47,8 @@ class NeuroscienceDataset(Dataset):
         self,
         filepath: str,
         normalize: bool = True,
-        device: str = "cpu"
+        device: str = "cpu",
+        max_subjects: Optional[int] = None
     ):
         """
         Initialize the dataset.
@@ -56,6 +57,7 @@ class NeuroscienceDataset(Dataset):
             filepath: Path to the .mat file
             normalize: Whether to z-score normalize timeseries
             device: Device to store tensors on
+            max_subjects: Optional limit on number of subjects (first N)
         """
         self.device = device
         self.normalize = normalize
@@ -63,6 +65,15 @@ class NeuroscienceDataset(Dataset):
         # Load data
         data = load_mat_data(filepath)
         
+        # Optionally limit number of subjects
+        if max_subjects is not None:
+            n_subjects_total = data['timeseries_all'].shape[2]
+            if max_subjects <= 0 or max_subjects > n_subjects_total:
+                raise ValueError(f"max_subjects must be in [1, {n_subjects_total}], got {max_subjects}")
+            data['timeseries_all'] = data['timeseries_all'][:, :, :max_subjects]
+            data['FC_all'] = data['FC_all'][:, :, :max_subjects]
+            data['FC_mean'] = data['FC_all'].mean(axis=2)
+
         # Convert to tensors and rearrange dimensions
         # Original: (ROIs, timepoints, subjects) -> (subjects, ROIs, timepoints)
         self.timeseries = torch.tensor(

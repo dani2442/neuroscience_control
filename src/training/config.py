@@ -23,11 +23,22 @@ class TrainingConfig:
     
     # Data settings
     data_path: str = "data/ts_young/ts_young_TR0.72.mat"
+    max_subjects: Optional[int] = None
     window_size: int = 50
     stride: Optional[int] = None  # Defaults to window_size // 2
     batch_size: int = 16
     train_ratio: float = 0.7
     val_ratio: float = 0.15
+
+    # Dynamics metrics settings
+    tr: float = 0.72
+    f_lo: float = 0.04
+    f_hi: float = 0.07
+    fcd_win_sec: float = 60.0
+    fcd_step_sec: float = 2.0
+    compute_fcd_metrics: bool = True
+    compute_metastability_metrics: bool = True
+    metrics_sample_batches: Optional[int] = 1  # Limit expensive metrics per epoch (None = all)
     
     # Model settings
     hidden_dim: int = 32
