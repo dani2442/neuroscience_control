@@ -12,6 +12,7 @@ from src.models.hopf_model import CoupledHopfModel
 from src.models.base_model import BaseNeuroscienceModel
 from src.metrics import fc_correlation, fc_mse, compute_all_fc_metrics
 from src.dataset import NeuroscienceDataset
+from src.dataset.preprocessing import compute_omega_from_timeseries
 
 
 class GridSearch:
@@ -20,12 +21,13 @@ class GridSearch:
     
     Evaluates model performance across a grid of hyperparameters
     without gradient-based optimization (useful for Hopf model).
+    Uses batch simulation for efficiency.
     """
     
     def __init__(
         self,
         param_grid: Dict[str, List[Any]],
-        n_simulations: int = 10,
+        batch_size: int = 10,
         device: str = "cpu",
         save_dir: str = "results/grid_search"
     ):
@@ -34,12 +36,12 @@ class GridSearch:
         
         Args:
             param_grid: Dictionary mapping parameter names to lists of values
-            n_simulations: Number of simulations per parameter setting
+            batch_size: Number of simulations per parameter setting (done in batch)
             device: Device to run on
             save_dir: Directory to save results
         """
         self.param_grid = param_grid
-        self.n_simulations = n_simulations
+        self.batch_size = batch_size
         self.device = device
         self.save_dir = Path(save_dir)
         self.save_dir.mkdir(parents=True, exist_ok=True)
@@ -64,10 +66,10 @@ class GridSearch:
         model: BaseNeuroscienceModel,
         target_fc: torch.Tensor,
         n_timepoints: int,
-        dt: float = 0.01
+        dt: float = 0.72
     ) -> Dict[str, float]:
         """
-        Evaluate a model with given parameters.
+        Evaluate a model with given parameters using batch simulation.
         
         Args:
             model: Model to evaluate
@@ -78,33 +80,35 @@ class GridSearch:
         Returns:
             Dictionary of metrics
         """
-        all_fc_corrs = []
-        all_fc_mses = []
-        
-        for _ in range(self.n_simulations):
-            # Simulate
+        # Batch simulation - all simulations in one forward pass
+        with torch.no_grad():
             timeseries = model.forward(
                 initial_state=None,
                 n_steps=n_timepoints,
                 dt=dt,
-                batch_size=1
+                batch_size=self.batch_size
             )
             
-            # Compute FC
-            fc_pred = model.compute_fc(timeseries)
+            # Compute FC for all batch elements
+            fc_pred = model.compute_fc(timeseries)  # (batch_size, n_rois, n_rois)
             
-            # Compute metrics
-            fc_corr = fc_correlation(fc_pred, target_fc.unsqueeze(0))
-            fc_mse_val = fc_mse(fc_pred, target_fc.unsqueeze(0))
+            # Expand target to match batch size
+            target_fc_expanded = target_fc.unsqueeze(0).expand(self.batch_size, -1, -1)
             
-            all_fc_corrs.append(fc_corr.item())
-            all_fc_mses.append(fc_mse_val.item())
+            # Compute metrics for all batch elements
+            fc_corrs = []
+            fc_mses = []
+            for i in range(self.batch_size):
+                fc_corr = fc_correlation(fc_pred[i:i+1], target_fc.unsqueeze(0))
+                fc_mse_val = fc_mse(fc_pred[i:i+1], target_fc.unsqueeze(0))
+                fc_corrs.append(fc_corr.item())
+                fc_mses.append(fc_mse_val.item())
         
         return {
-            'fc_correlation_mean': np.mean(all_fc_corrs),
-            'fc_correlation_std': np.std(all_fc_corrs),
-            'fc_mse_mean': np.mean(all_fc_mses),
-            'fc_mse_std': np.std(all_fc_mses)
+            'fc_correlation_mean': np.mean(fc_corrs),
+            'fc_correlation_std': np.std(fc_corrs),
+            'fc_mse_mean': np.mean(fc_mses),
+            'fc_mse_std': np.std(fc_mses)
         }
     
     def search(
@@ -113,7 +117,7 @@ class GridSearch:
         model_kwargs: Dict[str, Any],
         target_fc: torch.Tensor,
         n_timepoints: int,
-        dt: float = 0.01,
+        dt: float = 0.72,
         metric: str = "fc_correlation_mean",
         verbose: bool = True
     ) -> Tuple[Dict[str, Any], Dict[str, float]]:
@@ -169,7 +173,7 @@ class GridSearch:
         """Save grid search results."""
         results_data = {
             'param_grid': {k: [float(v) if isinstance(v, (int, float)) else v for v in vals] for k, vals in self.param_grid.items()},
-            'n_simulations': self.n_simulations,
+            'batch_size': self.batch_size,
             'results': self.results,
             'best_params': self.best_params,
             'best_score': self.best_score
@@ -194,10 +198,12 @@ def grid_search_hopf(
     target_fc: torch.Tensor,
     n_rois: int,
     structural_connectivity: Optional[torch.Tensor] = None,
+    omega: Optional[torch.Tensor] = None,
     g_values: List[float] = None,
     a_values: List[float] = None,
     n_timepoints: int = 200,
-    n_simulations: int = 10,
+    dt: float = 0.72,
+    batch_size: int = 10,
     device: str = "cpu"
 ) -> Tuple[Dict[str, Any], CoupledHopfModel]:
     """
@@ -207,10 +213,12 @@ def grid_search_hopf(
         target_fc: Target functional connectivity
         n_rois: Number of ROIs
         structural_connectivity: Optional SC matrix
+        omega: Optional intrinsic frequencies (rad/s). If None, uses default.
         g_values: List of global coupling values to try
         a_values: List of bifurcation parameter values to try
         n_timepoints: Number of timepoints to simulate
-        n_simulations: Simulations per setting
+        dt: Time step (TR) in seconds
+        batch_size: Number of simulations per setting (done in batch for efficiency)
         device: Device to use
         
     Returns:
@@ -229,13 +237,14 @@ def grid_search_hopf(
     
     grid_search = GridSearch(
         param_grid=param_grid,
-        n_simulations=n_simulations,
+        batch_size=batch_size,
         device=device
     )
     
     model_kwargs = {
         'n_rois': n_rois,
         'structural_connectivity': structural_connectivity,
+        'omega': omega,
         'learnable_a': False,
         'learnable_g': False
     }
@@ -244,7 +253,8 @@ def grid_search_hopf(
         model_class=CoupledHopfModel,
         model_kwargs=model_kwargs,
         target_fc=target_fc,
-        n_timepoints=n_timepoints
+        n_timepoints=n_timepoints,
+        dt=dt
     )
     
     print(f"\nBest parameters: {best_params}")
@@ -255,6 +265,7 @@ def grid_search_hopf(
     best_model = CoupledHopfModel(
         n_rois=n_rois,
         structural_connectivity=structural_connectivity,
+        omega=omega,
         initial_g=best_params['initial_g'],
         initial_a=best_params['initial_a'],
         device=device

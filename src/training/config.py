@@ -23,8 +23,8 @@ class TrainingConfig:
     
     # Data settings
     data_path: str = "data/ts_young/ts_young_TR0.72.mat"
-    max_subjects: Optional[int] = None
-    window_size: int = 50
+    max_subjects: Optional[int] = 5
+    window_size: int = 100
     stride: Optional[int] = None  # Defaults to window_size // 2
     batch_size: int = 16
     train_ratio: float = 0.7
@@ -51,7 +51,7 @@ class TrainingConfig:
     loss_fn: str = "combined"
     early_stopping_patience: int = 15
     n_steps: int = 100
-    dt: float = 0.01
+    dt: float = 0.1
     dt_min: Optional[float] = None  # Minimum time step for adaptive SDE solvers
     sde_method: str = "euler"  # SDE solver method ('euler', 'milstein', 'srk', etc.)
     
@@ -104,7 +104,7 @@ class TrainingConfig:
 class HopfConfig(TrainingConfig):
     """Configuration for Hopf model training."""
     experiment_name: str = "hopf"
-    noise_sigma: float = 0.01
+    noise_sigma: float = 0.1
     learnable_a: bool = False
     learnable_g: bool = False
 

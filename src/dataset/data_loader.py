@@ -41,6 +41,8 @@ class NeuroscienceDataset(Dataset):
         timeseries: Tensor of shape (n_subjects, n_rois, n_timepoints)
         fc_matrices: Tensor of shape (n_subjects, n_rois, n_rois)
         fc_mean: Tensor of shape (n_rois, n_rois)
+        ts: Tensor of shape (n_timepoints,) - time array
+        dt: Time step (TR) in seconds
     """
     
     def __init__(
@@ -48,7 +50,8 @@ class NeuroscienceDataset(Dataset):
         filepath: str,
         normalize: bool = True,
         device: str = "cpu",
-        max_subjects: Optional[int] = None
+        max_subjects: Optional[int] = None,
+        dt: float = 0.72
     ):
         """
         Initialize the dataset.
@@ -58,9 +61,11 @@ class NeuroscienceDataset(Dataset):
             normalize: Whether to z-score normalize timeseries
             device: Device to store tensors on
             max_subjects: Optional limit on number of subjects (first N)
+            dt: Time step (TR) in seconds (default 0.72)
         """
         self.device = device
         self.normalize = normalize
+        self.dt = dt
         
         # Load data
         data = load_mat_data(filepath)
@@ -102,6 +107,14 @@ class NeuroscienceDataset(Dataset):
         self.n_subjects = self.timeseries.shape[0]
         self.n_rois = self.timeseries.shape[1]
         self.n_timepoints = self.timeseries.shape[2]
+        
+        # Create time array
+        self.ts = torch.linspace(
+            0, 
+            (self.n_timepoints - 1) * self.dt, 
+            self.n_timepoints, 
+            device=device
+        )
     
     def _normalize_timeseries(self):
         """Z-score normalize timeseries for each subject and ROI."""

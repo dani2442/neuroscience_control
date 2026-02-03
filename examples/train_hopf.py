@@ -24,7 +24,7 @@ os.environ["HTTPS_PROXY"] = "http://proxy.nhr.fau.de:80"
 import wandb
 
 # Import project modules
-from src.dataset import NeuroscienceDataset
+from src.dataset import NeuroscienceDataset, compute_omega_from_timeseries
 from src.models import CoupledHopfModel
 from src.metrics import compute_all_fc_metrics, compute_dynamics_fit_metrics
 from src.training import grid_search_hopf, HopfConfig
@@ -74,7 +74,8 @@ def load_data(cfg: HopfConfig, device: str):
         filepath=cfg.data_path,
         normalize=True,
         device=device,
-        max_subjects=cfg.max_subjects
+        max_subjects=cfg.max_subjects,
+        dt=cfg.tr
     )
     
     print(f"Loaded dataset:")
@@ -82,11 +83,25 @@ def load_data(cfg: HopfConfig, device: str):
     print(f"  - Number of ROIs: {dataset.n_rois}")
     print(f"  - Number of timepoints: {dataset.n_timepoints}")
     print(f"  - FC matrix shape: {dataset.fc_mean.shape}")
+    print(f"  - Time array shape: {dataset.ts.shape}")
+    print(f"  - dt (TR): {dataset.dt}s")
     
-    return dataset
+    # Compute omega from timeseries
+    omega = compute_omega_from_timeseries(
+        dataset.timeseries,
+        dt=dataset.dt,
+        f_lo=cfg.f_lo,
+        f_hi=cfg.f_hi,
+        method="peak"
+    )
+    
+    print(f"  - Computed omega shape: {omega.shape}")
+    print(f"  - Omega range: [{omega.min().item()/(2*3.14159):.4f}, {omega.max().item()/(2*3.14159):.4f}] Hz")
+    
+    return dataset, omega
 
 
-def train_hopf_grid_search(dataset, cfg: HopfConfig, device: str):
+def train_hopf_grid_search(dataset, omega, cfg: HopfConfig, device: str):
     """Train Hopf model using grid search."""
     print(f"\n{'='*60}")
     print("STEP 2: Training Coupled Hopf Model (Grid Search)")
@@ -103,10 +118,12 @@ def train_hopf_grid_search(dataset, cfg: HopfConfig, device: str):
     best_params, hopf_model = grid_search_hopf(
         target_fc=target_fc,
         n_rois=n_rois,
+        omega=omega,
         g_values=cfg.g_values,
         a_values=cfg.a_values,
         n_timepoints=n_timepoints,
-        n_simulations=cfg.n_simulations,
+        dt=cfg.tr,
+        batch_size=cfg.n_simulations,
         device=device
     )
     
@@ -120,7 +137,7 @@ def train_hopf_grid_search(dataset, cfg: HopfConfig, device: str):
     # Evaluate on full timeseries
     print("\nEvaluating best Hopf model...")
     with torch.no_grad():
-        hopf_ts = hopf_model.forward(n_steps=n_timepoints, batch_size=10)
+        hopf_ts = hopf_model.forward(n_steps=n_timepoints, dt=cfg.tr, batch_size=10)
         hopf_fc = hopf_model.compute_fc(hopf_ts)
         hopf_fc_mean = hopf_fc.mean(dim=0)
     
@@ -171,14 +188,16 @@ def save_model_and_figures(hopf_model, hopf_metrics, dataset, cfg: HopfConfig, d
         artifact.add_file(str(checkpoint_path))
         wandb.log_artifact(artifact)
     
-    # Generate figures
+    # Generate figures with multiple paths (batch simulation to show noise variability)
+    n_paths = 5  # Number of paths to visualize
     with torch.no_grad():
-        hopf_ts = hopf_model.forward(n_steps=n_timepoints, batch_size=1)
-        hopf_fc = hopf_model.compute_fc(hopf_ts)[0]
+        hopf_ts = hopf_model.forward(n_steps=n_timepoints, dt=cfg.tr, batch_size=n_paths)
+        hopf_fc = hopf_model.compute_fc(hopf_ts)
+        hopf_fc_mean = hopf_fc.mean(dim=0)  # Average FC across paths
     
-    # FC comparison
+    # FC comparison (using mean FC)
     fig = plot_fc_comparison(
-        hopf_fc, target_fc,
+        hopf_fc_mean, target_fc,
         title="Coupled Hopf Model - FC Comparison",
         default_name="hopf_fc_comparison",
         use_pdf=True
@@ -189,11 +208,11 @@ def save_model_and_figures(hopf_model, hopf_metrics, dataset, cfg: HopfConfig, d
         wandb.log({"figures/fc_comparison": wandb.Image(fig)})
     plt.close()
     
-    # Timeseries plot
+    # Timeseries plot with multiple paths
     fig = plot_timeseries(
-        hopf_ts[0],
+        hopf_ts,  # Pass all paths
         n_rois=5,
-        title="Coupled Hopf - Simulated Timeseries",
+        title="Coupled Hopf - Simulated Timeseries (Multiple Paths)",
         default_name="hopf_timeseries",
         use_pdf=True
     )
@@ -258,10 +277,10 @@ def main():
     init_wandb(cfg)
     
     # Step 1: Load data
-    dataset = load_data(cfg, device)
+    dataset, omega = load_data(cfg, device)
     
     # Step 2: Train via grid search
-    hopf_model, hopf_metrics, best_params = train_hopf_grid_search(dataset, cfg, device)
+    hopf_model, hopf_metrics, best_params = train_hopf_grid_search(dataset, omega, cfg, device)
     
     # Step 3: Save model and figures
     checkpoint_path = save_model_and_figures(hopf_model, hopf_metrics, dataset, cfg, device)

@@ -256,7 +256,9 @@ def plot_timeseries(
     save_path: Optional[str] = None,
     figsize: Tuple[int, int] = (14, 8),
     use_pdf: bool = True,
-    default_name: Optional[str] = None
+    default_name: Optional[str] = None,
+    show_multiple_paths: bool = True,
+    alpha: float = 0.7
 ) -> plt.Figure:
     """
     Plot timeseries for selected ROIs.
@@ -270,16 +272,28 @@ def plot_timeseries(
         figsize: Figure size
         use_pdf: Whether to save as PDF
         default_name: Default filename if save_path is None
+        show_multiple_paths: If True and batch dim exists, show all paths with transparency
+        alpha: Transparency for multiple paths
         
     Returns:
         Matplotlib figure
     """
-    if timeseries.dim() == 3:
-        timeseries = timeseries[0]
+    has_batch = timeseries.dim() == 3
     
-    ts_np = timeseries.detach().cpu().numpy()
-    n_total_rois = ts_np.shape[0]
-    n_timepoints = ts_np.shape[1]
+    if has_batch and show_multiple_paths:
+        # Keep batch dimension for multi-path visualization
+        ts_np = timeseries.detach().cpu().numpy()  # (batch, n_rois, n_timepoints)
+        n_paths = ts_np.shape[0]
+        n_total_rois = ts_np.shape[1]
+        n_timepoints = ts_np.shape[2]
+    else:
+        if has_batch:
+            timeseries = timeseries[0]
+        ts_np = timeseries.detach().cpu().numpy()
+        n_paths = 1
+        n_total_rois = ts_np.shape[0]
+        n_timepoints = ts_np.shape[1]
+        ts_np = ts_np[np.newaxis, ...]  # Add batch dimension for uniform handling
     
     if roi_indices is None:
         # Select evenly spaced ROIs
@@ -291,13 +305,29 @@ def plot_timeseries(
     
     time = np.arange(n_timepoints)
     
+    # Color map for different paths
+    colors = plt.cm.tab10(np.linspace(0, 1, min(n_paths, 10)))
+    
     for i, roi_idx in enumerate(roi_indices):
-        axes[i].plot(time, ts_np[roi_idx], linewidth=0.8)
+        for path_idx in range(n_paths):
+            path_alpha = alpha if n_paths > 1 else 1.0
+            path_label = f'Path {path_idx + 1}' if path_idx == 0 and n_paths > 1 and i == 0 else None
+            axes[i].plot(
+                time, ts_np[path_idx, roi_idx], 
+                linewidth=0.8, 
+                alpha=path_alpha,
+                color=colors[path_idx % len(colors)],
+                label=path_label if i == 0 else None
+            )
         axes[i].set_ylabel(f'ROI {roi_idx}')
         axes[i].grid(True, alpha=0.3)
     
+    # Add legend if multiple paths
+    if n_paths > 1:
+        axes[0].legend(loc='upper right', fontsize=8)
+    
     axes[-1].set_xlabel('Time')
-    plt.suptitle(title, fontsize=14)
+    plt.suptitle(title + (f' ({n_paths} paths)' if n_paths > 1 else ''), fontsize=14)
     plt.tight_layout()
     
     # Determine save path

@@ -23,7 +23,7 @@ os.environ["HTTP_PROXY"] = "http://proxy.nhr.fau.de:80"
 os.environ["HTTPS_PROXY"] = "http://proxy.nhr.fau.de:80"
 
 # Import project modules
-from src.dataset import NeuroscienceDataset, create_data_loaders
+from src.dataset import NeuroscienceDataset, create_data_loaders, compute_omega_from_timeseries
 from src.models import NeuralSDE
 from src.metrics import compute_all_fc_metrics, compute_dynamics_fit_metrics
 from src.training import Trainer, FineTuner, NeuralSDEConfig
@@ -57,7 +57,8 @@ def load_data(cfg: NeuralSDEConfig, device: str):
         filepath=cfg.data_path,
         normalize=True,
         device=device,
-        max_subjects=cfg.max_subjects
+        max_subjects=cfg.max_subjects,
+        dt=cfg.tr
     )
     
     print(f"Loaded dataset:")
@@ -65,8 +66,22 @@ def load_data(cfg: NeuralSDEConfig, device: str):
     print(f"  - Number of ROIs: {dataset.n_rois}")
     print(f"  - Number of timepoints: {dataset.n_timepoints}")
     print(f"  - FC matrix shape: {dataset.fc_mean.shape}")
+    print(f"  - Time array shape: {dataset.ts.shape}")
+    print(f"  - dt (TR): {dataset.dt}s")
     
-    return dataset
+    # Compute omega from timeseries
+    omega = compute_omega_from_timeseries(
+        dataset.timeseries,
+        dt=dataset.dt,
+        f_lo=cfg.f_lo,
+        f_hi=cfg.f_hi,
+        method="peak"
+    )
+    
+    print(f"  - Computed omega shape: {omega.shape}")
+    print(f"  - Omega range: [{omega.min().item()/(2*3.14159):.4f}, {omega.max().item()/(2*3.14159):.4f}] Hz")
+    
+    return dataset, omega
 
 
 def create_loaders(dataset, cfg: NeuralSDEConfig, device: str):
@@ -195,13 +210,15 @@ def save_model_and_figures(sde_model, metrics_store, test_metrics,
         artifact.add_file(str(checkpoint_path))
         wandb.log_artifact(artifact)
     
-    # Generate figures
+    # Generate figures with multiple paths (batch simulation to show noise variability)
+    n_paths = 5  # Number of paths to visualize
     with torch.no_grad():
-        sde_ts = sde_model.forward(n_steps=n_timepoints, batch_size=1)
-        sde_fc = sde_model.compute_fc(sde_ts)[0]
+        sde_ts = sde_model.forward(n_steps=n_timepoints, dt=cfg.tr, batch_size=n_paths)
+        sde_fc = sde_model.compute_fc(sde_ts)
+        sde_fc_mean = sde_fc.mean(dim=0)  # Average FC across paths
     
-    # Final metrics
-    final_metrics = compute_all_fc_metrics(sde_fc.unsqueeze(0), target_fc.unsqueeze(0))
+    # Final metrics (using mean FC)
+    final_metrics = compute_all_fc_metrics(sde_fc_mean.unsqueeze(0), target_fc.unsqueeze(0))
     target_ts = dataset.timeseries[: sde_ts.shape[0]]
     dyn_metrics = compute_dynamics_fit_metrics(
         sde_ts,
@@ -222,9 +239,9 @@ def save_model_and_figures(sde_model, metrics_store, test_metrics,
         for k, v in final_metrics.items():
             wandb.summary[f"final_{k}"] = v
     
-    # FC comparison
+    # FC comparison (using mean FC)
     fig = plot_fc_comparison(
-        sde_fc, target_fc,
+        sde_fc_mean, target_fc,
         title="Neural SDE Model - FC Comparison",
         default_name="nsde_fc_comparison",
         use_pdf=True
@@ -234,11 +251,11 @@ def save_model_and_figures(sde_model, metrics_store, test_metrics,
         wandb.log({"figures/fc_comparison": wandb.Image(fig)})
     plt.close()
     
-    # Timeseries plot
+    # Timeseries plot with multiple paths
     fig = plot_timeseries(
-        sde_ts[0],
+        sde_ts,  # Pass all paths
         n_rois=5,
-        title="Neural SDE - Simulated Timeseries",
+        title="Neural SDE - Simulated Timeseries (Multiple Paths)",
         default_name="nsde_timeseries",
         use_pdf=True
     )
@@ -321,7 +338,7 @@ def main():
     np.random.seed(cfg.seed)
     
     # Step 1: Load data
-    dataset = load_data(cfg, device)
+    dataset, omega = load_data(cfg, device)
     
     # Create data loaders
     train_loader, val_loader, test_loader, window_size = create_loaders(dataset, cfg, device)

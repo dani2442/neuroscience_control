@@ -349,73 +349,6 @@ class Trainer:
 
         return metrics
     
-    def train_epoch(
-        self,
-        train_loader: DataLoader,
-        n_steps: int = 100,
-        dt: float = 0.01,
-        epoch: int = 0,
-        n_epochs: int = 1,
-        verbose: bool = False
-    ) -> Dict[str, float]:
-        """
-        Train for one epoch.
-        
-        Args:
-            train_loader: Training data loader
-            n_steps: Simulation steps
-            dt: Time step
-            epoch: Current epoch index
-            n_epochs: Total number of epochs
-            verbose: Show tqdm progress bars
-            
-        Returns:
-            Dictionary of training metrics
-        """
-        return self._run_epoch(
-            loader=train_loader,
-            n_steps=n_steps,
-            dt=dt,
-            epoch=epoch,
-            n_epochs=n_epochs,
-            train=True,
-            verbose=verbose
-        )
-    
-    @torch.no_grad()
-    def validate(
-        self,
-        val_loader: DataLoader,
-        n_steps: int = 100,
-        dt: float = 0.01,
-        epoch: int = 0,
-        n_epochs: int = 1,
-        verbose: bool = False
-    ) -> Dict[str, float]:
-        """
-        Validate model.
-        
-        Args:
-            val_loader: Validation data loader
-            n_steps: Simulation steps
-            dt: Time step
-            epoch: Current epoch index
-            n_epochs: Total number of epochs
-            verbose: Show tqdm progress bars
-            
-        Returns:
-            Dictionary of validation metrics
-        """
-        return self._run_epoch(
-            loader=val_loader,
-            n_steps=n_steps,
-            dt=dt,
-            epoch=epoch,
-            n_epochs=n_epochs,
-            train=False,
-            verbose=verbose
-        )
-    
     def train(
         self,
         train_loader: DataLoader,
@@ -458,23 +391,25 @@ class Trainer:
         
         for epoch in range(n_epochs):
             # Train
-            train_metrics = self.train_epoch(
-                train_loader,
+            train_metrics = self._run_epoch(
+                loader=train_loader,
                 n_steps=n_steps,
                 dt=dt,
                 epoch=epoch,
                 n_epochs=n_epochs,
+                train=True,
                 verbose=verbose
             )
             self.metrics_store.log_train(epoch, train_metrics)
             
             # Validate
-            val_metrics = self.validate(
-                val_loader,
+            val_metrics = self._run_epoch(
+                loader=val_loader,
                 n_steps=n_steps,
                 dt=dt,
                 epoch=epoch,
                 n_epochs=n_epochs,
+                train=False,
                 verbose=verbose
             )
             self.metrics_store.log_val(epoch, val_metrics)

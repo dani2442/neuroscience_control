@@ -175,10 +175,10 @@ class NeuralSDE(BaseNeuroscienceModel):
         self,
         initial_state: Optional[torch.Tensor] = None,
         n_steps: int = 100,
-        dt: float = 0.01,
+        dt: float = 0.72,
         batch_size: int = 1,
         method: str = "euler",
-        dt_min: Optional[float] = None
+        dt_min: Optional[float] = 0.1
     ) -> torch.Tensor:
         """
         Simulate brain dynamics using Neural SDE.
@@ -205,12 +205,21 @@ class NeuralSDE(BaseNeuroscienceModel):
         y0 = self.init_net(y0)
         
         # Time points
-        ts = torch.linspace(0, n_steps * dt, n_steps, device=self.device)
+        ts = torch.linspace(0, (n_steps - 1) * dt, n_steps, device=self.device)
+        
+        # Use BrownianInterval which is more robust for long time horizons
+        bm = torchsde.BrownianInterval(
+            t0=ts[0],
+            t1=ts[-1],
+            size=(batch_size, self.n_rois),
+            device=self.device,
+            dtype=y0.dtype,
+        )
         
         # Use torchsde for proper SDE integration
-        sdeint_kwargs = {"method": method}
+        sdeint_kwargs = {"method": method, "bm": bm}
         if dt_min is not None:
-            sdeint_kwargs["dt_min"] = dt_min
+            sdeint_kwargs["dt"] = dt_min
         
         trajectory = torchsde.sdeint(
             self.sde_func,
@@ -222,39 +231,6 @@ class NeuralSDE(BaseNeuroscienceModel):
         result = trajectory.permute(1, 2, 0)
         
         return result
-    
-    def _euler_maruyama(
-        self,
-        y0: torch.Tensor,
-        n_steps: int,
-        dt: float
-    ) -> torch.Tensor:
-        """
-        Simple Euler-Maruyama integration.
-        
-        Args:
-            y0: Initial state (batch, n_rois)
-            n_steps: Number of steps
-            dt: Time step
-            
-        Returns:
-            Trajectory of shape (batch, n_rois, n_steps)
-        """
-        y = y0
-        trajectory = [y]
-        t = torch.tensor(0.0, device=self.device)
-        sqrt_dt = torch.sqrt(torch.tensor(dt, device=self.device))
-        
-        for _ in range(n_steps - 1):
-            drift = self.sde_func.f(t, y)
-            diffusion = self.sde_func.g(t, y)
-            noise = torch.randn_like(y)
-            
-            y = y + drift * dt + diffusion * sqrt_dt * noise
-            trajectory.append(y)
-            t = t + dt
-        
-        return torch.stack(trajectory, dim=2)
     
     def get_parameters_dict(self) -> Dict[str, torch.Tensor]:
         """Return dictionary of key model parameters."""
@@ -270,49 +246,3 @@ class NeuralSDE(BaseNeuroscienceModel):
         
         return params
     
-    def generate_bold(
-        self,
-        n_timepoints: int,
-        tr: float = 0.72,
-        dt: float = 0.001,
-        batch_size: int = 1,
-        initial_transient: int = 1000,
-        method: str = "euler",
-        dt_min: Optional[float] = None
-    ) -> torch.Tensor:
-        """
-        Generate BOLD-like signal.
-        
-        Args:
-            n_timepoints: Number of BOLD timepoints
-            tr: Repetition time in seconds
-            dt: Integration time step
-            batch_size: Number of simulations
-            initial_transient: Steps to discard
-            method: SDE solver method
-            dt_min: Minimum time step for adaptive solvers
-            
-        Returns:
-            BOLD signal of shape (batch, n_rois, n_timepoints)
-        """
-        # Calculate steps needed
-        steps_per_tr = int(tr / dt)
-        total_steps = initial_transient + n_timepoints * steps_per_tr
-        
-        # Simulate full trajectory
-        full_traj = self.forward(
-            initial_state=None,
-            n_steps=total_steps,
-            dt=dt,
-            batch_size=batch_size,
-            method=method,
-            dt_min=dt_min
-        )
-        
-        # Remove transient
-        traj = full_traj[:, :, initial_transient:]
-        
-        # Downsample to TR
-        bold = traj[:, :, ::steps_per_tr][:, :, :n_timepoints]
-        
-        return bold

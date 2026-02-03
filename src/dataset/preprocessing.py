@@ -1,9 +1,108 @@
 """Preprocessing utilities for windowed training."""
 
 import torch
+import torch.fft
 from torch.utils.data import Dataset, DataLoader, random_split
-from typing import Tuple, List, Optional
+from typing import Tuple, List, Optional, Union
 import numpy as np
+
+
+def compute_omega_from_timeseries(
+    timeseries: torch.Tensor,
+    dt: float = 0.72,
+    f_lo: float = 0.04,
+    f_hi: float = 0.07,
+    method: str = "peak"
+) -> torch.Tensor:
+    """
+    Compute intrinsic frequencies (omega) for each ROI from timeseries data.
+    
+    Uses FFT to find the dominant frequency in the specified band for each ROI.
+    
+    Args:
+        timeseries: Tensor of shape (n_subjects, n_rois, n_timepoints) or (n_rois, n_timepoints)
+        dt: Time step (TR) in seconds
+        f_lo: Low frequency cutoff in Hz
+        f_hi: High frequency cutoff in Hz
+        method: 'peak' for peak frequency, 'weighted' for power-weighted mean
+        
+    Returns:
+        omega: Tensor of shape (n_rois,) with angular frequencies (rad/s)
+    """
+    # Handle 2D input
+    if timeseries.dim() == 2:
+        timeseries = timeseries.unsqueeze(0)
+    
+    n_subjects, n_rois, n_timepoints = timeseries.shape
+    device = timeseries.device
+    
+    # Compute FFT for all subjects and ROIs
+    fft_result = torch.fft.rfft(timeseries, dim=2)
+    power_spectrum = torch.abs(fft_result) ** 2
+    
+    # Frequency axis
+    freqs = torch.fft.rfftfreq(n_timepoints, d=dt).to(device)
+    
+    # Create mask for frequency band of interest
+    freq_mask = (freqs >= f_lo) & (freqs <= f_hi)
+    
+    if not freq_mask.any():
+        # Fallback: use all positive frequencies if band is empty
+        freq_mask = freqs > 0
+    
+    # Extract power in band
+    power_in_band = power_spectrum[:, :, freq_mask]  # (n_subjects, n_rois, n_freqs_in_band)
+    freqs_in_band = freqs[freq_mask]
+    
+    if method == "peak":
+        # Find peak frequency for each subject and ROI
+        peak_indices = power_in_band.argmax(dim=2)  # (n_subjects, n_rois)
+        peak_freqs = freqs_in_band[peak_indices]  # (n_subjects, n_rois)
+        
+        # Average across subjects
+        omega_hz = peak_freqs.mean(dim=0)  # (n_rois,)
+    
+    elif method == "weighted":
+        # Power-weighted mean frequency
+        power_sum = power_in_band.sum(dim=2, keepdim=True) + 1e-10
+        weights = power_in_band / power_sum
+        weighted_freqs = (weights * freqs_in_band.unsqueeze(0).unsqueeze(0)).sum(dim=2)
+        
+        # Average across subjects
+        omega_hz = weighted_freqs.mean(dim=0)  # (n_rois,)
+    
+    else:
+        raise ValueError(f"Unknown method: {method}. Use 'peak' or 'weighted'.")
+    
+    # Convert to angular frequency (rad/s)
+    omega = 2 * np.pi * omega_hz
+    
+    return omega
+
+
+def compute_omega_uniform(
+    n_rois: int,
+    f_lo: float = 0.04,
+    f_hi: float = 0.07,
+    device: str = "cpu"
+) -> torch.Tensor:
+    """
+    Compute uniformly spaced omega values across a frequency band.
+    
+    This is a simple alternative to data-driven omega estimation.
+    
+    Args:
+        n_rois: Number of brain regions
+        f_lo: Low frequency in Hz
+        f_hi: High frequency in Hz
+        device: Device for tensor
+        
+    Returns:
+        omega: Tensor of shape (n_rois,) with angular frequencies (rad/s)
+    """
+    omega_hz = torch.linspace(f_lo, f_hi, n_rois, device=device)
+    omega = 2 * np.pi * omega_hz
+    return omega
 
 
 class WindowedDataset(Dataset):
