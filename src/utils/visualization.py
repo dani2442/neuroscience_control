@@ -10,13 +10,43 @@ from pathlib import Path
 from ..metrics import fc_correlation, compute_all_fc_metrics
 from ..metrics.metrics_store import MetricsStore
 
+# Default figures directory for paper
+FIGURES_DIR = Path("paper/images")
+FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _get_save_path(save_path: Optional[str], default_name: str, use_pdf: bool = True) -> Optional[Path]:
+    """
+    Get the save path, defaulting to paper/images/ with PDF format.
+    
+    Args:
+        save_path: Explicit save path or None
+        default_name: Default filename (without extension)
+        use_pdf: Whether to use PDF format
+        
+    Returns:
+        Path object or None
+    """
+    if save_path is None:
+        ext = ".pdf" if use_pdf else ".png"
+        return FIGURES_DIR / f"{default_name}{ext}"
+    
+    path = Path(save_path)
+    # Convert to PDF if requested and not already PDF
+    if use_pdf and path.suffix.lower() != ".pdf":
+        path = path.with_suffix(".pdf")
+    
+    return path
+
 
 def plot_fc_comparison(
     fc_pred: torch.Tensor,
     fc_target: torch.Tensor,
     title: str = "FC Comparison",
     save_path: Optional[str] = None,
-    figsize: Tuple[int, int] = (15, 5)
+    figsize: Tuple[int, int] = (15, 5),
+    use_pdf: bool = True,
+    default_name: Optional[str] = None
 ) -> plt.Figure:
     """
     Plot comparison between predicted and target FC matrices.
@@ -25,8 +55,10 @@ def plot_fc_comparison(
         fc_pred: Predicted FC (n_rois x n_rois)
         fc_target: Target FC (n_rois x n_rois)
         title: Plot title
-        save_path: Path to save figure
+        save_path: Path to save figure (None uses paper/images/)
         figsize: Figure size
+        use_pdf: Whether to save as PDF
+        default_name: Default filename if save_path is None
         
     Returns:
         Matplotlib figure
@@ -68,9 +100,16 @@ def plot_fc_comparison(
     plt.suptitle(title, fontsize=14)
     plt.tight_layout()
     
-    if save_path:
-        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    # Determine save path
+    if save_path is not None or default_name is not None:
+        final_path = _get_save_path(
+            save_path, 
+            default_name or "fc_comparison",
+            use_pdf=use_pdf
+        )
+        final_path.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(final_path, dpi=300, bbox_inches='tight', format='pdf' if use_pdf else 'png')
+        print(f"Saved figure to {final_path}")
     
     return fig
 
@@ -78,7 +117,9 @@ def plot_fc_comparison(
 def plot_training_curves(
     metrics_store: MetricsStore,
     save_path: Optional[str] = None,
-    figsize: Tuple[int, int] = (12, 5)
+    figsize: Tuple[int, int] = (12, 5),
+    use_pdf: bool = True,
+    default_name: Optional[str] = None
 ) -> plt.Figure:
     """
     Plot training and validation curves.
@@ -87,6 +128,8 @@ def plot_training_curves(
         metrics_store: MetricsStore with training history
         save_path: Path to save figure
         figsize: Figure size
+        use_pdf: Whether to save as PDF
+        default_name: Default filename if save_path is None
         
     Returns:
         Matplotlib figure
@@ -121,9 +164,16 @@ def plot_training_curves(
     plt.suptitle(f"Training History: {metrics_store.experiment_name}", fontsize=14)
     plt.tight_layout()
     
-    if save_path:
-        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    # Determine save path
+    if save_path is not None or default_name is not None:
+        final_path = _get_save_path(
+            save_path, 
+            default_name or "training_curves",
+            use_pdf=use_pdf
+        )
+        final_path.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(final_path, dpi=300, bbox_inches='tight', format='pdf' if use_pdf else 'png')
+        print(f"Saved figure to {final_path}")
     
     return fig
 
@@ -132,7 +182,9 @@ def plot_model_comparison(
     model_results: Dict[str, Dict[str, float]],
     metric_names: List[str] = None,
     save_path: Optional[str] = None,
-    figsize: Tuple[int, int] = (10, 6)
+    figsize: Tuple[int, int] = (10, 6),
+    use_pdf: bool = True,
+    default_name: Optional[str] = None
 ) -> plt.Figure:
     """
     Plot comparison of metrics across models.
@@ -142,6 +194,8 @@ def plot_model_comparison(
         metric_names: List of metrics to compare
         save_path: Path to save figure
         figsize: Figure size
+        use_pdf: Whether to save as PDF
+        default_name: Default filename if save_path is None
         
     Returns:
         Matplotlib figure
@@ -180,9 +234,16 @@ def plot_model_comparison(
     plt.suptitle("Model Comparison", fontsize=14)
     plt.tight_layout()
     
-    if save_path:
-        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    # Determine save path
+    if save_path is not None or default_name is not None:
+        final_path = _get_save_path(
+            save_path, 
+            default_name or "model_comparison",
+            use_pdf=use_pdf
+        )
+        final_path.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(final_path, dpi=300, bbox_inches='tight', format='pdf' if use_pdf else 'png')
+        print(f"Saved figure to {final_path}")
     
     return fig
 
@@ -193,7 +254,9 @@ def plot_timeseries(
     n_rois: int = 5,
     title: str = "Timeseries",
     save_path: Optional[str] = None,
-    figsize: Tuple[int, int] = (14, 8)
+    figsize: Tuple[int, int] = (14, 8),
+    use_pdf: bool = True,
+    default_name: Optional[str] = None
 ) -> plt.Figure:
     """
     Plot timeseries for selected ROIs.
@@ -205,6 +268,8 @@ def plot_timeseries(
         title: Plot title
         save_path: Path to save figure
         figsize: Figure size
+        use_pdf: Whether to save as PDF
+        default_name: Default filename if save_path is None
         
     Returns:
         Matplotlib figure
@@ -235,9 +300,16 @@ def plot_timeseries(
     plt.suptitle(title, fontsize=14)
     plt.tight_layout()
     
-    if save_path:
-        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    # Determine save path
+    if save_path is not None or default_name is not None:
+        final_path = _get_save_path(
+            save_path, 
+            default_name or "timeseries",
+            use_pdf=use_pdf
+        )
+        final_path.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(final_path, dpi=300, bbox_inches='tight', format='pdf' if use_pdf else 'png')
+        print(f"Saved figure to {final_path}")
     
     return fig
 
@@ -248,7 +320,9 @@ def plot_power_spectrum(
     sampling_rate: float = 1.0,
     title: str = "Power Spectrum",
     save_path: Optional[str] = None,
-    figsize: Tuple[int, int] = (10, 6)
+    figsize: Tuple[int, int] = (10, 6),
+    use_pdf: bool = True,
+    default_name: Optional[str] = None
 ) -> plt.Figure:
     """
     Plot power spectrum of timeseries.
@@ -260,6 +334,8 @@ def plot_power_spectrum(
         title: Plot title
         save_path: Path to save figure
         figsize: Figure size
+        use_pdf: Whether to save as PDF
+        default_name: Default filename if save_path is None
         
     Returns:
         Matplotlib figure
@@ -292,9 +368,16 @@ def plot_power_spectrum(
     ax.legend()
     ax.grid(True, alpha=0.3)
     
-    if save_path:
-        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    # Determine save path
+    if save_path is not None or default_name is not None:
+        final_path = _get_save_path(
+            save_path, 
+            default_name or "power_spectrum",
+            use_pdf=use_pdf
+        )
+        final_path.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(final_path, dpi=300, bbox_inches='tight', format='pdf' if use_pdf else 'png')
+        print(f"Saved figure to {final_path}")
     
     return fig
 
@@ -303,8 +386,9 @@ def create_comparison_report(
     models: Dict[str, Any],
     target_fc: torch.Tensor,
     n_timepoints: int = 200,
-    save_dir: str = "results/comparison",
-    figsize: Tuple[int, int] = (16, 12)
+    save_dir: Optional[str] = None,
+    figsize: Tuple[int, int] = (16, 12),
+    use_pdf: bool = True
 ) -> plt.Figure:
     """
     Create comprehensive comparison report for multiple models.
@@ -313,13 +397,18 @@ def create_comparison_report(
         models: Dict mapping model names to model objects
         target_fc: Target functional connectivity
         n_timepoints: Timepoints to simulate
-        save_dir: Directory to save results
+        save_dir: Directory to save results (defaults to paper/images/)
         figsize: Figure size
+        use_pdf: Whether to save as PDF
         
     Returns:
         Matplotlib figure
     """
-    save_dir = Path(save_dir)
+    # Default to paper/images for save directory
+    if save_dir is None:
+        save_dir = FIGURES_DIR
+    else:
+        save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
     
     n_models = len(models)
@@ -391,8 +480,11 @@ def create_comparison_report(
     plt.suptitle('Model Comparison Report', fontsize=16, y=1.02)
     plt.tight_layout()
     
-    # Save figure
-    plt.savefig(save_dir / "comparison_report.png", dpi=150, bbox_inches='tight')
+    # Save figure as PDF for paper
+    ext = ".pdf" if use_pdf else ".png"
+    fig_path = save_dir / f"comparison_report{ext}"
+    plt.savefig(fig_path, dpi=300, bbox_inches='tight', format='pdf' if use_pdf else 'png')
+    print(f"Saved figure to {fig_path}")
     
     # Save metrics
     import json

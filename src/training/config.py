@@ -1,0 +1,105 @@
+"""Training configuration dataclass."""
+
+import dataclasses
+from dataclasses import dataclass, field
+from typing import Optional, List
+from pathlib import Path
+import datetime
+
+
+@dataclass
+class TrainingConfig:
+    """Configuration for training experiments."""
+    
+    # Experiment settings
+    experiment_name: str = "experiment"
+    run_name: Optional[str] = None  # Auto-generated if None
+    seed: int = 42
+    
+    # WandB settings
+    wandb_project: str = "neuroscience-control"
+    wandb_entity: Optional[str] = None
+    use_wandb: bool = True
+    
+    # Data settings
+    data_path: str = "data/ts_young/ts_young_TR0.72.mat"
+    window_size: int = 50
+    stride: Optional[int] = None  # Defaults to window_size // 2
+    batch_size: int = 16
+    train_ratio: float = 0.7
+    val_ratio: float = 0.15
+    
+    # Model settings
+    hidden_dim: int = 32
+    n_layers: int = 2
+    coupling_strength: float = 0.1
+    
+    # Training settings
+    n_epochs: int = 50
+    lr: float = 1e-3
+    loss_fn: str = "combined"
+    early_stopping_patience: int = 15
+    n_steps: int = 100
+    dt: float = 0.01
+    dt_min: Optional[float] = None  # Minimum time step for adaptive SDE solvers
+    sde_method: str = "euler"  # SDE solver method ('euler', 'milstein', 'srk', etc.)
+    
+    # Fine-tuning settings
+    fine_tune: bool = False
+    fine_tune_epochs: int = 20
+    fine_tune_lr: float = 1e-4
+    warmup_epochs: int = 3
+    
+    # Grid search settings (for Hopf)
+    g_values: List[float] = field(default_factory=lambda: [0.3, 0.5, 0.7, 1.0, 1.5])
+    a_values: List[float] = field(default_factory=lambda: [-0.05, -0.02, -0.01, 0.0, 0.01])
+    n_simulations: int = 5
+    
+    # Directories
+    checkpoint_dir: str = "checkpoints"
+    results_dir: str = "results"
+    figures_dir: str = "paper/images"
+    
+    # Device
+    device: str = "auto"  # "auto", "cuda", or "cpu"
+    
+    def __post_init__(self):
+        """Post-initialization processing."""
+        # Generate run name if not provided
+        if self.run_name is None:
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.run_name = f"{self.experiment_name}_{timestamp}"
+        
+        # Set default stride
+        if self.stride is None:
+            self.stride = self.window_size // 2
+        
+        # Create directories
+        Path(self.checkpoint_dir).mkdir(parents=True, exist_ok=True)
+        Path(self.results_dir).mkdir(parents=True, exist_ok=True)
+        Path(self.figures_dir).mkdir(parents=True, exist_ok=True)
+    
+    def to_dict(self) -> dict:
+        """Convert config to dictionary."""
+        return dataclasses.asdict(self)
+    
+    @classmethod
+    def from_dict(cls, d: dict) -> "TrainingConfig":
+        """Create config from dictionary."""
+        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
+
+
+@dataclass
+class HopfConfig(TrainingConfig):
+    """Configuration for Hopf model training."""
+    experiment_name: str = "hopf"
+    noise_sigma: float = 0.01
+    learnable_a: bool = False
+    learnable_g: bool = False
+
+
+@dataclass
+class NeuralSDEConfig(TrainingConfig):
+    """Configuration for Neural SDE training."""
+    experiment_name: str = "neural_sde"
+    use_structural_connectivity: bool = False

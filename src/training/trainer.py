@@ -3,13 +3,17 @@
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from typing import Dict, Optional, Callable, Any
+from typing import Dict, Optional, Callable, Any, Union
 from pathlib import Path
 import time
+import dataclasses
+import os
+import wandb
 
 from ..models.base_model import BaseNeuroscienceModel
 from ..metrics import fc_correlation, fc_mse, compute_all_fc_metrics
 from ..metrics.metrics_store import MetricsStore
+from .config import TrainingConfig
 
 
 class Trainer:
@@ -32,7 +36,9 @@ class Trainer:
         loss_fn: str = "mse",
         device: str = "cpu",
         checkpoint_dir: str = "checkpoints",
-        experiment_name: str = "experiment"
+        experiment_name: str = "experiment",
+        cfg: Optional[TrainingConfig] = None,
+        use_wandb: bool = True
     ):
         """
         Initialize trainer.
@@ -45,11 +51,15 @@ class Trainer:
             device: Device to train on
             checkpoint_dir: Directory for checkpoints
             experiment_name: Name for experiment
+            cfg: Optional TrainingConfig for wandb logging
+            use_wandb: Whether to use wandb logging
         """
         self.model = model.to(device)
         self.device = device
         self.lr = lr
         self.loss_fn_name = loss_fn
+        self.cfg = cfg
+        self.use_wandb = use_wandb
         
         # Set up optimizer
         if optimizer is None:
@@ -74,6 +84,58 @@ class Trainer:
         # Best model tracking
         self.best_val_loss = float('inf')
         self.best_epoch = 0
+        
+        # Initialize wandb if config provided
+        self.wandb_run = None
+        if self.use_wandb and cfg is not None:
+            self._init_wandb(cfg)
+    
+    def _init_wandb(self, cfg: TrainingConfig):
+        """Initialize wandb with proxy settings."""
+                
+        # Set proxy environment variables
+        os.environ["HTTP_PROXY"] = "http://proxy.nhr.fau.de:80"
+        os.environ["HTTPS_PROXY"] = "http://proxy.nhr.fau.de:80"
+        
+        # Configure wandb settings with proxy
+        settings = wandb.Settings(
+            _service_transport="http",
+        )
+        
+        # Get run name from config or generate
+        run_name = getattr(cfg, 'run_name', None) or self.experiment_name
+        
+        self.wandb_run = wandb.init(
+            project=cfg.wandb_project,
+            entity=getattr(cfg, 'wandb_entity', None),
+            name=run_name,
+            config=dataclasses.asdict(cfg),
+            settings=settings
+        )
+        
+        # Watch model for gradient logging
+        wandb.watch(self.model, log="all", log_freq=100)
+        
+        print(f"Wandb initialized: {cfg.wandb_project}/{run_name}")
+    
+    def _log_wandb(self, metrics: Dict[str, float], step: int, prefix: str = ""):
+        """Log metrics to wandb."""
+        if self.wandb_run is not None:
+            log_dict = {f"{prefix}/{k}" if prefix else k: v for k, v in metrics.items()}
+            log_dict["epoch"] = step
+            wandb.log(log_dict, step=step)
+    
+    def _log_wandb_artifact(self, filepath: str, name: str, artifact_type: str = "model"):
+        """Log artifact to wandb."""
+        if self.wandb_run is not None:
+            artifact = wandb.Artifact(name, type=artifact_type)
+            artifact.add_file(filepath)
+            wandb.log_artifact(artifact)
+    
+    def _log_wandb_figure(self, fig, name: str, step: Optional[int] = None):
+        """Log matplotlib figure to wandb."""
+        if self.wandb_run is not None:
+            wandb.log({name: wandb.Image(fig)}, step=step)
     
     def _get_loss_fn(self, loss_fn: str) -> Callable:
         """Get loss function by name."""
@@ -260,6 +322,11 @@ class Trainer:
             val_metrics = self.validate(val_loader, n_steps, dt)
             self.metrics_store.log_val(epoch, val_metrics)
             
+            # Log to wandb
+            self._log_wandb(train_metrics, epoch, prefix="train")
+            self._log_wandb(val_metrics, epoch, prefix="val")
+            self._log_wandb({"best_val_loss": self.best_val_loss}, epoch, prefix="best")
+            
             # Check for best model
             if val_metrics['loss'] < self.best_val_loss:
                 self.best_val_loss = val_metrics['loss']
@@ -267,7 +334,20 @@ class Trainer:
                 patience_counter = 0
                 
                 if save_best:
-                    self.save_checkpoint(f"best_{self.experiment_name}.pt")
+                    checkpoint_path = f"best_{self.experiment_name}.pt"
+                    self.save_checkpoint(checkpoint_path)
+                    # Log best model as artifact to wandb
+                    self._log_wandb_artifact(
+                        str(self.checkpoint_dir / checkpoint_path),
+                        name=f"best_model_{self.experiment_name}",
+                        artifact_type="model"
+                    )
+                    # Log best metrics
+                    self._log_wandb({
+                        "best_epoch": epoch,
+                        "best_val_loss": self.best_val_loss,
+                        "best_val_fc_correlation": val_metrics['fc_correlation']
+                    }, epoch, prefix="best")
             else:
                 patience_counter += 1
             
@@ -284,10 +364,18 @@ class Trainer:
             if patience_counter >= early_stopping_patience:
                 if verbose:
                     print(f"Early stopping at epoch {epoch}")
+                # Log early stopping to wandb
+                self._log_wandb({"early_stopped": True, "final_epoch": epoch}, epoch)
                 break
         
         # Save final metrics
         self.metrics_store.save()
+        
+        # Log final summary to wandb
+        if self.wandb_run is not None:
+            wandb.summary["best_epoch"] = self.best_epoch
+            wandb.summary["best_val_loss"] = self.best_val_loss
+            wandb.summary["total_epochs"] = epoch + 1
         
         return self.metrics_store
     
@@ -311,7 +399,20 @@ class Trainer:
         """
         metrics = self.validate(test_loader, n_steps, dt)
         self.metrics_store.log_test(metrics)
+        
+        # Log test metrics to wandb
+        self._log_wandb(metrics, step=0, prefix="test")
+        if self.wandb_run is not None:
+            for k, v in metrics.items():
+                wandb.summary[f"test_{k}"] = v
+        
         return metrics
+    
+    def finish(self):
+        """Finish training and cleanup wandb."""
+        if self.wandb_run is not None:
+            wandb.finish()
+            self.wandb_run = None
     
     def save_checkpoint(self, filename: str):
         """Save model checkpoint."""

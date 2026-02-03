@@ -6,7 +6,9 @@ from .visualization import (
     plot_model_comparison,
     plot_timeseries,
     plot_power_spectrum,
-    create_comparison_report
+    create_comparison_report,
+    FIGURES_DIR,
+    _get_save_path
 )
 
 __all__ = [
@@ -16,4 +18,6 @@ __all__ = [
     "plot_timeseries",
     "plot_power_spectrum",
     "create_comparison_report",
+    "FIGURES_DIR",
+    "_get_save_path",
 ]

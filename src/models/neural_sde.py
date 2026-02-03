@@ -9,12 +9,7 @@ import torch
 import torch.nn as nn
 from typing import Dict, Optional, Tuple
 from .base_model import BaseNeuroscienceModel
-
-try:
-    import torchsde
-    HAS_TORCHSDE = True
-except ImportError:
-    HAS_TORCHSDE = False
+import torchsde
 
 
 class DriftNetwork(nn.Module):
@@ -182,7 +177,8 @@ class NeuralSDE(BaseNeuroscienceModel):
         n_steps: int = 100,
         dt: float = 0.01,
         batch_size: int = 1,
-        method: str = "euler"
+        method: str = "euler",
+        dt_min: Optional[float] = None
     ) -> torch.Tensor:
         """
         Simulate brain dynamics using Neural SDE.
@@ -193,6 +189,7 @@ class NeuralSDE(BaseNeuroscienceModel):
             dt: Time step size
             batch_size: Batch size if initial_state is None
             method: SDE solver method
+            dt_min: Minimum time step for adaptive solvers
             
         Returns:
             Simulated timeseries of shape (batch, n_rois, n_steps)
@@ -210,19 +207,19 @@ class NeuralSDE(BaseNeuroscienceModel):
         # Time points
         ts = torch.linspace(0, n_steps * dt, n_steps, device=self.device)
         
-        if HAS_TORCHSDE:
-            # Use torchsde for proper SDE integration
-            trajectory = torchsde.sdeint(
-                self.sde_func,
-                y0,
-                ts,
-                method=method
-            )
-            # Shape: (n_steps, batch, n_rois) -> (batch, n_rois, n_steps)
-            result = trajectory.permute(1, 2, 0)
-        else:
-            # Fallback to simple Euler-Maruyama
-            result = self._euler_maruyama(y0, n_steps, dt)
+        # Use torchsde for proper SDE integration
+        sdeint_kwargs = {"method": method}
+        if dt_min is not None:
+            sdeint_kwargs["dt_min"] = dt_min
+        
+        trajectory = torchsde.sdeint(
+            self.sde_func,
+            y0,
+            ts,
+            **sdeint_kwargs
+        )
+        # Shape: (n_steps, batch, n_rois) -> (batch, n_rois, n_steps)
+        result = trajectory.permute(1, 2, 0)
         
         return result
     
@@ -279,7 +276,9 @@ class NeuralSDE(BaseNeuroscienceModel):
         tr: float = 0.72,
         dt: float = 0.001,
         batch_size: int = 1,
-        initial_transient: int = 1000
+        initial_transient: int = 1000,
+        method: str = "euler",
+        dt_min: Optional[float] = None
     ) -> torch.Tensor:
         """
         Generate BOLD-like signal.
@@ -290,6 +289,8 @@ class NeuralSDE(BaseNeuroscienceModel):
             dt: Integration time step
             batch_size: Number of simulations
             initial_transient: Steps to discard
+            method: SDE solver method
+            dt_min: Minimum time step for adaptive solvers
             
         Returns:
             BOLD signal of shape (batch, n_rois, n_timepoints)
@@ -303,7 +304,9 @@ class NeuralSDE(BaseNeuroscienceModel):
             initial_state=None,
             n_steps=total_steps,
             dt=dt,
-            batch_size=batch_size
+            batch_size=batch_size,
+            method=method,
+            dt_min=dt_min
         )
         
         # Remove transient

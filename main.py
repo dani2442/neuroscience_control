@@ -158,7 +158,7 @@ def train_neural_sde(dataset, device):
         val_loader=val_loader,
         n_epochs=n_epochs,
         n_steps=window_size,
-        dt=0.01,
+        dt=0.1,
         early_stopping_patience=15,
         verbose=True
     )
@@ -325,41 +325,6 @@ def main():
     
     # Data path
     data_path = "data/ts_young/ts_young_TR0.72.mat"
-    
-    # Check if data exists
-    if not Path(data_path).exists():
-        print(f"\nData file not found: {data_path}")
-        print("Creating synthetic data for demonstration...")
-        
-        # Create synthetic data
-        n_rois = 68
-        n_timepoints = 200
-        n_subjects = 20
-        
-        # Generate synthetic timeseries
-        timeseries = np.random.randn(n_rois, n_timepoints, n_subjects) * 0.5
-        
-        # Add some structure (correlated activity)
-        for i in range(n_subjects):
-            for j in range(n_rois):
-                timeseries[j, :, i] += 0.3 * np.sin(np.linspace(0, 4*np.pi, n_timepoints) + j*0.1)
-        
-        # Compute FC
-        fc_all = np.zeros((n_rois, n_rois, n_subjects))
-        for i in range(n_subjects):
-            fc_all[:, :, i] = np.corrcoef(timeseries[:, :, i])
-        
-        fc_mean = fc_all.mean(axis=2)
-        
-        # Save synthetic data
-        from scipy.io import savemat
-        Path("data/ts_young").mkdir(parents=True, exist_ok=True)
-        savemat(data_path, {
-            'timeseries_all': timeseries,
-            'FC_all': fc_all,
-            'FC_mean': fc_mean
-        })
-        print(f"Synthetic data saved to {data_path}")
     
     # Execute pipeline
     try:

@@ -9,6 +9,94 @@ import torch
 import torch.nn as nn
 from typing import Dict, Optional, Tuple
 from .base_model import BaseNeuroscienceModel
+import torchsde
+
+
+class HopfSDEFunc(nn.Module):
+    """
+    SDE function for Hopf oscillator dynamics compatible with torchsde.
+    
+    Implements: dz = f(z)dt + g(z)dW
+    where f is the Hopf dynamics and g is the diffusion.
+    """
+    
+    noise_type = "diagonal"
+    sde_type = "ito"
+    
+    def __init__(
+        self,
+        n_rois: int,
+        a: torch.Tensor,
+        g: torch.Tensor,
+        omega: torch.Tensor,
+        structural_connectivity: torch.Tensor,
+        noise_sigma: float = 0.01
+    ):
+        """
+        Initialize Hopf SDE function.
+        
+        Args:
+            n_rois: Number of brain regions
+            a: Bifurcation parameters (n_rois,)
+            g: Global coupling strength
+            omega: Intrinsic frequencies (n_rois,)
+            structural_connectivity: Connectivity matrix (n_rois, n_rois)
+            noise_sigma: Noise standard deviation
+        """
+        super().__init__()
+        self.n_rois = n_rois
+        self.noise_sigma = noise_sigma
+        
+        # Store references to parameters (will be updated by parent model)
+        self.a = a
+        self.g = g
+        self.omega = omega
+        self.structural_connectivity = structural_connectivity
+    
+    def f(self, t: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        """
+        Drift function for Hopf dynamics.
+        
+        y is stored as (batch, 2*n_rois) where first n_rois are real parts
+        and second n_rois are imaginary parts.
+        """
+        # Split real and imaginary parts
+        y_real = y[:, :self.n_rois]
+        y_imag = y[:, self.n_rois:]
+        
+        # Compute |z|^2 = real^2 + imag^2
+        z_squared = y_real ** 2 + y_imag ** 2
+        
+        # Local dynamics: z * (a + i*omega - |z|^2)
+        # (x + iy) * (a - |z|^2 + i*omega)
+        # = x*(a - |z|^2) - y*omega + i*(y*(a - |z|^2) + x*omega)
+        a_minus_z2 = self.a.unsqueeze(0) - z_squared
+        
+        local_real = y_real * a_minus_z2 - y_imag * self.omega.unsqueeze(0)
+        local_imag = y_imag * a_minus_z2 + y_real * self.omega.unsqueeze(0)
+        
+        # Coupling: G * C @ z (in complex form)
+        # For real matrices and complex z: (C @ z) = C @ real + i * C @ imag
+        coupling_real = self.g * torch.matmul(y_real, self.structural_connectivity.T)
+        coupling_imag = self.g * torch.matmul(y_imag, self.structural_connectivity.T)
+        
+        drift_real = local_real + coupling_real
+        drift_imag = local_imag + coupling_imag
+        
+        return torch.cat([drift_real, drift_imag], dim=1)
+    
+    def g_func(self, t: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        """
+        Diffusion function for Hopf dynamics.
+        
+        Returns diagonal diffusion (same noise for all components).
+        """
+        return self.noise_sigma * torch.ones_like(y)
+    
+    # torchsde expects 'g' method, but we've defined g as a parameter
+    # So we alias it
+    def g(self, t: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        return self.g_func(t, y)
 
 
 class CoupledHopfModel(BaseNeuroscienceModel):
@@ -95,7 +183,24 @@ class CoupledHopfModel(BaseNeuroscienceModel):
         else:
             self.register_buffer('omega', omega)
         
+        # Create SDE function for torchsde integration
+        self.sde_func = HopfSDEFunc(
+            n_rois=n_rois,
+            a=self.a,
+            g=self.g,
+            omega=self.omega,
+            structural_connectivity=self.structural_connectivity,
+            noise_sigma=noise_sigma
+        )
+        
         self.to(device)
+    
+    def _update_sde_func_params(self):
+        """Update SDE function parameters from model parameters."""
+        self.sde_func.a = self.a
+        self.sde_func.g = self.g
+        self.sde_func.omega = self.omega
+        self.sde_func.structural_connectivity = self.structural_connectivity
     
     def hopf_dynamics(
         self,
@@ -143,10 +248,12 @@ class CoupledHopfModel(BaseNeuroscienceModel):
         n_steps: int = 100,
         dt: float = 0.01,
         batch_size: int = 1,
-        return_complex: bool = False
+        return_complex: bool = False,
+        method: str = "euler",
+        dt_min: Optional[float] = None
     ) -> torch.Tensor:
         """
-        Simulate brain dynamics.
+        Simulate brain dynamics using SDE integration.
         
         Args:
             initial_state: Initial complex state (batch, n_rois) or None for random
@@ -154,33 +261,56 @@ class CoupledHopfModel(BaseNeuroscienceModel):
             dt: Time step size
             batch_size: Batch size (used if initial_state is None)
             return_complex: Whether to return complex state or just real part
+            method: SDE solver method ('euler', 'milstein', 'srk', etc.)
+            dt_min: Minimum time step for adaptive solvers
             
         Returns:
             Simulated timeseries of shape (batch, n_rois, n_steps)
         """
+        # Update SDE function parameters
+        self._update_sde_func_params()
+        
         if initial_state is None:
-            # Random initial conditions near origin
-            z = 0.1 * (torch.randn(batch_size, self.n_rois, device=self.device) + 
-                       1j * torch.randn(batch_size, self.n_rois, device=self.device))
+            # Random initial conditions near origin (real representation)
+            y0_real = 0.1 * torch.randn(batch_size, self.n_rois, device=self.device)
+            y0_imag = 0.1 * torch.randn(batch_size, self.n_rois, device=self.device)
+            y0 = torch.cat([y0_real, y0_imag], dim=1)
         else:
+            # Convert complex initial state to real representation
             z = initial_state.to(self.device)
             batch_size = z.shape[0]
-        
-        # Store trajectory
-        trajectory = []
-        
-        for _ in range(n_steps):
-            z = self.hopf_dynamics(z, dt)
-            if return_complex:
-                trajectory.append(z)
+            if torch.is_complex(z):
+                y0 = torch.cat([z.real, z.imag], dim=1)
             else:
-                trajectory.append(z.real)
+                # Assume it's already in real representation
+                y0 = z
         
-        # Stack: (n_steps, batch, n_rois) -> (batch, n_rois, n_steps)
-        result = torch.stack(trajectory, dim=2)
+        # Time points
+        ts = torch.linspace(0, n_steps * dt, n_steps, device=self.device)
         
-        if not return_complex:
-            result = result.real if torch.is_complex(result) else result
+        # Use torchsde for proper SDE integration
+        sdeint_kwargs = {"method": method}
+        if dt_min is not None:
+            sdeint_kwargs["dt_min"] = dt_min
+        
+        trajectory = torchsde.sdeint(
+            self.sde_func,
+            y0,
+            ts,
+            **sdeint_kwargs
+        )
+        # Shape: (n_steps, batch, 2*n_rois)
+        # Extract real part (first n_rois dimensions)
+        traj_real = trajectory[:, :, :self.n_rois]
+        traj_imag = trajectory[:, :, self.n_rois:]
+        
+        if return_complex:
+            result = torch.complex(traj_real, traj_imag)
+        else:
+            result = traj_real
+        
+        # Permute: (n_steps, batch, n_rois) -> (batch, n_rois, n_steps)
+        result = result.permute(1, 2, 0)
         
         return result
     
@@ -232,7 +362,9 @@ class CoupledHopfModel(BaseNeuroscienceModel):
         tr: float = 0.72,
         dt: float = 0.001,
         batch_size: int = 1,
-        initial_transient: int = 1000
+        initial_transient: int = 1000,
+        method: str = "euler",
+        dt_min: Optional[float] = None
     ) -> torch.Tensor:
         """
         Generate BOLD-like signal.
@@ -243,6 +375,8 @@ class CoupledHopfModel(BaseNeuroscienceModel):
             dt: Integration time step
             batch_size: Number of simulations
             initial_transient: Steps to discard
+            method: SDE solver method
+            dt_min: Minimum time step for adaptive solvers
             
         Returns:
             BOLD signal of shape (batch, n_rois, n_timepoints)
@@ -257,7 +391,9 @@ class CoupledHopfModel(BaseNeuroscienceModel):
             n_steps=total_steps,
             dt=dt,
             batch_size=batch_size,
-            return_complex=False
+            return_complex=False,
+            method=method,
+            dt_min=dt_min
         )
         
         # Remove transient
