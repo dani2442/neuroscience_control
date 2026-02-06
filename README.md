@@ -225,15 +225,32 @@ $$
 
 ## Training
 
-### Hopf Model: Grid Search
+### Hopf Model: Grid Search / Backpropagation
 
-The Coupled Hopf model is typically trained via grid search over the parameter space $(G, a)$:
+The Coupled Hopf model now supports both:
+- `grid`: grid search over $(G, a)$
+- `backprop`: gradient-based training with `Trainer`
+- `both`: run both strategies in one command
 
 ```bash
 python examples/train_hopf.py \
     --data-path data/ts_young/ts_young_TR0.72.mat \
+    --training-mode grid \
     --experiment-name hopf_experiment \
     --wandb-project neuroscience-control
+```
+
+Backpropagation mode:
+
+```bash
+python examples/train_hopf.py \
+    --training-mode backprop \
+    --n-epochs 50 \
+    --lr 1e-3 \
+    --loss-fn fc_fcd_meta \
+    --loss-weight-fc 1.0 \
+    --loss-weight-fcd 1.0 \
+    --loss-weight-metastability 1.0
 ```
 
 ### Neural SDE: Backpropagation
@@ -246,6 +263,7 @@ python examples/train_nsde.py \
     --n-epochs 50 \
     --lr 1e-3 \
     --hidden-dim 32 \
+    --loss-fn fc_fcd_meta \
     --experiment-name nsde_experiment
 ```
 
@@ -260,6 +278,10 @@ python examples/train_nsde.py \
 | `--fcd-step-sec` | FCD window step (seconds) | 2.0 |
 | `--no-fcd` | Disable FCD metrics | False |
 | `--no-metastability` | Disable metastability metrics | False |
+| `--loss-fn` | Loss (`mse`, `correlation`, `combined`, `fc_fcd_meta`) | `combined` |
+| `--loss-weight-fc` | FC term weight (backprop) | 1.0 |
+| `--loss-weight-fcd` | FCD term weight (backprop) | 1.0 |
+| `--loss-weight-metastability` | Metastability term weight (backprop) | 1.0 |
 
 ---
 
@@ -269,7 +291,7 @@ python examples/train_nsde.py \
 
 | Script | Description |
 |--------|-------------|
-| [`examples/train_hopf.py`](examples/train_hopf.py) | Train Coupled Hopf via grid search |
+| [`examples/train_hopf.py`](examples/train_hopf.py) | Train Coupled Hopf via grid search and/or backprop |
 | [`examples/train_nsde.py`](examples/train_nsde.py) | Train Neural SDE via backpropagation |
 | [`examples/compare_models.py`](examples/compare_models.py) | Compare trained models |
 

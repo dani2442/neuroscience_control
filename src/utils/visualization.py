@@ -344,6 +344,74 @@ def plot_timeseries(
     return fig
 
 
+def plot_realizations(
+    timeseries: torch.Tensor,
+    roi_index: int = 0,
+    n_realizations: int = 6,
+    max_timepoints: int = 200,
+    title: str = "Sample Realizations",
+    save_path: Optional[str] = None,
+    figsize: Tuple[int, int] = (12, 8),
+    use_pdf: bool = True,
+    default_name: Optional[str] = None
+) -> plt.Figure:
+    """
+    Plot individual stochastic realizations for one ROI.
+
+    Args:
+        timeseries: Tensor of shape (batch, n_rois, n_timepoints) or (n_rois, n_timepoints)
+        roi_index: ROI to visualize across realizations
+        n_realizations: Maximum number of trajectories to show
+        max_timepoints: Maximum number of timepoints to display
+        title: Figure title
+        save_path: Explicit save path
+        figsize: Figure size
+        use_pdf: Whether to save PDF
+        default_name: Default filename when save_path is None
+    """
+    if timeseries.dim() == 2:
+        timeseries = timeseries.unsqueeze(0)
+    if timeseries.dim() != 3:
+        raise ValueError("timeseries must be (batch, n_rois, n_timepoints) or (n_rois, n_timepoints)")
+
+    ts_np = timeseries.detach().cpu().numpy()
+    n_paths = min(n_realizations, ts_np.shape[0])
+    n_time = min(max_timepoints, ts_np.shape[2])
+
+    n_cols = min(3, n_paths)
+    n_rows = int(np.ceil(n_paths / n_cols))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize, sharex=True, sharey=True)
+    axes = np.array(axes).reshape(-1)
+
+    time = np.arange(n_time)
+    for idx in range(n_paths):
+        axes[idx].plot(time, ts_np[idx, roi_index, :n_time], linewidth=1.0, color="#1f77b4")
+        axes[idx].set_title(f"Realization {idx + 1}")
+        axes[idx].grid(True, alpha=0.3)
+
+    for idx in range(n_paths, len(axes)):
+        axes[idx].axis("off")
+
+    axes[0].set_ylabel(f"ROI {roi_index}")
+    for ax in axes[:n_paths]:
+        ax.set_xlabel("Time")
+
+    plt.suptitle(f"{title} (ROI {roi_index})", fontsize=14)
+    plt.tight_layout()
+
+    if save_path is not None or default_name is not None:
+        final_path = _get_save_path(
+            save_path,
+            default_name or "realizations",
+            use_pdf=use_pdf
+        )
+        final_path.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(final_path, dpi=300, bbox_inches='tight', format='pdf' if use_pdf else 'png')
+        print(f"Saved figure to {final_path}")
+
+    return fig
+
+
 def plot_power_spectrum(
     timeseries: torch.Tensor,
     roi_indices: Optional[List[int]] = None,

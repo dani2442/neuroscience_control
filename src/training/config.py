@@ -49,6 +49,9 @@ class TrainingConfig:
     n_epochs: int = 50
     lr: float = 1e-3
     loss_fn: str = "combined"
+    loss_weight_fc: float = 1.0
+    loss_weight_fcd: float = 1.0
+    loss_weight_metastability: float = 1.0
     early_stopping_patience: int = 15
     n_steps: int = 100
     dt: float = 0.1

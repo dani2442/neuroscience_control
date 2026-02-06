@@ -29,6 +29,7 @@ from src.metrics import compute_all_fc_metrics, compute_dynamics_fit_metrics
 from src.training import Trainer, FineTuner, NeuralSDEConfig
 from src.utils import (
     plot_fc_comparison,
+    plot_realizations,
     plot_timeseries,
     plot_training_curves,
     FIGURES_DIR
@@ -263,6 +264,19 @@ def save_model_and_figures(sde_model, metrics_store, test_metrics,
     if cfg.use_wandb and wandb.run is not None:
         wandb.log({"figures/timeseries": wandb.Image(fig)})
     plt.close()
+
+    # Explicit realizations view
+    fig = plot_realizations(
+        sde_ts,
+        roi_index=0,
+        n_realizations=min(6, sde_ts.shape[0]),
+        title="Neural SDE - Sample Realizations",
+        default_name="nsde_realizations",
+        use_pdf=True
+    )
+    if cfg.use_wandb and wandb.run is not None:
+        wandb.log({"figures/realizations": wandb.Image(fig)})
+    plt.close()
     
     # Training curves
     fig = plot_training_curves(
@@ -289,8 +303,23 @@ def main():
     parser.add_argument("--no-wandb", action="store_true", help="Disable wandb logging")
     parser.add_argument("--device", type=str, default="auto", help="Device (auto, cuda, cpu)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
-    parser.add_argument("--n-epochs", type=int, default=50, help="Number of training epochs")
+    parser.add_argument("--n-epochs", type=int, default=300, help="Number of training epochs")
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
+    parser.add_argument(
+        "--loss-fn",
+        type=str,
+        default="combined",
+        choices=["mse", "correlation", "combined", "fc_fcd_meta"],
+        help="Training objective"
+    )
+    parser.add_argument("--loss-weight-fc", type=float, default=1.0, help="Weight for FC loss term")
+    parser.add_argument("--loss-weight-fcd", type=float, default=1.0, help="Weight for FCD loss term")
+    parser.add_argument(
+        "--loss-weight-metastability",
+        type=float,
+        default=1.0,
+        help="Weight for metastability loss term"
+    )
     parser.add_argument("--hidden-dim", type=int, default=32, help="Hidden dimension")
     parser.add_argument("--batch-size", type=int, default=16, help="Batch size")
     parser.add_argument("--fine-tune", action="store_true", help="Enable fine-tuning after training")
@@ -319,6 +348,10 @@ def main():
         dt=0.1,
         n_epochs=args.n_epochs,
         lr=args.lr,
+        loss_fn=args.loss_fn,
+        loss_weight_fc=args.loss_weight_fc,
+        loss_weight_fcd=args.loss_weight_fcd,
+        loss_weight_metastability=args.loss_weight_metastability,
         hidden_dim=args.hidden_dim,
         batch_size=args.batch_size,
         fine_tune=args.fine_tune,

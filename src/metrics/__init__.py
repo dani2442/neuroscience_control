@@ -11,7 +11,12 @@ from .timeseries_metrics import (
     temporal_correlation,
     compute_all_timeseries_metrics
 )
-from .dynamics_metrics import compute_dynamics_fit_metrics
+from .dynamics_metrics import (
+    compute_dynamics_fit_metrics,
+    fcd_mse_loss,
+    metastability_l1_loss,
+    metastability_value,
+)
 from .metrics_store import MetricsStore
 
 __all__ = [
@@ -23,5 +28,8 @@ __all__ = [
     "temporal_correlation",
     "compute_all_timeseries_metrics",
     "compute_dynamics_fit_metrics",
+    "fcd_mse_loss",
+    "metastability_l1_loss",
+    "metastability_value",
     "MetricsStore",
 ]

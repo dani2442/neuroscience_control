@@ -1,6 +1,6 @@
-"""Dynamics metrics for timeseries comparisons (FCD, metastability)."""
+"""Dynamics metrics and differentiable dynamics losses."""
 
-from typing import Dict, Optional, Tuple, List
+from typing import Dict, Optional, List
 
 import torch
 
@@ -105,9 +105,9 @@ def upper_tri_vec(M: torch.Tensor, k: int = 1) -> torch.Tensor:
     return M[iu[0], iu[1]]
 
 
-def fcd_distribution(x: torch.Tensor, win_len: int, win_step: int) -> torch.Tensor:
+def _windowed_fc_vectors(x: torch.Tensor, win_len: int, win_step: int) -> Optional[torch.Tensor]:
     """
-    Windowed FC vectors -> FCD matrix (corr among vectors) -> upper-triangle distribution.
+    Compute upper-triangle FC vectors for sliding windows.
 
     Args:
         x: (T, N)
@@ -120,17 +120,40 @@ def fcd_distribution(x: torch.Tensor, win_len: int, win_step: int) -> torch.Tens
         vecs.append(upper_tri_vec(FCw, k=1))
 
     if not vecs:
-        return torch.empty(0, device=x.device, dtype=x.dtype)
+        return None
 
     V = torch.stack(vecs, dim=0)  # (W, M)
     if V.shape[1] <= 1:
-        return torch.empty(0, device=x.device, dtype=x.dtype)
+        return None
+    return zscore(V, dim=0)
 
-    V = zscore(V, dim=0)
-    Mfeat = V.shape[1]
-    if Mfeat <= 1:
+
+def fcd_matrix(x: torch.Tensor, win_len: int, win_step: int) -> Optional[torch.Tensor]:
+    """
+    Windowed FC vectors -> FCD matrix (corr among vectors).
+
+    Args:
+        x: (T, N)
+    """
+    V = _windowed_fc_vectors(x, win_len, win_step)
+    if V is None:
+        return None
+
+    n_features = V.shape[1]
+    denom = max(n_features - 1, 1)
+    return (V @ V.transpose(0, 1)) / denom
+
+
+def fcd_distribution(x: torch.Tensor, win_len: int, win_step: int) -> torch.Tensor:
+    """
+    Windowed FC vectors -> FCD matrix (corr among vectors) -> upper-triangle distribution.
+
+    Args:
+        x: (T, N)
+    """
+    FCD = fcd_matrix(x, win_len, win_step)
+    if FCD is None:
         return torch.empty(0, device=x.device, dtype=x.dtype)
-    FCD = (V @ V.transpose(0, 1)) / (Mfeat - 1)
     return upper_tri_vec(FCD, k=1)
 
 
@@ -176,6 +199,94 @@ def _ensure_batch(ts: torch.Tensor) -> torch.Tensor:
     if ts.ndim != 3:
         raise ValueError("Timeseries must be (batch, n_rois, n_timepoints) or (n_rois, n_timepoints)")
     return ts
+
+
+def metastability_value(
+    ts: torch.Tensor,
+    tr: float = 0.72,
+    f_lo: float = 0.04,
+    f_hi: float = 0.07
+) -> torch.Tensor:
+    """
+    Compute batch-mean metastability (differentiable).
+
+    Args:
+        ts: (batch, n_rois, n_timepoints) or (n_rois, n_timepoints)
+    """
+    ts = _ensure_batch(ts)
+    vals = []
+    for b in range(ts.shape[0]):
+        x = _preprocess_timeseries(ts[b].transpose(0, 1), tr, f_lo, f_hi)
+        phases = torch.angle(analytic_signal(x))
+        vals.append(kuramoto_metastability(phases))
+    return torch.stack(vals).mean()
+
+
+def metastability_l1_loss(
+    ts_pred: torch.Tensor,
+    ts_target: torch.Tensor,
+    tr: float = 0.72,
+    f_lo: float = 0.04,
+    f_hi: float = 0.07
+) -> torch.Tensor:
+    """
+    Differentiable L1 loss on metastability.
+    """
+    meta_pred = metastability_value(ts_pred, tr=tr, f_lo=f_lo, f_hi=f_hi)
+    meta_targ = metastability_value(ts_target, tr=tr, f_lo=f_lo, f_hi=f_hi)
+    return torch.abs(meta_pred - meta_targ)
+
+
+def fcd_mse_loss(
+    ts_pred: torch.Tensor,
+    ts_target: torch.Tensor,
+    tr: float = 0.72,
+    f_lo: float = 0.04,
+    f_hi: float = 0.07,
+    fcd_win_sec: float = 60.0,
+    fcd_step_sec: float = 2.0
+) -> torch.Tensor:
+    """
+    Differentiable FCD loss using MSE between FCD matrices.
+    """
+    ts_pred = _ensure_batch(ts_pred)
+    ts_target = _ensure_batch(ts_target)
+
+    batch = min(ts_pred.shape[0], ts_target.shape[0])
+    if batch == 0:
+        raise ValueError("Timeseries batch dimension must be > 0.")
+
+    ts_pred = ts_pred[:batch]
+    ts_target = ts_target[:batch]
+
+    win_len = int(round(fcd_win_sec / tr))
+    win_step = int(round(fcd_step_sec / tr))
+
+    device = ts_pred.device
+    dtype = ts_pred.dtype
+
+    if win_len < 10 or win_step <= 0:
+        return torch.zeros((), device=device, dtype=dtype)
+
+    losses = []
+    for b in range(batch):
+        pred = _preprocess_timeseries(ts_pred[b].transpose(0, 1), tr, f_lo, f_hi)
+        targ = _preprocess_timeseries(ts_target[b].transpose(0, 1), tr, f_lo, f_hi)
+
+        pred_fcd = fcd_matrix(pred, win_len, win_step)
+        targ_fcd = fcd_matrix(targ, win_len, win_step)
+        if pred_fcd is None or targ_fcd is None:
+            continue
+
+        n = min(pred_fcd.shape[0], targ_fcd.shape[0])
+        if n <= 1:
+            continue
+        losses.append(((pred_fcd[:n, :n] - targ_fcd[:n, :n]) ** 2).mean())
+
+    if not losses:
+        return torch.zeros((), device=device, dtype=dtype)
+
+    return torch.stack(losses).mean()
 
 
 def compute_dynamics_fit_metrics(

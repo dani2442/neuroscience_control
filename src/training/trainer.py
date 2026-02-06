@@ -5,7 +5,7 @@ import math
 import os
 import time
 from pathlib import Path
-from typing import Dict, Optional, Callable
+from typing import Dict, Optional
 
 import torch
 from torch.utils.data import DataLoader
@@ -18,7 +18,9 @@ from ..metrics import (
     fc_mse,
     compute_all_fc_metrics,
     compute_all_timeseries_metrics,
-    compute_dynamics_fit_metrics
+    compute_dynamics_fit_metrics,
+    fcd_mse_loss,
+    metastability_l1_loss
 )
 from ..metrics.metrics_store import MetricsStore
 from .config import TrainingConfig
@@ -26,7 +28,8 @@ from .config import TrainingConfig
 FC_METRICS = ("loss", "fc_correlation", "fc_mse", "fc_upper_corr")
 TS_METRICS = ("power_spectrum_distance", "temporal_correlation", "autocorr_distance")
 DYN_METRICS = ("fcd_ks", "metastability_diff")
-ALL_METRICS = FC_METRICS + TS_METRICS + DYN_METRICS
+LOSS_COMPONENT_METRICS = ("loss_fc", "loss_fcd", "loss_metastability")
+ALL_METRICS = FC_METRICS + TS_METRICS + DYN_METRICS + LOSS_COMPONENT_METRICS
 WANDB_EPOCH_METRICS = ALL_METRICS + ("metrics_sampled_batches",)
 
 
@@ -84,7 +87,7 @@ class Trainer:
             model: Model to train
             optimizer: Optional optimizer (Adam by default)
             lr: Learning rate
-            loss_fn: Loss function ("mse", "correlation", or "combined")
+            loss_fn: Loss function ("mse", "correlation", "combined", "fc_fcd_meta")
             device: Device to train on
             checkpoint_dir: Directory for checkpoints
             experiment_name: Name for experiment
@@ -98,6 +101,11 @@ class Trainer:
         self.cfg = cfg
         self.use_wandb = use_wandb
         self.metrics_sample_batches = cfg.metrics_sample_batches if cfg is not None else 1
+        self.loss_weight_fc = cfg.loss_weight_fc if cfg is not None else 1.0
+        self.loss_weight_fcd = cfg.loss_weight_fcd if cfg is not None else 1.0
+        self.loss_weight_metastability = (
+            cfg.loss_weight_metastability if cfg is not None else 1.0
+        )
         
         # Set up optimizer
         if optimizer is None:
@@ -105,8 +113,8 @@ class Trainer:
         else:
             self.optimizer = optimizer
         
-        # Set up loss function
-        self.loss_fn = self._get_loss_fn(loss_fn)
+        # Validate configured loss function
+        self._validate_loss_fn(loss_fn)
         
         # Checkpointing
         self.checkpoint_dir = Path(checkpoint_dir)
@@ -208,22 +216,106 @@ class Trainer:
         if self.wandb_run is not None:
             wandb.log({name: wandb.Image(fig)}, step=step)
     
-    def _get_loss_fn(self, loss_fn: str) -> Callable:
-        """Get loss function by name."""
-        if loss_fn == "mse":
-            return lambda pred, target: fc_mse(pred, target)
-        elif loss_fn == "correlation":
-            return lambda pred, target: 1 - fc_correlation(pred, target)
-        elif loss_fn == "combined":
-            return lambda pred, target: (
-                fc_mse(pred, target) + 0.5 * (1 - fc_correlation(pred, target))
+    def _validate_loss_fn(self, loss_fn: str) -> None:
+        supported = {"mse", "correlation", "combined", "fc_fcd_meta"}
+        if loss_fn not in supported:
+            raise ValueError(
+                f"Unknown loss function: {loss_fn}. "
+                f"Supported losses: {sorted(supported)}"
+            )
+
+    def _zero_tensor(self, like: torch.Tensor) -> torch.Tensor:
+        return torch.zeros((), device=like.device, dtype=like.dtype)
+
+    def _compute_loss(
+        self,
+        fc_pred: torch.Tensor,
+        fc_targets: torch.Tensor,
+        ts_pred: torch.Tensor,
+        ts_target: torch.Tensor
+    ) -> tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        """
+        Compute optimization loss plus named differentiable components.
+        """
+        zero = self._zero_tensor(fc_pred)
+
+        if self.loss_fn_name == "mse":
+            loss = fc_mse(fc_pred, fc_targets)
+            return loss, {
+                "loss_fc": loss,
+                "loss_fcd": zero,
+                "loss_metastability": zero,
+            }
+
+        if self.loss_fn_name == "correlation":
+            loss = 1 - fc_correlation(fc_pred, fc_targets)
+            return loss, {
+                "loss_fc": loss,
+                "loss_fcd": zero,
+                "loss_metastability": zero,
+            }
+
+        if self.loss_fn_name == "combined":
+            mse = fc_mse(fc_pred, fc_targets)
+            corr = 1 - fc_correlation(fc_pred, fc_targets)
+            loss = mse + 0.5 * corr
+            return loss, {
+                "loss_fc": loss,
+                "loss_fcd": zero,
+                "loss_metastability": zero,
+            }
+
+        # Differentiable composite objective:
+        # L = w_fc * L_fc + w_fcd * L_fcd + w_meta * L_meta
+        fc_loss = 1 - fc_correlation(fc_pred, fc_targets)
+        dyn_kwargs = self._dynamics_kwargs()
+
+        if dyn_kwargs.get("compute_fcd", True):
+            fcd_loss = fcd_mse_loss(
+                ts_pred,
+                ts_target,
+                tr=dyn_kwargs["tr"],
+                f_lo=dyn_kwargs["f_lo"],
+                f_hi=dyn_kwargs["f_hi"],
+                fcd_win_sec=dyn_kwargs["fcd_win_sec"],
+                fcd_step_sec=dyn_kwargs["fcd_step_sec"],
             )
         else:
-            raise ValueError(f"Unknown loss function: {loss_fn}")
+            fcd_loss = zero
+
+        if dyn_kwargs.get("compute_metastability", True):
+            meta_loss = metastability_l1_loss(
+                ts_pred,
+                ts_target,
+                tr=dyn_kwargs["tr"],
+                f_lo=dyn_kwargs["f_lo"],
+                f_hi=dyn_kwargs["f_hi"],
+            )
+        else:
+            meta_loss = zero
+
+        loss = (
+            self.loss_weight_fc * fc_loss
+            + self.loss_weight_fcd * fcd_loss
+            + self.loss_weight_metastability * meta_loss
+        )
+        return loss, {
+            "loss_fc": fc_loss,
+            "loss_fcd": fcd_loss,
+            "loss_metastability": meta_loss,
+        }
 
     def _dynamics_kwargs(self) -> Dict[str, float | bool]:
         if self.cfg is None:
-            return {}
+            return {
+                "tr": 0.72,
+                "f_lo": 0.04,
+                "f_hi": 0.07,
+                "fcd_win_sec": 60.0,
+                "fcd_step_sec": 2.0,
+                "compute_fcd": True,
+                "compute_metastability": True
+            }
         return {
             "tr": self.cfg.tr,
             "f_lo": self.cfg.f_lo,
@@ -249,10 +341,13 @@ class Trainer:
         ts_pred: torch.Tensor,
         ts_target: torch.Tensor,
         loss: torch.Tensor,
+        loss_components: Dict[str, torch.Tensor],
         compute_expensive: bool
     ) -> Dict[str, float]:
         metrics = compute_all_fc_metrics(fc_pred, fc_targets)
         metrics["loss"] = float(loss.item())
+        for name, value in loss_components.items():
+            metrics[name] = float(value.item())
 
         if compute_expensive:
             metrics.update(compute_all_timeseries_metrics(ts_pred, ts_target))
@@ -304,15 +399,35 @@ class Trainer:
             if train:
                 self.optimizer.zero_grad()
 
-            simulated = self.model.forward(
-                initial_state=None,
-                n_steps=n_timepoints,
-                dt=dt,
-                batch_size=batch_size
-            )
-
-            fc_pred = self.model.compute_fc(simulated)
-            loss = self.loss_fn(fc_pred, fc_targets)
+            if train:
+                simulated = self.model.forward(
+                    initial_state=None,
+                    n_steps=n_timepoints,
+                    dt=dt,
+                    batch_size=batch_size
+                )
+                fc_pred = self.model.compute_fc(simulated)
+                loss, loss_components = self._compute_loss(
+                    fc_pred,
+                    fc_targets,
+                    simulated,
+                    windows
+                )
+            else:
+                with torch.no_grad():
+                    simulated = self.model.forward(
+                        initial_state=None,
+                        n_steps=n_timepoints,
+                        dt=dt,
+                        batch_size=batch_size
+                    )
+                    fc_pred = self.model.compute_fc(simulated)
+                    loss, loss_components = self._compute_loss(
+                        fc_pred,
+                        fc_targets,
+                        simulated,
+                        windows
+                    )
 
             if train:
                 loss.backward()
@@ -330,6 +445,7 @@ class Trainer:
                     simulated.detach(),
                     windows,
                     loss,
+                    loss_components,
                     compute_expensive
                 )
             accumulator.update(metrics)
@@ -348,6 +464,43 @@ class Trainer:
             metrics["metrics_sampled_batches"] = sampled_batches
 
         return metrics
+
+    def train_epoch(
+        self,
+        train_loader: DataLoader,
+        n_steps: int = 100,
+        dt: float = 0.01,
+        verbose: bool = False
+    ) -> Dict[str, float]:
+        """Train a single epoch (compatibility helper for fine-tuning)."""
+        return self._run_epoch(
+            loader=train_loader,
+            n_steps=n_steps,
+            dt=dt,
+            epoch=0,
+            n_epochs=1,
+            train=True,
+            verbose=verbose
+        )
+
+    @torch.no_grad()
+    def validate(
+        self,
+        val_loader: DataLoader,
+        n_steps: int = 100,
+        dt: float = 0.01,
+        verbose: bool = False
+    ) -> Dict[str, float]:
+        """Evaluate on validation data."""
+        return self._run_epoch(
+            loader=val_loader,
+            n_steps=n_steps,
+            dt=dt,
+            epoch=0,
+            n_epochs=1,
+            train=False,
+            verbose=verbose
+        )
     
     def train(
         self,
@@ -380,6 +533,9 @@ class Trainer:
         self.metrics_store.set_hyperparameters({
             'lr': self.lr,
             'loss_fn': self.loss_fn_name,
+            'loss_weight_fc': self.loss_weight_fc,
+            'loss_weight_fcd': self.loss_weight_fcd,
+            'loss_weight_metastability': self.loss_weight_metastability,
             'n_epochs': n_epochs,
             'n_steps': n_steps,
             'dt': dt,
@@ -488,7 +644,19 @@ class Trainer:
         Returns:
             Test metrics
         """
-        metrics = self.validate(test_loader, n_steps, dt)
+        # Keep test independent from validate() to avoid API compatibility issues.
+        if hasattr(self, "validate") and callable(getattr(self, "validate")):
+            metrics = self.validate(test_loader, n_steps, dt)
+        else:
+            metrics = self._run_epoch(
+                loader=test_loader,
+                n_steps=n_steps,
+                dt=dt,
+                epoch=0,
+                n_epochs=1,
+                train=False,
+                verbose=False
+            )
         self.metrics_store.log_test(metrics)
         
         # Log test metrics to wandb
