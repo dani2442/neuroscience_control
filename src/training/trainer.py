@@ -14,21 +14,23 @@ import wandb
 
 from ..models.base_model import BaseNeuroscienceModel
 from ..metrics import (
-    fc_correlation,
-    fc_mse,
     compute_all_fc_metrics,
     compute_all_timeseries_metrics,
     compute_dynamics_fit_metrics,
-    fcd_mse_loss,
-    metastability_l1_loss
 )
 from ..metrics.metrics_store import MetricsStore
 from .config import TrainingConfig
+from .losses import CompositeLoss, build_loss
 
 FC_METRICS = ("loss", "fc_correlation", "fc_mse", "fc_upper_corr")
 TS_METRICS = ("power_spectrum_distance", "temporal_correlation", "autocorr_distance")
 DYN_METRICS = ("fcd_ks", "metastability_diff")
-LOSS_COMPONENT_METRICS = ("loss_fc", "loss_fcd", "loss_metastability")
+LOSS_COMPONENT_METRICS = (
+    "loss_fc_mse", "loss_fc_corr",
+    "loss_l2",
+    "loss_hilbert_amp", "loss_hilbert_omega",
+    "loss_fcd", "loss_metastability",
+)
 ALL_METRICS = FC_METRICS + TS_METRICS + DYN_METRICS + LOSS_COMPONENT_METRICS
 WANDB_EPOCH_METRICS = ALL_METRICS + ("metrics_sampled_batches",)
 
@@ -101,10 +103,14 @@ class Trainer:
         self.cfg = cfg
         self.use_wandb = use_wandb
         self.metrics_sample_batches = cfg.metrics_sample_batches if cfg is not None else 1
-        self.loss_weight_fc = cfg.loss_weight_fc if cfg is not None else 1.0
-        self.loss_weight_fcd = cfg.loss_weight_fcd if cfg is not None else 1.0
-        self.loss_weight_metastability = (
-            cfg.loss_weight_metastability if cfg is not None else 1.0
+
+        # Build composite loss from config weights
+        dyn_kwargs = self._dynamics_kwargs_from_cfg(cfg)
+        weight_overrides = self._weight_overrides_from_cfg(cfg)
+        self.loss_obj = build_loss(
+            name=loss_fn,
+            weight_overrides=weight_overrides,
+            dyn_kwargs=dyn_kwargs,
         )
         
         # Set up optimizer
@@ -113,8 +119,7 @@ class Trainer:
         else:
             self.optimizer = optimizer
         
-        # Validate configured loss function
-        self._validate_loss_fn(loss_fn)
+        # (validation happens inside build_loss)
         
         # Checkpointing
         self.checkpoint_dir = Path(checkpoint_dir)
@@ -216,115 +221,60 @@ class Trainer:
         if self.wandb_run is not None:
             wandb.log({name: wandb.Image(fig)}, step=step)
     
-    def _validate_loss_fn(self, loss_fn: str) -> None:
-        supported = {"mse", "correlation", "combined", "fc_fcd_meta"}
-        if loss_fn not in supported:
-            raise ValueError(
-                f"Unknown loss function: {loss_fn}. "
-                f"Supported losses: {sorted(supported)}"
-            )
+    # -- static helpers for building CompositeLoss from config -----------
 
-    def _zero_tensor(self, like: torch.Tensor) -> torch.Tensor:
-        return torch.zeros((), device=like.device, dtype=like.dtype)
+    @staticmethod
+    def _dynamics_kwargs_from_cfg(cfg: Optional[TrainingConfig]) -> Dict[str, float]:
+        """Extract dynamics parameters forwarded to loss terms."""
+        if cfg is None:
+            return {"tr": 0.72, "f_lo": 0.04, "f_hi": 0.07,
+                    "fcd_win_sec": 60.0, "fcd_step_sec": 2.0}
+        return {
+            "tr": cfg.tr, "f_lo": cfg.f_lo, "f_hi": cfg.f_hi,
+            "fcd_win_sec": cfg.fcd_win_sec, "fcd_step_sec": cfg.fcd_step_sec,
+        }
+
+    @staticmethod
+    def _weight_overrides_from_cfg(cfg: Optional[TrainingConfig]) -> Dict[str, float]:
+        """Collect per-term weight overrides from config."""
+        if cfg is None:
+            return {}
+        overrides: Dict[str, float] = {}
+        _MAP = {
+            "loss_weight_fc": "fc_corr",
+            "loss_weight_fc_mse": "fc_mse",
+            "loss_weight_l2": "l2",
+            "loss_weight_hilbert_amp": "hilbert_amp",
+            "loss_weight_hilbert_omega": "hilbert_omega",
+            "loss_weight_fcd": "fcd",
+            "loss_weight_metastability": "metastability",
+        }
+        for attr, term in _MAP.items():
+            val = getattr(cfg, attr, None)
+            if val is not None:
+                overrides[term] = val
+        return overrides
+
+    def _dynamics_kwargs(self) -> Dict[str, float]:
+        """Convenience accessor used by metrics computation."""
+        kw = self._dynamics_kwargs_from_cfg(self.cfg)
+        if self.cfg is not None:
+            kw["compute_fcd"] = self.cfg.compute_fcd_metrics
+            kw["compute_metastability"] = self.cfg.compute_metastability_metrics
+        else:
+            kw["compute_fcd"] = True
+            kw["compute_metastability"] = True
+        return kw
 
     def _compute_loss(
         self,
         fc_pred: torch.Tensor,
         fc_targets: torch.Tensor,
         ts_pred: torch.Tensor,
-        ts_target: torch.Tensor
+        ts_target: torch.Tensor,
     ) -> tuple[torch.Tensor, Dict[str, torch.Tensor]]:
-        """
-        Compute optimization loss plus named differentiable components.
-        """
-        zero = self._zero_tensor(fc_pred)
-
-        if self.loss_fn_name == "mse":
-            loss = fc_mse(fc_pred, fc_targets)
-            return loss, {
-                "loss_fc": loss,
-                "loss_fcd": zero,
-                "loss_metastability": zero,
-            }
-
-        if self.loss_fn_name == "correlation":
-            loss = 1 - fc_correlation(fc_pred, fc_targets)
-            return loss, {
-                "loss_fc": loss,
-                "loss_fcd": zero,
-                "loss_metastability": zero,
-            }
-
-        if self.loss_fn_name == "combined":
-            mse = fc_mse(fc_pred, fc_targets)
-            corr = 1 - fc_correlation(fc_pred, fc_targets)
-            loss = mse + 0.5 * corr
-            return loss, {
-                "loss_fc": loss,
-                "loss_fcd": zero,
-                "loss_metastability": zero,
-            }
-
-        # Differentiable composite objective:
-        # L = w_fc * L_fc + w_fcd * L_fcd + w_meta * L_meta
-        fc_loss = 1 - fc_correlation(fc_pred, fc_targets)
-        dyn_kwargs = self._dynamics_kwargs()
-
-        if dyn_kwargs.get("compute_fcd", True):
-            fcd_loss = fcd_mse_loss(
-                ts_pred,
-                ts_target,
-                tr=dyn_kwargs["tr"],
-                f_lo=dyn_kwargs["f_lo"],
-                f_hi=dyn_kwargs["f_hi"],
-                fcd_win_sec=dyn_kwargs["fcd_win_sec"],
-                fcd_step_sec=dyn_kwargs["fcd_step_sec"],
-            )
-        else:
-            fcd_loss = zero
-
-        if dyn_kwargs.get("compute_metastability", True):
-            meta_loss = metastability_l1_loss(
-                ts_pred,
-                ts_target,
-                tr=dyn_kwargs["tr"],
-                f_lo=dyn_kwargs["f_lo"],
-                f_hi=dyn_kwargs["f_hi"],
-            )
-        else:
-            meta_loss = zero
-
-        loss = (
-            self.loss_weight_fc * fc_loss
-            + self.loss_weight_fcd * fcd_loss
-            + self.loss_weight_metastability * meta_loss
-        )
-        return loss, {
-            "loss_fc": fc_loss,
-            "loss_fcd": fcd_loss,
-            "loss_metastability": meta_loss,
-        }
-
-    def _dynamics_kwargs(self) -> Dict[str, float | bool]:
-        if self.cfg is None:
-            return {
-                "tr": 0.72,
-                "f_lo": 0.04,
-                "f_hi": 0.07,
-                "fcd_win_sec": 60.0,
-                "fcd_step_sec": 2.0,
-                "compute_fcd": True,
-                "compute_metastability": True
-            }
-        return {
-            "tr": self.cfg.tr,
-            "f_lo": self.cfg.f_lo,
-            "f_hi": self.cfg.f_hi,
-            "fcd_win_sec": self.cfg.fcd_win_sec,
-            "fcd_step_sec": self.cfg.fcd_step_sec,
-            "compute_fcd": self.cfg.compute_fcd_metrics,
-            "compute_metastability": self.cfg.compute_metastability_metrics
-        }
+        """Delegate to the :class:`CompositeLoss` object."""
+        return self.loss_obj(fc_pred, fc_targets, ts_pred, ts_target)
 
     def _should_compute_expensive(self, batch_idx: int) -> bool:
         limit = self.metrics_sample_batches
@@ -396,12 +346,16 @@ class Trainer:
             batch_size = windows.shape[0]
             n_timepoints = windows.shape[2]
 
+            # Extract initial condition from target windows (first time-step)
+            # windows shape: (batch, n_rois, n_timepoints)
+            initial_state = windows[:, :, 0]  # (batch, n_rois)
+
             if train:
                 self.optimizer.zero_grad()
 
             if train:
                 simulated = self.model.forward(
-                    initial_state=None,
+                    initial_state=initial_state,
                     n_steps=n_timepoints,
                     dt=dt,
                     batch_size=batch_size
@@ -416,7 +370,7 @@ class Trainer:
             else:
                 with torch.no_grad():
                     simulated = self.model.forward(
-                        initial_state=None,
+                        initial_state=initial_state,
                         n_steps=n_timepoints,
                         dt=dt,
                         batch_size=batch_size
@@ -533,9 +487,7 @@ class Trainer:
         self.metrics_store.set_hyperparameters({
             'lr': self.lr,
             'loss_fn': self.loss_fn_name,
-            'loss_weight_fc': self.loss_weight_fc,
-            'loss_weight_fcd': self.loss_weight_fcd,
-            'loss_weight_metastability': self.loss_weight_metastability,
+            'loss_weights': self.loss_obj.weights,
             'n_epochs': n_epochs,
             'n_steps': n_steps,
             'dt': dt,

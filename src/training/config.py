@@ -50,6 +50,10 @@ class TrainingConfig:
     lr: float = 1e-3
     loss_fn: str = "combined"
     loss_weight_fc: float = 1.0
+    loss_weight_fc_mse: float = 0.0
+    loss_weight_l2: float = 0.0
+    loss_weight_hilbert_amp: float = 0.0
+    loss_weight_hilbert_omega: float = 0.0
     loss_weight_fcd: float = 1.0
     loss_weight_metastability: float = 1.0
     early_stopping_patience: int = 15

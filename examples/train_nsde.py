@@ -309,10 +309,14 @@ def main():
         "--loss-fn",
         type=str,
         default="combined",
-        choices=["mse", "correlation", "combined", "fc_fcd_meta"],
-        help="Training objective"
+        choices=["mse", "correlation", "combined", "fc_fcd_meta", "full", "custom"],
+        help="Training objective (preset name)"
     )
-    parser.add_argument("--loss-weight-fc", type=float, default=1.0, help="Weight for FC loss term")
+    parser.add_argument("--loss-weight-fc", type=float, default=1.0, help="Weight for FC correlation loss")
+    parser.add_argument("--loss-weight-fc-mse", type=float, default=0.0, help="Weight for FC MSE loss")
+    parser.add_argument("--loss-weight-l2", type=float, default=1.0, help="Weight for L2 timeseries loss")
+    parser.add_argument("--loss-weight-hilbert-amp", type=float, default=1.0, help="Weight for Hilbert amplitude loss")
+    parser.add_argument("--loss-weight-hilbert-omega", type=float, default=1.0, help="Weight for Hilbert omega loss")
     parser.add_argument("--loss-weight-fcd", type=float, default=1.0, help="Weight for FCD loss term")
     parser.add_argument(
         "--loss-weight-metastability",
@@ -350,6 +354,10 @@ def main():
         lr=args.lr,
         loss_fn=args.loss_fn,
         loss_weight_fc=args.loss_weight_fc,
+        loss_weight_fc_mse=args.loss_weight_fc_mse,
+        loss_weight_l2=args.loss_weight_l2,
+        loss_weight_hilbert_amp=args.loss_weight_hilbert_amp,
+        loss_weight_hilbert_omega=args.loss_weight_hilbert_omega,
         loss_weight_fcd=args.loss_weight_fcd,
         loss_weight_metastability=args.loss_weight_metastability,
         hidden_dim=args.hidden_dim,
