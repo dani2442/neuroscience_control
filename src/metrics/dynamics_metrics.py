@@ -264,7 +264,14 @@ def fcd_mse_loss(
     fcd_step_sec: float = 2.0
 ) -> torch.Tensor:
     """
-    Differentiable FCD loss using MSE between FCD matrices.
+    Differentiable training surrogate for FCD using MSE between FCD matrices.
+
+    Notes:
+        - This is intentionally different from the evaluation metric ``fcd_ks``,
+          which compares FCD value distributions via KS distance.
+        - If the chosen window configuration cannot produce a valid FCD matrix
+          (e.g., too-short series, invalid step), this returns ``0`` so training
+          can proceed without NaNs.
     """
     ts_pred = _ensure_batch(ts_pred)
     ts_target = _ensure_batch(ts_target)
@@ -326,6 +333,12 @@ def compute_dynamics_fit_metrics(
 
     Returns:
         {"fcd_ks": float, "metastability_diff": float}
+
+    Notes:
+        - ``fcd_ks`` is an evaluation metric (KS distance on FCD distributions),
+          not the differentiable training loss.
+        - ``fcd_ks`` is reported as ``NaN`` when FCD windowing is not feasible for
+          the provided series length / window parameters.
     """
     ts_pred = _ensure_batch(ts_pred)
     ts_target = _ensure_batch(ts_target)
@@ -347,6 +360,8 @@ def compute_dynamics_fit_metrics(
 
     fcd_ks = float("nan")
     if compute_fcd:
+        # Keep NaN when FCD cannot be computed with this window config so callers
+        # can distinguish "disabled/unavailable" from a valid numeric distance.
         if win_len >= 10 and (n_timepoints - win_len) > 10 and win_step > 0:
             pred_dists: List[torch.Tensor] = []
             targ_dists: List[torch.Tensor] = []

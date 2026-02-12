@@ -190,7 +190,13 @@ $$
 \text{FC}_{ij} = \frac{\text{Cov}_{ij}}{\text{SD}_i \cdot \text{SD}_j}
 $$
 
-**Loss**: $\mathcal{L}_{\text{FC}} = 1 - \text{corr}(v(\tilde{x}), v(\tilde{s}))$ where $v(\cdot)$ extracts upper-triangular elements.
+**Training terms**:
+- `loss_fc_corr = 1 - corr(v(FC_pred), v(FC_target))`
+- `loss_fc_mse = MSE(v(FC_pred), v(FC_target))`
+
+**Evaluation metrics**:
+- `fc_correlation`
+- `fc_mse`
 
 ### 2. Functional Connectivity Dynamics (FCD)
 
@@ -200,7 +206,13 @@ Captures how FC evolves over time using sliding windows:
 2. Build FCD matrix: correlation between windowed FC patterns
 3. Extract distribution of FCD values
 
-**Loss**: Kolmogorov-Smirnov distance between empirical and simulated FCD distributions.
+**Training term**:
+- `loss_fcd`: differentiable surrogate using MSE between FCD matrices (`fcd_mse_loss`).
+
+**Evaluation metric**:
+- `fcd_ks`: Kolmogorov-Smirnov distance between empirical and simulated FCD value distributions.
+
+`fcd_ks` can be `NaN` when FCD windowing is not feasible for the current `--tr`, `--fcd-win-sec`, `--fcd-step-sec`, and time-series length (for example, short trajectories).
 
 ### 3. Metastability
 
@@ -214,13 +226,33 @@ $$
 \text{Metastability} = \text{std}_t(R(t))
 $$
 
-**Loss**: $\mathcal{L}_{\text{Meta}} = |\text{Meta}(\tilde{x}) - \text{Meta}(\tilde{s})|$
+**Training term**:
+- `loss_metastability = |Meta(pred) - Meta(target)|`
+
+**Evaluation metric**:
+- `metastability_diff`
 
 ### Total Objective
 
 $$
 \mathcal{L}(G, \sigma, a) = w_{\text{FC}} \cdot \mathcal{L}_{\text{FC}} + w_{\text{FCD}} \cdot \mathcal{L}_{\text{FCD}} + w_{\text{Meta}} \cdot \mathcal{L}_{\text{Meta}}
 $$
+
+For backpropagation, `--loss-fn fc_fcd_meta` uses:
+- `loss_fc_corr` (FC term)
+- `loss_fcd` (MSE surrogate, not KS)
+- `loss_metastability`
+
+For Hopf grid search (`examples/train_hopf.py`), model selection optimizes FC correlation only; FCD/Metastability are evaluated post-hoc on the selected model.
+
+### Metric Usage by Script
+
+| Script | Training / selection objective | Reported metrics |
+|--------|--------------------------------|------------------|
+| [`examples/train_hopf.py`](examples/train_hopf.py) | Grid search by `fc_correlation_mean` | `fc_correlation`, `fc_mse`, `fcd_ks`, `metastability_diff` |
+| [`examples/train_backprop.py`](examples/train_backprop.py) | `--loss-fn` composite (`loss_*` terms) | Epoch/test: FC + timeseries + dynamics metrics; final: `fc_correlation`, `fc_mse`, `fcd_ks`, `metastability_diff` |
+| [`examples/train_nsde_finetune.py`](examples/train_nsde_finetune.py) | Fine-tuning via `Trainer` composite loss | Test/summary include FC + timeseries + dynamics metrics; final: `fc_correlation`, `fc_mse`, `fcd_ks`, `metastability_diff` |
+| [`examples/test.py`](examples/test.py) | No training (checkpoint evaluation) | Loader-based metrics + per-run real-vs-sim: FC + timeseries + dynamics metrics |
 
 ---
 
@@ -356,11 +388,20 @@ neuroscience_control/
 
 ## Preprocessing Pipeline
 
-The framework implements a continuous-time preprocessing pipeline following best practices in fMRI analysis:
+The code path uses three related preprocessing stages:
 
-1. **Bandpass Filtering** (0.01–0.1 Hz) — Isolate neural activity band using zero-phase filtering
-2. **Z-scoring** — Standardize each ROI to zero mean and unit variance
-3. **Intrinsic Frequency Estimation** — Welch's method to estimate dominant oscillation frequency
+1. **Dataset preprocessing (`NeuroscienceDataset`)**
+- Z-score each ROI time series.
+- Optional FFT brick-wall bandpass denoising via `--fourier-denoise` (`--denoise-f-lo`, `--denoise-f-hi`; defaults 0.01–0.1 Hz when enabled).
+- Convert to complex analytic signal via Hilbert transform.
+
+2. **Dynamics-metric preprocessing (`compute_dynamics_fit_metrics`)**
+- Per sample: linear detrend -> FFT bandpass (`--f-lo`, `--f-hi`, defaults 0.04–0.07 Hz) -> z-score.
+- Used before FCD and metastability calculations.
+
+3. **Intrinsic frequency estimation for Hopf (`compute_omega_from_timeseries`)**
+- FFT-based estimation in `[f_lo, f_hi]` (default 0.04–0.07 Hz), using peak-power (default) or weighted mode.
+- Returns angular frequencies (rad/s).
 
 ```python
 from src.dataset import NeuroscienceDataset
@@ -381,14 +422,17 @@ print(f"Mean FC shape: {dataset.fc_mean.shape}")
 
 ## Data Format
 
-The framework expects fMRI timeseries data in `.mat` format with the following structure:
+The loader expects a `.mat` file with these keys:
 
 ```python
 {
-    'ts': np.ndarray,  # Shape: (n_subjects, n_rois, n_timepoints)
-    'SC': np.ndarray   # Optional: (n_rois, n_rois) structural connectivity
+    'timeseries_all': np.ndarray,  # Shape: (n_rois, n_timepoints, n_subjects)
+    'FC_all': np.ndarray,          # Shape: (n_rois, n_rois, n_subjects)
+    'FC_mean': np.ndarray,         # Shape: (n_rois, n_rois)
 }
 ```
+
+`FC_mean` can be precomputed in file or recomputed from `FC_all` when subject subsampling is requested.
 
 ---
 
