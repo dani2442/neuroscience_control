@@ -16,20 +16,14 @@ def create_windowed_loaders(
     cfg: TrainingConfig,
     device: str,
 ) -> tuple[DataLoader, DataLoader, DataLoader, int]:
-    """
-    Build train/val/test data loaders from windowed timeseries.
-
-    Returns:
-        (train_loader, val_loader, test_loader, window_size)
-    """
+    """Build train/val/test data loaders from random-windowed timeseries."""
     window_size = min(cfg.window_size, dataset.n_timepoints // 4)
-    stride = cfg.stride if cfg.stride is not None else max(1, window_size // 2)
 
     train_loader, val_loader, test_loader = create_data_loaders(
         dataset=dataset,
         window_size=window_size,
-        stride=stride,
         batch_size=cfg.batch_size,
+        n_windows_per_epoch=cfg.n_windows_per_epoch,
         train_ratio=cfg.train_ratio,
         val_ratio=cfg.val_ratio,
         seed=cfg.seed,

@@ -281,7 +281,10 @@ class CompositeLoss:
             if name in self._FC_TERMS:
                 value = fn(fc_pred=fc_pred, fc_target=fc_target, **self.dyn_kwargs)
             else:
-                value = fn(ts_pred=ts_pred, ts_target=ts_target, **self.dyn_kwargs)
+                # Convert complex timeseries to real for TS loss terms
+                ts_p = ts_pred.real if torch.is_complex(ts_pred) else ts_pred
+                ts_t = ts_target.real if torch.is_complex(ts_target) else ts_target
+                value = fn(ts_pred=ts_p, ts_target=ts_t, **self.dyn_kwargs)
             components[f"loss_{name}"] = value
             total = total + weight * value
 

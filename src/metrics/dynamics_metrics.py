@@ -201,7 +201,13 @@ def _preprocess_timeseries(x: torch.Tensor, tr: float, f_lo: float, f_hi: float)
     return x
 
 
+def _to_real(ts: torch.Tensor) -> torch.Tensor:
+    """Extract real part if complex, else pass through."""
+    return ts.real if torch.is_complex(ts) else ts
+
+
 def _ensure_batch(ts: torch.Tensor) -> torch.Tensor:
+    ts = _to_real(ts)
     if ts.ndim == 2:
         return ts.unsqueeze(0)
     if ts.ndim != 3:

@@ -22,7 +22,7 @@ from ..metrics.metrics_store import MetricsStore
 from .config import TrainingConfig
 from .losses import CompositeLoss, build_loss
 
-FC_METRICS = ("loss", "fc_correlation", "fc_mse", "fc_upper_corr")
+FC_METRICS = ("loss", "fc_correlation", "fc_mse")
 TS_METRICS = ("power_spectrum_distance", "temporal_correlation", "autocorr_distance")
 DYN_METRICS = ("fcd_ks", "metastability_diff")
 LOSS_COMPONENT_METRICS = (
@@ -300,10 +300,13 @@ class Trainer:
             metrics[name] = float(value.item())
 
         if compute_expensive:
-            metrics.update(compute_all_timeseries_metrics(ts_pred, ts_target))
+            # Use real part for timeseries/dynamics metrics
+            ts_p = ts_pred.real if torch.is_complex(ts_pred) else ts_pred
+            ts_t = ts_target.real if torch.is_complex(ts_target) else ts_target
+            metrics.update(compute_all_timeseries_metrics(ts_p, ts_t))
             dyn_metrics = compute_dynamics_fit_metrics(
-                ts_pred,
-                ts_target,
+                ts_p,
+                ts_t,
                 **self._dynamics_kwargs()
             )
             metrics.update(dyn_metrics)
@@ -361,7 +364,6 @@ class Trainer:
                     initial_state=initial_state,
                     n_steps=n_sim_steps,
                     dt=dt,
-                    batch_size=batch_size
                 )
                 fc_pred = self.model.compute_fc(simulated)
                 loss, loss_components = self._compute_loss(
@@ -376,7 +378,6 @@ class Trainer:
                         initial_state=initial_state,
                         n_steps=n_sim_steps,
                         dt=dt,
-                        batch_size=batch_size
                     )
                     fc_pred = self.model.compute_fc(simulated)
                     loss, loss_components = self._compute_loss(

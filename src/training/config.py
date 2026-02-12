@@ -25,10 +25,15 @@ class TrainingConfig:
     data_path: str = "data/ts_young/ts_young_TR0.72.mat"
     max_subjects: Optional[int] = 5
     window_size: int = 100
-    stride: Optional[int] = None  # Defaults to window_size // 2
+    n_windows_per_epoch: int = 256
     batch_size: int = 16
     train_ratio: float = 0.7
     val_ratio: float = 0.15
+
+    # Fourier denoising
+    fourier_denoise: bool = False
+    denoise_f_lo: float = 0.01
+    denoise_f_hi: float = 0.1
 
     # Dynamics metrics settings
     tr: float = 0.72
@@ -83,15 +88,10 @@ class TrainingConfig:
     
     def __post_init__(self):
         """Post-initialization processing."""
-        # Generate run name if not provided
         if self.run_name is None:
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             self.run_name = f"{self.experiment_name}_{timestamp}"
-        
-        # Set default stride
-        if self.stride is None:
-            self.stride = self.window_size // 2
-        
+
         # Create directories
         Path(self.checkpoint_dir).mkdir(parents=True, exist_ok=True)
         Path(self.results_dir).mkdir(parents=True, exist_ok=True)

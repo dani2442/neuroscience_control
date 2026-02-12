@@ -1,10 +1,9 @@
 """Preprocessing utilities for windowed training."""
 
 import torch
-import torch.fft
-from torch.utils.data import Dataset, DataLoader, random_split
-from typing import Tuple, List, Optional, Union
 import numpy as np
+from torch.utils.data import Dataset, DataLoader
+from typing import Tuple, List, Optional
 
 
 def compute_omega_from_timeseries(
@@ -12,270 +11,121 @@ def compute_omega_from_timeseries(
     dt: float = 0.72,
     f_lo: float = 0.04,
     f_hi: float = 0.07,
-    method: str = "peak"
+    method: str = "peak",
 ) -> torch.Tensor:
-    """
-    Compute intrinsic frequencies (omega) for each ROI from timeseries data.
-    
-    Uses FFT to find the dominant frequency in the specified band for each ROI.
-    
+    """Compute intrinsic angular frequencies per ROI from timeseries via FFT.
+
     Args:
-        timeseries: Tensor of shape (n_subjects, n_rois, n_timepoints) or (n_rois, n_timepoints)
-        dt: Time step (TR) in seconds
-        f_lo: Low frequency cutoff in Hz
-        f_hi: High frequency cutoff in Hz
-        method: 'peak' for peak frequency, 'weighted' for power-weighted mean
-        
+        timeseries: (n_subjects, n_rois, n_timepoints) or (n_rois, n_timepoints).
+                    Accepts complex tensors (uses real part).
+        dt: TR in seconds.
+        f_lo, f_hi: Frequency band of interest (Hz).
+        method: 'peak' or 'weighted'.
+
     Returns:
-        omega: Tensor of shape (n_rois,) with angular frequencies (rad/s)
+        omega: (n_rois,) angular frequencies (rad/s).
     """
-    # Handle 2D input
-    if timeseries.dim() == 2:
-        timeseries = timeseries.unsqueeze(0)
-    
-    n_subjects, n_rois, n_timepoints = timeseries.shape
-    device = timeseries.device
-    
-    # Compute FFT for all subjects and ROIs
-    fft_result = torch.fft.rfft(timeseries, dim=2)
-    power_spectrum = torch.abs(fft_result) ** 2
-    
-    # Frequency axis
-    freqs = torch.fft.rfftfreq(n_timepoints, d=dt).to(device)
-    
-    # Create mask for frequency band of interest
-    freq_mask = (freqs >= f_lo) & (freqs <= f_hi)
-    
-    if not freq_mask.any():
-        # Fallback: use all positive frequencies if band is empty
-        freq_mask = freqs > 0
-    
-    # Extract power in band
-    power_in_band = power_spectrum[:, :, freq_mask]  # (n_subjects, n_rois, n_freqs_in_band)
-    freqs_in_band = freqs[freq_mask]
-    
+    ts = timeseries.real if torch.is_complex(timeseries) else timeseries
+    if ts.dim() == 2:
+        ts = ts.unsqueeze(0)
+
+    n_subjects, n_rois, n_timepoints = ts.shape
+    power = torch.abs(torch.fft.rfft(ts, dim=2)) ** 2
+    freqs = torch.fft.rfftfreq(n_timepoints, d=dt).to(ts.device)
+    mask = (freqs >= f_lo) & (freqs <= f_hi)
+    if not mask.any():
+        mask = freqs > 0
+
+    power_band = power[:, :, mask]
+    freqs_band = freqs[mask]
+
     if method == "peak":
-        # Find peak frequency for each subject and ROI
-        peak_indices = power_in_band.argmax(dim=2)  # (n_subjects, n_rois)
-        peak_freqs = freqs_in_band[peak_indices]  # (n_subjects, n_rois)
-        
-        # Average across subjects
-        omega_hz = peak_freqs.mean(dim=0)  # (n_rois,)
-    
+        omega_hz = freqs_band[power_band.argmax(dim=2)].mean(dim=0)
     elif method == "weighted":
-        # Power-weighted mean frequency
-        power_sum = power_in_band.sum(dim=2, keepdim=True) + 1e-10
-        weights = power_in_band / power_sum
-        weighted_freqs = (weights * freqs_in_band.unsqueeze(0).unsqueeze(0)).sum(dim=2)
-        
-        # Average across subjects
-        omega_hz = weighted_freqs.mean(dim=0)  # (n_rois,)
-    
+        w = power_band / (power_band.sum(dim=2, keepdim=True) + 1e-10)
+        omega_hz = (w * freqs_band).sum(dim=2).mean(dim=0)
     else:
-        raise ValueError(f"Unknown method: {method}. Use 'peak' or 'weighted'.")
-    
-    # Convert to angular frequency (rad/s)
-    omega = 2 * np.pi * omega_hz
-    
-    return omega
+        raise ValueError(f"Unknown method: {method}")
+
+    return 2 * np.pi * omega_hz
 
 
 def compute_omega_uniform(
-    n_rois: int,
-    f_lo: float = 0.04,
-    f_hi: float = 0.07,
-    device: str = "cpu"
+    n_rois: int, f_lo: float = 0.04, f_hi: float = 0.07, device: str = "cpu",
 ) -> torch.Tensor:
-    """
-    Compute uniformly spaced omega values across a frequency band.
-    
-    This is a simple alternative to data-driven omega estimation.
-    
-    Args:
-        n_rois: Number of brain regions
-        f_lo: Low frequency in Hz
-        f_hi: High frequency in Hz
-        device: Device for tensor
-        
-    Returns:
-        omega: Tensor of shape (n_rois,) with angular frequencies (rad/s)
-    """
-    omega_hz = torch.linspace(f_lo, f_hi, n_rois, device=device)
-    omega = 2 * np.pi * omega_hz
-    return omega
+    """Uniformly spaced angular frequencies across a band."""
+    return 2 * np.pi * torch.linspace(f_lo, f_hi, n_rois, device=device)
 
 
-class WindowedDataset(Dataset):
+class RandomWindowDataset(Dataset):
+    """Dataset that randomly samples windows from timeseries each call.
+
+    Each ``__getitem__`` picks a random subject and a random start position,
+    so every epoch sees different window positions — better for reducing
+    overfitting compared to pre-computed sliding windows.
     """
-    Dataset that provides windowed segments of timeseries data.
-    
-    This is used for mini-batch training with a sliding window approach.
-    """
-    
+
     def __init__(
         self,
         timeseries: torch.Tensor,
         fc_matrices: torch.Tensor,
         window_size: int,
-        stride: int = 1,
-        device: str = "cpu"
+        n_windows: int,
+        device: str = "cpu",
     ):
-        """
-        Initialize windowed dataset.
-        
-        Args:
-            timeseries: Tensor of shape (n_subjects, n_rois, n_timepoints)
-            fc_matrices: Tensor of shape (n_subjects, n_rois, n_rois)
-            window_size: Size of the sliding window
-            stride: Step size between windows
-            device: Device to store tensors on
-        """
-        self.device = device
+        self.timeseries = timeseries.to(device)    # (n_subjects, n_rois, T), complex
+        self.fc_matrices = fc_matrices.to(device)  # (n_subjects, n_rois, n_rois), real
         self.window_size = window_size
-        self.stride = stride
-        
-        self.timeseries = timeseries.to(device)
-        self.fc_matrices = fc_matrices.to(device)
-        
-        n_subjects, n_rois, n_timepoints = timeseries.shape
-        
-        # Compute number of windows per subject
-        self.n_windows_per_subject = (n_timepoints - window_size) // stride + 1
-        
-        # Pre-compute all windows
-        self.windows = []
-        self.fc_targets = []
-        self.subject_ids = []
-        
-        for subj_idx in range(n_subjects):
-            for win_idx in range(self.n_windows_per_subject):
-                start = win_idx * stride
-                end = start + window_size
-                
-                window = self.timeseries[subj_idx, :, start:end]
-                self.windows.append(window)
-                self.fc_targets.append(self.fc_matrices[subj_idx])
-                self.subject_ids.append(subj_idx)
-        
-        self.windows = torch.stack(self.windows)
-        self.fc_targets = torch.stack(self.fc_targets)
-        self.subject_ids = torch.tensor(self.subject_ids, device=device)
-    
+        self.n_windows = n_windows
+        self.n_subjects = timeseries.shape[0]
+        self.max_start = timeseries.shape[2] - window_size
+
     def __len__(self) -> int:
-        return len(self.windows)
-    
+        return self.n_windows
+
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, int]:
-        """
-        Get a windowed sample.
-        
-        Args:
-            idx: Sample index
-            
-        Returns:
-            Tuple of (window, fc_target, subject_id)
-        """
-        return self.windows[idx], self.fc_targets[idx], self.subject_ids[idx]
+        subj = torch.randint(0, self.n_subjects, (1,)).item()
+        start = torch.randint(0, self.max_start + 1, (1,)).item()
+        window = self.timeseries[subj, :, start:start + self.window_size]
+        return window, self.fc_matrices[subj], subj
 
 
 def create_data_loaders(
     dataset: "NeuroscienceDataset",
     window_size: int,
-    stride: int = 1,
     batch_size: int = 32,
+    n_windows_per_epoch: int = 256,
     train_ratio: float = 0.7,
     val_ratio: float = 0.15,
     seed: int = 42,
-    device: str = "cpu"
+    device: str = "cpu",
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
-    """
-    Create train, validation, and test data loaders.
-    
-    Args:
-        dataset: NeuroscienceDataset instance
-        window_size: Window size for mini-batch training
-        stride: Stride for windowing
-        batch_size: Batch size for data loaders
-        train_ratio: Fraction of data for training
-        val_ratio: Fraction of data for validation
-        seed: Random seed for reproducibility
-        device: Device to use
-        
-    Returns:
-        Tuple of (train_loader, val_loader, test_loader)
-    """
-    # Create windowed dataset
-    windowed = WindowedDataset(
-        dataset.timeseries,
-        dataset.fc_matrices,
-        window_size=window_size,
-        stride=stride,
-        device=device
-    )
-    
-    # Split into train/val/test
-    n_samples = len(windowed)
-    n_train = int(train_ratio * n_samples)
-    n_val = int(val_ratio * n_samples)
-    n_test = n_samples - n_train - n_val
-    
-    generator = torch.Generator().manual_seed(seed)
-    train_set, val_set, test_set = random_split(
-        windowed,
-        [n_train, n_val, n_test],
-        generator=generator
-    )
-    
-    # Create data loaders
-    train_loader = DataLoader(
-        train_set,
-        batch_size=batch_size,
-        shuffle=True,
-        drop_last=True
-    )
-    
-    val_loader = DataLoader(
-        val_set,
-        batch_size=batch_size,
-        shuffle=False
-    )
-    
-    test_loader = DataLoader(
-        test_set,
-        batch_size=batch_size,
-        shuffle=False
-    )
-    
-    return train_loader, val_loader, test_loader
-
-
-def split_subjects(
-    dataset: "NeuroscienceDataset",
-    train_ratio: float = 0.7,
-    val_ratio: float = 0.15,
-    seed: int = 42
-) -> Tuple[List[int], List[int], List[int]]:
-    """
-    Split subjects into train/val/test sets.
-    
-    Args:
-        dataset: NeuroscienceDataset instance
-        train_ratio: Fraction of subjects for training
-        val_ratio: Fraction of subjects for validation
-        seed: Random seed
-        
-    Returns:
-        Tuple of (train_subjects, val_subjects, test_subjects)
-    """
-    np.random.seed(seed)
-    
+    """Create train/val/test loaders with random windowing and subject-level split."""
+    rng = np.random.RandomState(seed)
     n_subjects = dataset.n_subjects
-    indices = np.random.permutation(n_subjects)
-    
-    n_train = int(train_ratio * n_subjects)
-    n_val = int(val_ratio * n_subjects)
-    
-    train_subjects = indices[:n_train].tolist()
-    val_subjects = indices[n_train:n_train + n_val].tolist()
-    test_subjects = indices[n_train + n_val:].tolist()
-    
-    return train_subjects, val_subjects, test_subjects
+    indices = rng.permutation(n_subjects)
+
+    n_train = max(1, int(train_ratio * n_subjects))
+    n_val = max(1, int(val_ratio * n_subjects))
+    train_idx = indices[:n_train]
+    val_idx = indices[n_train:n_train + n_val]
+    test_idx = indices[n_train + n_val:]
+    if len(test_idx) == 0:
+        test_idx = val_idx  # fallback
+
+    def _loader(subj_idx, n_win, shuffle=True):
+        ds = RandomWindowDataset(
+            dataset.timeseries[subj_idx],
+            dataset.fc_matrices[subj_idx],
+            window_size, n_win, device,
+        )
+        return DataLoader(ds, batch_size=batch_size, shuffle=shuffle, drop_last=True)
+
+    n_val_win = max(batch_size, n_windows_per_epoch // 4)
+    n_test_win = max(batch_size, n_windows_per_epoch // 4)
+
+    return (
+        _loader(train_idx, n_windows_per_epoch),
+        _loader(val_idx, n_val_win, shuffle=False),
+        _loader(test_idx, n_test_win, shuffle=False),
+    )
