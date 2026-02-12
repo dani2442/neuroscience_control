@@ -54,16 +54,15 @@ class TrainingConfig:
     n_epochs: int = 50
     lr: float = 1e-3
     loss_fn: str = "combined"
-    loss_weight_fc: float = 1.0
-    loss_weight_fc_mse: float = 0.0
-    loss_weight_l2: float = 0.0
-    loss_weight_hilbert_amp: float = 0.0
-    loss_weight_hilbert_omega: float = 0.0
-    loss_weight_fcd: float = 1.0
-    loss_weight_metastability: float = 1.0
+    loss_weight_fc: Optional[float] = None
+    loss_weight_fc_mse: Optional[float] = None
+    loss_weight_l2: Optional[float] = None
+    loss_weight_hilbert_amp: Optional[float] = None
+    loss_weight_hilbert_omega: Optional[float] = None
+    loss_weight_fcd: Optional[float] = None
+    loss_weight_metastability: Optional[float] = None
     early_stopping_patience: int = 15
     n_steps: int = 100
-    dt: float = 0.1
     dt_min: Optional[float] = None  # Minimum time step for adaptive SDE solvers
     sde_method: str = "euler"  # SDE solver method ('euler', 'milstein', 'srk', etc.)
     
@@ -111,7 +110,7 @@ class TrainingConfig:
 class HopfConfig(TrainingConfig):
     """Configuration for Hopf model training."""
     experiment_name: str = "hopf"
-    noise_sigma: float = 0.1
+    noise_sigma: float = 0.05
     learnable_a: bool = False
     learnable_g: bool = False
 

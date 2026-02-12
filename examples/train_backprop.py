@@ -28,16 +28,16 @@ from src.training import (
     create_windowed_loaders,
     run_backprop_training,
 )
+from src.training.losses import _PRESETS as LOSS_PRESETS
 from src.utils import (
     FIGURES_DIR,
     ensure_proxy_env,
     plot_fc_comparison,
-    plot_realizations,
-    plot_timeseries,
-    plot_training_curves,
+    plot_simulation_multigrid,
     print_section,
     resolve_device,
     seed_all,
+    wandb_log,
     wandb_log_artifact,
     wandb_log_figure,
     wandb_summary_update,
@@ -175,7 +175,7 @@ def save_model_and_figures(
         simulated_fc_mean = simulated_fc.mean(dim=0)
 
     final_metrics = compute_all_fc_metrics(simulated_fc_mean.unsqueeze(0), target_fc.unsqueeze(0))
-    target_ts = dataset.timeseries[: simulated_ts.shape[0]]
+    target_ts = dataset.timeseries[: simulated_ts.shape[0], :, :n_timepoints]
     dyn_metrics = compute_dynamics_fit_metrics(
         simulated_ts,
         target_ts,
@@ -207,34 +207,36 @@ def save_model_and_figures(
     wandb_log_figure("figures/fc_comparison", fig, use_wandb=cfg.use_wandb)
     plt.close(fig)
 
-    fig = plot_timeseries(
-        simulated_ts.real,
-        n_rois=5,
-        title=f"{model_title} (Backprop) - Simulated Timeseries",
-        default_name=f"{model_name}_backprop_timeseries",
+    real_ts = dataset.timeseries[0]  # first subject
+    fig = plot_simulation_multigrid(
+        real_timeseries=real_ts.real,
+        simulated_runs=simulated_ts.real,
+        n_rois=12,
+        n_cols=4,
+        max_timepoints=n_timepoints,
+        title=f"{model_title} (Backprop) - Real vs Simulated",
+        default_name=f"{model_name}_backprop_real_vs_sim_multigrid",
         use_pdf=True,
     )
-    wandb_log_figure("figures/timeseries", fig, use_wandb=cfg.use_wandb)
+    wandb_log_figure("figures/real_vs_sim_multigrid", fig, use_wandb=cfg.use_wandb)
     plt.close(fig)
 
-    fig = plot_realizations(
-        simulated_ts.real,
-        roi_index=0,
-        n_realizations=min(6, simulated_ts.shape[0]),
-        title=f"{model_title} (Backprop) - Sample Realizations",
-        default_name=f"{model_name}_backprop_realizations",
-        use_pdf=True,
-    )
-    wandb_log_figure("figures/realizations", fig, use_wandb=cfg.use_wandb)
-    plt.close(fig)
-
-    fig = plot_training_curves(
-        metrics_store,
-        default_name=f"{model_name}_backprop_training_curves",
-        use_pdf=True,
-    )
-    wandb_log_figure("figures/training_curves", fig, use_wandb=cfg.use_wandb)
-    plt.close(fig)
+    # Log best a and G for Hopf model
+    if model_name == "hopf" and hasattr(model, "a") and hasattr(model, "g"):
+        best_a = model.a.item() if model.a.dim() == 0 else model.a.mean().item()
+        best_G = model.g.item() if model.g.dim() == 0 else model.g.mean().item()
+        wandb_log(
+            {
+                "best_params/a": best_a,
+                "best_params/G": best_G,
+            },
+            use_wandb=cfg.use_wandb,
+        )
+        wandb_summary_update(
+            {"best_a": best_a, "best_G": best_G},
+            use_wandb=cfg.use_wandb,
+        )
+        print(f"Best Hopf params — a: {best_a:.6f}, G: {best_G:.6f}")
 
     print(f"Figures saved to {FIGURES_DIR}")
     return checkpoint_path, final_metrics
@@ -249,7 +251,6 @@ def build_config(args: argparse.Namespace):
         use_wandb=not args.no_wandb,
         device=args.device,
         seed=args.seed,
-        dt=args.dt,
         n_epochs=args.n_epochs,
         lr=args.lr,
         loss_fn=args.loss_fn,
@@ -304,35 +305,35 @@ def main(argv=None):
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
 
     # Backprop settings
-    parser.add_argument("--n-epochs", type=int, default=100, help="Number of training epochs")
+    parser.add_argument("--n-epochs", type=int, default=10, help="Number of training epochs")
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
     parser.add_argument("--batch-size", type=int, default=32, help="Batch size")
     parser.add_argument("--window-size", type=int, default=200, help="Window size for training")
+    _VALID_LOSS_NAMES = sorted(set(LOSS_REGISTRY.keys()) | set(LOSS_PRESETS.keys()) | {"custom"})
     parser.add_argument(
         "--loss-fn",
         type=str,
         default="combined",
-        choices=sorted(LOSS_REGISTRY.keys()),
-        help="Training objective",
+        choices=_VALID_LOSS_NAMES,
+        help="Training objective (preset name or individual term)",
     )
 
-    parser.add_argument("--loss-weight-fc", type=float, default=1.0, help="Weight for FC correlation loss")
-    parser.add_argument("--loss-weight-fc-mse", type=float, default=0.0, help="Weight for FC MSE loss")
-    parser.add_argument("--loss-weight-l2", type=float, default=1.0, help="Weight for L2 timeseries loss")
-    parser.add_argument("--loss-weight-hilbert-amp", type=float, default=1.0, help="Weight for Hilbert amplitude loss")
-    parser.add_argument("--loss-weight-hilbert-omega", type=float, default=1.0, help="Weight for Hilbert omega loss")
-    parser.add_argument("--loss-weight-fcd", type=float, default=1.0, help="Weight for FCD loss term")
+    parser.add_argument("--loss-weight-fc", type=float, default=None, help="Weight for FC correlation loss (overrides preset)")
+    parser.add_argument("--loss-weight-fc-mse", type=float, default=None, help="Weight for FC MSE loss (overrides preset)")
+    parser.add_argument("--loss-weight-l2", type=float, default=None, help="Weight for L2 timeseries loss (overrides preset)")
+    parser.add_argument("--loss-weight-hilbert-amp", type=float, default=None, help="Weight for Hilbert amplitude loss (overrides preset)")
+    parser.add_argument("--loss-weight-hilbert-omega", type=float, default=None, help="Weight for Hilbert omega loss (overrides preset)")
+    parser.add_argument("--loss-weight-fcd", type=float, default=None, help="Weight for FCD loss term (overrides preset)")
     parser.add_argument(
         "--loss-weight-metastability",
         type=float,
-        default=1.0,
-        help="Weight for metastability loss term",
+        default=None,
+        help="Weight for metastability loss term (overrides preset)",
     )
 
     # Dynamics settings
     parser.add_argument("--max-subjects", type=int, default=50, help="Limit number of subjects (first N)")
-    parser.add_argument("--tr", type=float, default=0.72, help="Repetition time in seconds")
-    parser.add_argument("--dt", type=float, default=0.1, help="Model integration dt during training")
+    parser.add_argument("--tr", type=float, default=0.72, help="Repetition time / simulation dt (seconds)")
     parser.add_argument("--f-lo", type=float, default=0.04, help="Bandpass low cutoff (Hz)")
     parser.add_argument("--f-hi", type=float, default=0.07, help="Bandpass high cutoff (Hz)")
     parser.add_argument("--fcd-win-sec", type=float, default=60.0, help="FCD window length in seconds")
@@ -353,7 +354,7 @@ def main(argv=None):
     # Hopf settings
     parser.add_argument("--initial-a", type=float, default=-0.02, help="Initial Hopf bifurcation parameter")
     parser.add_argument("--initial-g", type=float, default=0.5, help="Initial Hopf coupling")
-    parser.add_argument("--noise-sigma", type=float, default=0.1, help="Hopf noise scale")
+    parser.add_argument("--noise-sigma", type=float, default=0.05, help="Hopf noise scale")
 
     args = parser.parse_args(argv)
     if args.experiment_name is None:

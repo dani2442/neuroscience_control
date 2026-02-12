@@ -480,51 +480,32 @@ def plot_power_spectrum(
     return fig
 
 
-def plot_real_vs_sim_multigrid(
+
+def plot_simulation_multigrid(
     real_timeseries: torch.Tensor,
-    simulated_timeseries: torch.Tensor,
-    roi_indices: Optional[List[int]] = None,
+    simulated_runs: torch.Tensor,
+    roi_indices: Optional[list[int]] = None,
     n_rois: int = 12,
     n_cols: int = 4,
     max_timepoints: int = 200,
-    title: str = "Real vs Simulated Timeseries",
+    title: str = "Real vs Simulated Mean +/- Std",
     save_path: Optional[str] = None,
-    figsize: Optional[Tuple[int, int]] = None,
     use_pdf: bool = True,
-    default_name: Optional[str] = None
+    default_name: Optional[str] = None,
 ) -> plt.Figure:
-    """
-    Plot a multigrid figure comparing real and simulated timeseries by ROI.
-
-    Args:
-        real_timeseries: Tensor (n_rois, n_timepoints) or (batch, n_rois, n_timepoints)
-        simulated_timeseries: Tensor (n_rois, n_timepoints) or (batch, n_rois, n_timepoints)
-        roi_indices: Explicit ROI indices to plot
-        n_rois: Number of ROIs to plot if roi_indices is None
-        n_cols: Number of subplot columns in the grid
-        max_timepoints: Maximum number of timepoints to display
-        title: Figure title
-        save_path: Explicit output path
-        figsize: Optional figure size
-        use_pdf: Whether to save as PDF
-        default_name: Default filename when save_path is None
-
-    Returns:
-        Matplotlib figure
-    """
+    """Plot real trajectory and simulated mean with one-std uncertainty band per ROI."""
     if real_timeseries.dim() == 3:
         real_timeseries = real_timeseries[0]
-    if simulated_timeseries.dim() == 3:
-        simulated_timeseries = simulated_timeseries[0]
+    if simulated_runs.dim() == 4:
+        simulated_runs = simulated_runs[:, 0]
 
-    if real_timeseries.dim() != 2 or simulated_timeseries.dim() != 2:
-        raise ValueError("Inputs must be (n_rois, n_timepoints) or (batch, n_rois, n_timepoints).")
+    if real_timeseries.dim() != 2 or simulated_runs.dim() != 3:
+        raise ValueError("Expected real_timeseries (n_rois, T), simulated_runs (n_runs, n_rois, T).")
 
-    n_total_rois = min(real_timeseries.shape[0], simulated_timeseries.shape[0])
-    n_timepoints = min(real_timeseries.shape[1], simulated_timeseries.shape[1], max_timepoints)
-
+    n_total_rois = min(real_timeseries.shape[0], simulated_runs.shape[1])
+    n_timepoints = min(real_timeseries.shape[1], simulated_runs.shape[2], max_timepoints)
     real_np = real_timeseries[:, :n_timepoints].detach().cpu().numpy()
-    sim_np = simulated_timeseries[:, :n_timepoints].detach().cpu().numpy()
+    sim_np = simulated_runs[:, :n_total_rois, :n_timepoints].detach().cpu().numpy()
 
     if roi_indices is None:
         n_selected = min(n_rois, n_total_rois)
@@ -536,17 +517,25 @@ def plot_real_vs_sim_multigrid(
 
     n_cols = max(1, n_cols)
     n_rows = int(np.ceil(len(roi_indices) / n_cols))
-    if figsize is None:
-        figsize = (4 * n_cols, 2.4 * n_rows)
-
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize, sharex=True)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 2.6 * n_rows), sharex=True)
     axes = np.array(axes).reshape(-1)
-
     time = np.arange(n_timepoints)
+
     for plot_idx, roi_idx in enumerate(roi_indices):
         ax = axes[plot_idx]
-        ax.plot(time, real_np[roi_idx], label="Real", linewidth=1.1, color="#1f77b4")
-        ax.plot(time, sim_np[roi_idx], label="Sim", linewidth=1.0, alpha=0.85, color="#d62728")
+        sim_mean = sim_np[:, roi_idx, :].mean(axis=0)
+        sim_std = sim_np[:, roi_idx, :].std(axis=0)
+        ax.plot(time, real_np[roi_idx], linewidth=1.1, color="#1f77b4", label="Real")
+        ax.plot(time, sim_mean, linewidth=1.0, color="#d62728", alpha=0.95, label="Sim mean")
+        ax.fill_between(
+            time,
+            sim_mean - sim_std,
+            sim_mean + sim_std,
+            color="#d62728",
+            alpha=0.20,
+            linewidth=0.0,
+            label="Sim +/-1 std",
+        )
         ax.set_title(f"ROI {roi_idx}")
         ax.grid(True, alpha=0.25)
 
@@ -561,13 +550,9 @@ def plot_real_vs_sim_multigrid(
     plt.tight_layout()
 
     if save_path is not None or default_name is not None:
-        final_path = _get_save_path(
-            save_path,
-            default_name or "real_vs_sim_multigrid",
-            use_pdf=use_pdf
-        )
+        final_path = _get_save_path(save_path, default_name or "real_vs_sim_multigrid", use_pdf=use_pdf)
         final_path.parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(final_path, dpi=300, bbox_inches='tight', format='pdf' if use_pdf else 'png')
+        plt.savefig(final_path, dpi=300, bbox_inches="tight", format="pdf" if use_pdf else "png")
         print(f"Saved figure to {final_path}")
 
     return fig

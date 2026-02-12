@@ -133,7 +133,10 @@ def _windowed_fc_vectors(x: torch.Tensor, win_len: int, win_step: int) -> Option
     V = torch.stack(vecs, dim=0)  # (W, M)
     if V.shape[1] <= 1:
         return None
-    return zscore(V, dim=0)
+    # Z-score each window vector across features (dim=1) so that
+    # V @ V^T / (M-1) yields Pearson correlation *between* window vectors,
+    # matching the FCD definition: corr(w(τ1), w(τ2)).
+    return zscore(V, dim=1)
 
 
 def fcd_matrix(x: torch.Tensor, win_len: int, win_step: int) -> Optional[torch.Tensor]:
@@ -334,7 +337,11 @@ def compute_dynamics_fit_metrics(
     ts_pred = ts_pred[:batch]
     ts_target = ts_target[:batch]
 
-    n_timepoints = ts_pred.shape[2]
+    # Align time dimensions to the shorter of the two to avoid length bias.
+    n_timepoints = min(ts_pred.shape[2], ts_target.shape[2])
+    ts_pred = ts_pred[:, :, :n_timepoints]
+    ts_target = ts_target[:, :, :n_timepoints]
+
     win_len = int(round(fcd_win_sec / tr))
     win_step = int(round(fcd_step_sec / tr))
 

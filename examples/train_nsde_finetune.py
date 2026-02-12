@@ -109,7 +109,7 @@ def fine_tune_model(
         lr=cfg.fine_tune_lr,
         warmup_epochs=cfg.warmup_epochs,
         n_steps=window_size,
-        dt=cfg.dt,
+        dt=cfg.tr,
         experiment_name=f"{cfg.experiment_name}_finetuned",
     )
     return model, metrics_store
@@ -132,7 +132,7 @@ def evaluate_on_test(
         cfg=cfg,
         use_wandb=False,
     )
-    metrics = evaluator.test(test_loader=test_loader, n_steps=window_size, dt=cfg.dt)
+    metrics = evaluator.test(test_loader=test_loader, n_steps=window_size, dt=cfg.tr)
     evaluator.finish()
     return metrics
 
@@ -169,7 +169,7 @@ def save_model_and_figures(
         sde_fc_mean = sde_fc.mean(dim=0)
 
     final_metrics = compute_all_fc_metrics(sde_fc_mean.unsqueeze(0), target_fc.unsqueeze(0))
-    target_ts = dataset.timeseries[: sde_ts.shape[0]]
+    target_ts = dataset.timeseries[: sde_ts.shape[0], :, :n_timepoints]
     dyn_metrics = compute_dynamics_fit_metrics(
         sde_ts,
         target_ts,
@@ -248,8 +248,7 @@ def main(argv=None):
     parser.add_argument("--max-subjects", type=int, default=50, help="Limit number of subjects (first N)")
 
     parser.add_argument("--loss-fn", type=str, default="combined", help="Loss objective for evaluation")
-    parser.add_argument("--dt", type=float, default=0.1, help="Model integration dt during fine-tuning")
-    parser.add_argument("--tr", type=float, default=0.72, help="Repetition time in seconds")
+    parser.add_argument("--tr", type=float, default=0.72, help="Repetition time / simulation dt (seconds)")
     parser.add_argument("--f-lo", type=float, default=0.04, help="Bandpass low cutoff (Hz)")
     parser.add_argument("--f-hi", type=float, default=0.07, help="Bandpass high cutoff (Hz)")
     parser.add_argument("--fcd-win-sec", type=float, default=60.0, help="FCD window length in seconds")
@@ -275,7 +274,6 @@ def main(argv=None):
         use_wandb=not args.no_wandb,
         device=args.device,
         seed=args.seed,
-        dt=args.dt,
         batch_size=args.batch_size,
         window_size=args.window_size,
         max_subjects=args.max_subjects,

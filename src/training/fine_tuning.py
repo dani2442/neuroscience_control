@@ -144,7 +144,7 @@ class FineTuner:
         use_discriminative_lr: bool = False,
         layer_decay: float = 0.9,
         n_steps: int = 100,
-        dt: float = 0.01,
+        dt: float = 0.72,
         experiment_name: str = "finetune"
     ) -> MetricsStore:
         """
@@ -246,7 +246,7 @@ class FineTuner:
         initial_lr: float = 1e-4,
         lr_decay: float = 0.5,
         n_steps: int = 100,
-        dt: float = 0.01
+        dt: float = 0.72
     ) -> MetricsStore:
         """
         Gradually unfreeze layers during training.

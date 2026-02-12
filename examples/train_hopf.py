@@ -28,8 +28,7 @@ from src.utils import (
     finish_wandb_run,
     init_wandb_run,
     plot_fc_comparison,
-    plot_realizations,
-    plot_timeseries,
+    plot_simulation_multigrid,
     print_section,
     resolve_device,
     seed_all,
@@ -61,7 +60,7 @@ def load_data(cfg: HopfConfig, device: str):
     print(f"  - Number of timepoints: {dataset.n_timepoints}")
     print(f"  - FC matrix shape: {dataset.fc_mean.shape}")
     print(f"  - Timeseries dtype: {dataset.timeseries.dtype}")
-    print(f"  - dt (TR): {dataset.dt}s"))
+    print(f"  - dt (TR): {dataset.dt}s")
 
     omega = compute_omega_from_timeseries(
         dataset.timeseries,
@@ -98,7 +97,7 @@ def evaluate_hopf_model(
         hopf_fc_mean = hopf_fc.mean(dim=0)
 
     metrics = compute_all_fc_metrics(hopf_fc_mean.unsqueeze(0), target_fc.unsqueeze(0))
-    target_ts = dataset.timeseries[: hopf_ts.shape[0]]
+    target_ts = dataset.timeseries[: hopf_ts.shape[0], :, :n_timepoints]
     dyn_metrics = compute_dynamics_fit_metrics(
         hopf_ts,
         target_ts,
@@ -210,25 +209,18 @@ def save_model_and_figures(
     wandb_log_figure("figures/fc_comparison", fig, use_wandb=cfg.use_wandb)
     plt.close(fig)
 
-    fig = plot_timeseries(
-        hopf_ts.real,
-        n_rois=5,
-        title="Coupled Hopf (Grid) - Simulated Timeseries",
-        default_name="hopf_grid_timeseries",
+    real_ts = dataset.timeseries[0]  # first subject
+    fig = plot_simulation_multigrid(
+        real_timeseries=real_ts.real,
+        simulated_runs=hopf_ts.real,
+        n_rois=12,
+        n_cols=4,
+        max_timepoints=n_timepoints,
+        title="Coupled Hopf (Grid) - Real vs Simulated",
+        default_name="hopf_grid_real_vs_sim_multigrid",
         use_pdf=True,
     )
-    wandb_log_figure("figures/timeseries", fig, use_wandb=cfg.use_wandb)
-    plt.close(fig)
-
-    fig = plot_realizations(
-        hopf_ts.real,
-        roi_index=0,
-        n_realizations=min(6, hopf_ts.shape[0]),
-        title="Coupled Hopf (Grid) - Sample Realizations",
-        default_name="hopf_grid_realizations",
-        use_pdf=True,
-    )
-    wandb_log_figure("figures/realizations", fig, use_wandb=cfg.use_wandb)
+    wandb_log_figure("figures/real_vs_sim_multigrid", fig, use_wandb=cfg.use_wandb)
     plt.close(fig)
 
     print(f"Figures saved to {FIGURES_DIR}")

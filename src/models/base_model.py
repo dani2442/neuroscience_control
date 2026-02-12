@@ -65,10 +65,13 @@ class BaseNeuroscienceModel(nn.Module, ABC):
             FC matrices of shape (batch, n_rois, n_rois).
         """
         ts = timeseries.real if torch.is_complex(timeseries) else timeseries
+        T = ts.shape[2]
+        if T < 2:
+            raise ValueError("Need at least 2 timepoints to compute FC.")
         ts_centered = ts - ts.mean(dim=2, keepdim=True)
         std = ts_centered.std(dim=2, keepdim=True) + 1e-8
         ts_norm = ts_centered / std
-        return torch.bmm(ts_norm, ts_norm.transpose(1, 2)) / ts.shape[2]
+        return torch.bmm(ts_norm, ts_norm.transpose(1, 2)) / (T - 1)
 
     def save(self, filepath: str, metadata: Optional[Dict[str, Any]] = None):
         """Save model checkpoint."""

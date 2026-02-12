@@ -5,10 +5,12 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Optional
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import numpy as np
 import torch
 
 # Ensure imports work when running this file directly.
@@ -26,7 +28,8 @@ from src.models import load_model_from_checkpoint
 from src.training import Trainer, TrainingConfig
 from src.utils import (
     FIGURES_DIR,
-    plot_real_vs_sim_multigrid,
+    _get_save_path,
+    plot_simulation_multigrid,
     print_section,
     resolve_device,
     seed_all,
@@ -34,6 +37,25 @@ from src.utils import (
 
 def format_metrics(metrics: dict[str, float]) -> str:
     return "\n".join(f"  - {k}: {v:.6f}" for k, v in sorted(metrics.items()))
+
+
+def derive_figure_path(base_path: Optional[str], suffix: str) -> Optional[str]:
+    """Return a sibling figure path with a suffix inserted before the extension."""
+    if base_path is None:
+        return None
+    path = Path(base_path)
+    ext = path.suffix if path.suffix else ".pdf"
+    return str(path.with_name(f"{path.stem}_{suffix}{ext}"))
+
+
+def aggregate_metrics(metric_runs: list[dict[str, float]]) -> tuple[dict[str, float], dict[str, float]]:
+    """Compute mean and std for each metric key over simulation runs."""
+    if not metric_runs:
+        return {}, {}
+    keys = sorted(metric_runs[0].keys())
+    means = {k: float(np.mean([m[k] for m in metric_runs])) for k in keys}
+    stds = {k: float(np.std([m[k] for m in metric_runs])) for k in keys}
+    return means, stds
 
 
 def main(args: argparse.Namespace) -> None:
@@ -100,7 +122,7 @@ def main(args: argparse.Namespace) -> None:
         use_wandb=False,
     )
 
-    test_metrics = trainer.test(test_loader=test_loader, n_steps=window_size, dt=args.model_dt)
+    test_metrics = trainer.test(test_loader=test_loader, n_steps=window_size, dt=args.tr)
 
     subject_idx = int(args.subject_index)
     if not 0 <= subject_idx < dataset.n_subjects:
@@ -110,47 +132,66 @@ def main(args: argparse.Namespace) -> None:
     n_steps = min(args.sim_steps, real_ts.shape[2])
     real_ts = real_ts[:, :, :n_steps]
     initial_state = real_ts[:, :, 0]
+    n_sim_runs = max(1, int(args.n_sim_runs))
 
     with torch.no_grad():
-        sim_ts = model.forward(initial_state=initial_state, n_steps=n_steps, dt=args.tr)
+        initial_state_batch = initial_state.repeat(n_sim_runs, 1)
+        sim_ts_runs = model.forward(initial_state=initial_state_batch, n_steps=n_steps, dt=args.tr)
+        if sim_ts_runs.dim() == 2:
+            sim_ts_runs = sim_ts_runs.unsqueeze(0)
+        if sim_ts_runs.dim() == 4 and sim_ts_runs.shape[1] == 1:
+            sim_ts_runs = sim_ts_runs[:, 0]
 
-    sim_fc = model.compute_fc(sim_ts)
-    real_fc = model.compute_fc(real_ts)
-    comparison_metrics = {
-        **compute_all_fc_metrics(sim_fc, real_fc),
-        **compute_all_timeseries_metrics(sim_ts, real_ts),
-        **compute_dynamics_fit_metrics(
-            sim_ts,
-            real_ts,
-            tr=args.tr,
-            f_lo=args.f_lo,
-            f_hi=args.f_hi,
-            fcd_win_sec=args.fcd_win_sec,
-            fcd_step_sec=args.fcd_step_sec,
-            compute_fcd=not args.no_fcd,
-            compute_metastability=not args.no_metastability,
-        ),
-    }
+    if sim_ts_runs.dim() != 3:
+        raise ValueError(f"Expected simulated runs to have shape (n_runs, n_rois, T), got {tuple(sim_ts_runs.shape)}")
 
-    fig = plot_real_vs_sim_multigrid(
+    real_fc_single = model.compute_fc(real_ts)
+    per_run_metrics: list[dict[str, float]] = []
+    for run_idx in range(sim_ts_runs.shape[0]):
+        sim_run = sim_ts_runs[run_idx:run_idx + 1]
+        sim_fc_run = model.compute_fc(sim_run)
+        per_run_metrics.append(
+            {
+                **compute_all_fc_metrics(sim_fc_run, real_fc_single),
+                **compute_all_timeseries_metrics(sim_run, real_ts),
+                **compute_dynamics_fit_metrics(
+                    sim_run,
+                    real_ts,
+                    tr=args.tr,
+                    f_lo=args.f_lo,
+                    f_hi=args.f_hi,
+                    fcd_win_sec=args.fcd_win_sec,
+                    fcd_step_sec=args.fcd_step_sec,
+                    compute_fcd=not args.no_fcd,
+                    compute_metastability=not args.no_metastability,
+                ),
+            }
+        )
+
+    comparison_metrics, comparison_metrics_std = aggregate_metrics(per_run_metrics)
+    sim_ts_mean = sim_ts_runs.mean(dim=0, keepdim=True)
+
+    fig = plot_simulation_multigrid(
         real_timeseries=real_ts.real,
-        simulated_timeseries=sim_ts.real,
+        simulated_runs=sim_ts_runs.real,
         n_rois=args.n_rois_plot,
         n_cols=args.grid_cols,
         max_timepoints=n_steps,
-        title=f"{model_name} - Real vs Simulated (subject {subject_idx})",
-        save_path=args.figure_path,
-        default_name=f"{checkpoint_path.stem}_real_vs_sim_multigrid",
+        title=f"{model_name} - Simulation Variance ({n_sim_runs} runs, subject {subject_idx})",
+        save_path=derive_figure_path(args.figure_path, "variance"),
+        default_name=f"{checkpoint_path.stem}_real_vs_sim_variance_multigrid",
         use_pdf=True,
     )
     plt.close(fig)
 
     print("\nTest metrics (loader-based):")
     print(format_metrics(test_metrics))
-    print("\nReal-vs-sim metrics (single-subject trajectory):")
+    print(f"\nReal-vs-sim metrics (single-subject trajectory, mean over {n_sim_runs} runs):")
     print(format_metrics(comparison_metrics))
+    print(f"\nReal-vs-sim metric std (across {n_sim_runs} runs):")
+    print(format_metrics(comparison_metrics_std))
     if args.figure_path is None:
-        print(f"\nFigure saved under: {FIGURES_DIR}")
+        print(f"\nFigures saved under: {FIGURES_DIR}")
 
     if args.print_json:
         print("\nJSON:")
@@ -159,8 +200,10 @@ def main(args: argparse.Namespace) -> None:
                 {
                     "checkpoint": str(checkpoint_path),
                     "model": model_name,
+                    "n_sim_runs": n_sim_runs,
                     "test_metrics": test_metrics,
-                    "real_vs_sim_metrics": comparison_metrics,
+                    "real_vs_sim_metrics_mean": comparison_metrics,
+                    "real_vs_sim_metrics_std": comparison_metrics_std,
                 },
                 indent=2,
             )
@@ -185,9 +228,8 @@ if __name__ == "__main__":
     parser.add_argument("--val-ratio", type=float, default=0.15, help="Validation split ratio")
 
     parser.add_argument("--loss-fn", type=str, default="combined", help="Loss function used by Trainer.test")
-    parser.add_argument("--model-dt", type=float, default=0.1, help="Integration dt for Trainer.test")
 
-    parser.add_argument("--tr", type=float, default=0.72, help="Repetition time for dataset and dynamics metrics")
+    parser.add_argument("--tr", type=float, default=0.72, help="Repetition time / simulation dt (seconds)")
     parser.add_argument("--f-lo", type=float, default=0.04, help="Bandpass low cutoff (Hz)")
     parser.add_argument("--f-hi", type=float, default=0.07, help="Bandpass high cutoff (Hz)")
     parser.add_argument("--fcd-win-sec", type=float, default=60.0, help="FCD window length (seconds)")
@@ -202,6 +244,7 @@ if __name__ == "__main__":
 
     parser.add_argument("--subject-index", type=int, default=0, help="Subject index for real-vs-sim trajectory plot")
     parser.add_argument("--sim-steps", type=int, default=200, help="Timepoints to simulate for real-vs-sim comparison")
+    parser.add_argument("--n-sim-runs", type=int, default=10, help="Number of stochastic simulation runs for mean/variance")
     parser.add_argument("--n-rois-plot", type=int, default=12, help="Number of ROIs in multigrid visualization")
     parser.add_argument("--grid-cols", type=int, default=4, help="Columns in multigrid visualization")
     parser.add_argument("--figure-path", type=str, default=None, help="Optional figure output path")

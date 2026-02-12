@@ -173,7 +173,14 @@ def loss_fcd(
     fcd_step_sec: float = 2.0,
     **_kwargs,
 ) -> torch.Tensor:
-    """MSE between FCD matrices (differentiable)."""
+    """Differentiable FCD loss: MSE between FCD matrices.
+
+    .. note::
+        This is a differentiable *surrogate* for the Kolmogorov-Smirnov
+        distance reported by the evaluation metric ``fcd_ks``.  MSE between
+        FCD matrices is used because the KS statistic is non-differentiable
+        and therefore unsuitable for gradient-based optimization.
+    """
     return _fcd_mse_loss(
         ts_pred, ts_target,
         tr=tr, f_lo=f_lo, f_hi=f_hi,

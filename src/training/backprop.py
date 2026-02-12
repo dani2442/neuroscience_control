@@ -64,7 +64,7 @@ def run_backprop_training(
         val_loader=val_loader,
         n_epochs=cfg.n_epochs,
         n_steps=window_size,
-        dt=cfg.dt,
+        dt=cfg.tr,
         early_stopping_patience=cfg.early_stopping_patience,
         verbose=True,
     )
@@ -72,6 +72,6 @@ def run_backprop_training(
     test_metrics = trainer.test(
         test_loader=test_loader,
         n_steps=window_size,
-        dt=cfg.dt,
+        dt=cfg.tr,
     )
     return trainer, metrics_store, test_metrics

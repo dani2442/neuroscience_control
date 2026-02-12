@@ -245,10 +245,10 @@ python examples/train_backprop.py --model hopf --n-epochs 50 --loss-fn fc_fcd_me
 
 ### Neural SDE: Backpropagation
 
-The Neural SDE model is trained end-to-end via backpropagation:
+The Neural SDE model is trained end-to-end via backpropagation using `train_backprop.py`:
 
 ```bash
-python examples/train_nsde.py \
+python examples/train_backprop.py --model nsde \
     --data-path data/ts_young/ts_young_TR0.72.mat \
     --n-epochs 50 \
     --lr 1e-3 \
@@ -288,10 +288,10 @@ python examples/train_nsde_finetune.py \
 | `--fcd-step-sec` | FCD window step (seconds) | 2.0 |
 | `--no-fcd` | Disable FCD metrics | False |
 | `--no-metastability` | Disable metastability metrics | False |
-| `--loss-fn` | Loss (`mse`, `correlation`, `combined`, `fc_fcd_meta`) | `combined` |
-| `--loss-weight-fc` | FC term weight (backprop) | 1.0 |
-| `--loss-weight-fcd` | FCD term weight (backprop) | 1.0 |
-| `--loss-weight-metastability` | Metastability term weight (backprop) | 1.0 |
+| `--loss-fn` | Loss preset (`mse`, `correlation`, `combined`, `fc_fcd_meta`, `full`, `custom`) or individual term | `combined` |
+| `--loss-weight-fc` | FC term weight override (backprop) | preset default |
+| `--loss-weight-fcd` | FCD term weight override (backprop) | preset default |
+| `--loss-weight-metastability` | Metastability term weight override (backprop) | preset default |
 
 ---
 
@@ -302,10 +302,10 @@ python examples/train_nsde_finetune.py \
 | Script | Description |
 |--------|-------------|
 | [`examples/train_hopf.py`](examples/train_hopf.py) | Train Coupled Hopf via grid search |
-| [`examples/train_nsde.py`](examples/train_nsde.py) | Train Neural SDE via backpropagation |
 | [`examples/train_backprop.py`](examples/train_backprop.py) | Unified backprop training entrypoint for NSDE or Hopf |
 | [`examples/train_nsde_finetune.py`](examples/train_nsde_finetune.py) | Fine-tune a pretrained Neural SDE checkpoint |
 | [`examples/compare_models.py`](examples/compare_models.py) | Compare trained models |
+| [`examples/test.py`](examples/test.py) | Evaluate a checkpoint and visualize trajectories |
 
 ### Model Comparison
 

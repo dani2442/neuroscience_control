@@ -20,6 +20,11 @@ class GridSearch:
 
     Evaluates model performance across a grid of hyperparameters
     using batch simulation with data-derived initial states.
+
+    .. note::
+        By default the grid search optimizes FC correlation only.  FCD
+        and metastability are *not* evaluated during the search (for speed)
+        but are computed post-hoc on the best model by the calling script.
     """
 
     def __init__(
@@ -35,6 +40,7 @@ class GridSearch:
 
         self.results: List[Dict[str, Any]] = []
         self.best_params: Optional[Dict[str, Any]] = None
+        self.best_metrics: Optional[Dict[str, float]] = None
         self.best_score: float = -float('inf')
 
     def _generate_param_combinations(self) -> List[Dict[str, Any]]:
@@ -90,6 +96,8 @@ class GridSearch:
         verbose: bool = True,
     ) -> Tuple[Dict[str, Any], Dict[str, float]]:
         combinations = self._generate_param_combinations()
+        if not combinations:
+            raise ValueError("Parameter grid produced no combinations.")
 
         if verbose:
             print(f"Grid search over {len(combinations)} parameter combinations")
@@ -102,11 +110,20 @@ class GridSearch:
             metrics = self.evaluate_params(model, target_fc, initial_states, n_timepoints, dt)
             self.results.append({'params': params, 'metrics': metrics})
 
+            if metric not in metrics:
+                raise KeyError(f"Metric '{metric}' not found in evaluated metrics.")
+
             score = metrics[metric]
-            if score > self.best_score:
+            # Always accept the first candidate, then compare finite scores.
+            if self.best_metrics is None or (
+                np.isfinite(score) and (not np.isfinite(self.best_score) or score > self.best_score)
+            ):
                 self.best_score = score
                 self.best_params = params
                 self.best_metrics = metrics
+
+        if self.best_params is None or self.best_metrics is None:
+            raise RuntimeError("Grid search did not find valid best parameters.")
 
         self._save_results()
         return self.best_params, self.best_metrics
@@ -117,6 +134,7 @@ class GridSearch:
                            for k, vals in self.param_grid.items()},
             'results': self.results,
             'best_params': self.best_params,
+            'best_metrics': self.best_metrics,
             'best_score': self.best_score,
         }
         filepath = self.save_dir / "grid_search_results.json"

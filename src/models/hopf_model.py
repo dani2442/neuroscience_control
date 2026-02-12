@@ -19,7 +19,7 @@ class HopfSDEFunc(nn.Module):
     noise_type = "diagonal"
     sde_type = "ito"
 
-    def __init__(self, n_rois, a, g, omega, structural_connectivity, noise_sigma=0.01):
+    def __init__(self, n_rois, a, g, omega, structural_connectivity, noise_sigma=0.5):
         super().__init__()
         self.n_rois = n_rois
         self.noise_sigma = noise_sigma
@@ -32,7 +32,7 @@ class HopfSDEFunc(nn.Module):
         """Drift: z * (a + iω − |z|²) + G·C@z in real representation."""
         yr, yi = y[:, :self.n_rois], y[:, self.n_rois:]
         z2 = yr ** 2 + yi ** 2
-        a_z2 = self.a.unsqueeze(0) - z2
+        a_z2 = self.a - z2
         omega = self.omega.unsqueeze(0)
 
         dr = yr * a_z2 - yi * omega + self.global_coupling * (yr @ self.structural_connectivity.T)
@@ -56,7 +56,7 @@ class CoupledHopfModel(BaseNeuroscienceModel):
         initial_a: float = -0.02,
         initial_g: float = 0.5,
         omega: Optional[torch.Tensor] = None,
-        noise_sigma: float = 0.01,
+        noise_sigma: float = 0.5,
         device: str = "cpu",
         learnable_a: bool = True,
         learnable_g: bool = True,
@@ -74,7 +74,7 @@ class CoupledHopfModel(BaseNeuroscienceModel):
         self.register_buffer('structural_connectivity', sc)
 
         # Bifurcation parameter
-        a_init = torch.full((n_rois,), initial_a, device=device)
+        a_init = torch.tensor(initial_a, device=device)
         self.a = nn.Parameter(a_init) if learnable_a else self.register_buffer('a', a_init) or self.a
 
         # Global coupling
@@ -103,7 +103,7 @@ class CoupledHopfModel(BaseNeuroscienceModel):
         n_steps: int = 100,
         dt: float = 0.72,
         method: str = "euler",
-        dt_min: Optional[float] = 0.1,
+        dt_min: Optional[float] = 0.05,
     ) -> torch.Tensor:
         """Simulate brain dynamics via SDE integration.
 

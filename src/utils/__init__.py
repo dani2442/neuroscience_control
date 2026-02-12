@@ -7,7 +7,7 @@ from .visualization import (
     plot_timeseries,
     plot_realizations,
     plot_power_spectrum,
-    plot_real_vs_sim_multigrid,
+    plot_simulation_multigrid,
     create_comparison_report,
     FIGURES_DIR,
     _get_save_path
@@ -34,7 +34,7 @@ __all__ = [
     "plot_timeseries",
     "plot_realizations",
     "plot_power_spectrum",
-    "plot_real_vs_sim_multigrid",
+    "plot_simulation_multigrid",
     "create_comparison_report",
     "FIGURES_DIR",
     "_get_save_path",

@@ -104,7 +104,7 @@ class Trainer:
         self.use_wandb = use_wandb
         self.metrics_sample_batches = cfg.metrics_sample_batches if cfg is not None else 1
 
-        # Build composite loss from config weights
+        # Build composite loss from config weights.
         dyn_kwargs = self._dynamics_kwargs_from_cfg(cfg)
         weight_overrides = self._weight_overrides_from_cfg(cfg)
         self.loss_obj = build_loss(
@@ -292,7 +292,7 @@ class Trainer:
         ts_target: torch.Tensor,
         loss: torch.Tensor,
         loss_components: Dict[str, torch.Tensor],
-        compute_expensive: bool
+        compute_expensive: bool,
     ) -> Dict[str, float]:
         metrics = compute_all_fc_metrics(fc_pred, fc_targets)
         metrics["loss"] = float(loss.item())
@@ -404,7 +404,7 @@ class Trainer:
                     target_window,
                     loss,
                     loss_components,
-                    compute_expensive
+                    compute_expensive,
                 )
             accumulator.update(metrics)
 
@@ -427,7 +427,7 @@ class Trainer:
         self,
         train_loader: DataLoader,
         n_steps: int = 100,
-        dt: float = 0.01,
+        dt: float = 0.72,
         verbose: bool = False
     ) -> Dict[str, float]:
         """Train a single epoch (compatibility helper for fine-tuning)."""
@@ -446,7 +446,7 @@ class Trainer:
         self,
         val_loader: DataLoader,
         n_steps: int = 100,
-        dt: float = 0.01,
+        dt: float = 0.72,
         verbose: bool = False
     ) -> Dict[str, float]:
         """Evaluate on validation data."""
@@ -466,7 +466,7 @@ class Trainer:
         val_loader: DataLoader,
         n_epochs: int = 100,
         n_steps: int = 100,
-        dt: float = 0.01,
+        dt: float = 0.72,
         early_stopping_patience: int = 10,
         save_best: bool = True,
         verbose: bool = True
@@ -587,7 +587,7 @@ class Trainer:
         self,
         test_loader: DataLoader,
         n_steps: int = 100,
-        dt: float = 0.01
+        dt: float = 0.72
     ) -> Dict[str, float]:
         """
         Evaluate on test set.
