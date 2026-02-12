@@ -345,10 +345,13 @@ class Trainer:
 
             batch_size = windows.shape[0]
             n_timepoints = windows.shape[2]
+            n_sim_steps = min(n_steps, n_timepoints)
+            if n_sim_steps <= 0:
+                raise ValueError(f"n_steps must be >= 1, got {n_steps}")
 
-            # Extract initial condition from target windows (first time-step)
-            # windows shape: (batch, n_rois, n_timepoints)
-            initial_state = windows[:, :, 0]  # (batch, n_rois)
+            # Keep simulation horizon, loss window, and initial condition aligned.
+            target_window = windows[:, :, :n_sim_steps]
+            initial_state = target_window[:, :, 0]  # (batch, n_rois)
 
             if train:
                 self.optimizer.zero_grad()
@@ -356,7 +359,7 @@ class Trainer:
             if train:
                 simulated = self.model.forward(
                     initial_state=initial_state,
-                    n_steps=n_timepoints,
+                    n_steps=n_sim_steps,
                     dt=dt,
                     batch_size=batch_size
                 )
@@ -365,13 +368,13 @@ class Trainer:
                     fc_pred,
                     fc_targets,
                     simulated,
-                    windows
+                    target_window
                 )
             else:
                 with torch.no_grad():
                     simulated = self.model.forward(
                         initial_state=initial_state,
-                        n_steps=n_timepoints,
+                        n_steps=n_sim_steps,
                         dt=dt,
                         batch_size=batch_size
                     )
@@ -380,7 +383,7 @@ class Trainer:
                         fc_pred,
                         fc_targets,
                         simulated,
-                        windows
+                        target_window
                     )
 
             if train:
@@ -397,7 +400,7 @@ class Trainer:
                     fc_pred.detach(),
                     fc_targets,
                     simulated.detach(),
-                    windows,
+                    target_window,
                     loss,
                     loss_components,
                     compute_expensive

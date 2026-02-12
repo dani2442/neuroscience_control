@@ -480,6 +480,99 @@ def plot_power_spectrum(
     return fig
 
 
+def plot_real_vs_sim_multigrid(
+    real_timeseries: torch.Tensor,
+    simulated_timeseries: torch.Tensor,
+    roi_indices: Optional[List[int]] = None,
+    n_rois: int = 12,
+    n_cols: int = 4,
+    max_timepoints: int = 200,
+    title: str = "Real vs Simulated Timeseries",
+    save_path: Optional[str] = None,
+    figsize: Optional[Tuple[int, int]] = None,
+    use_pdf: bool = True,
+    default_name: Optional[str] = None
+) -> plt.Figure:
+    """
+    Plot a multigrid figure comparing real and simulated timeseries by ROI.
+
+    Args:
+        real_timeseries: Tensor (n_rois, n_timepoints) or (batch, n_rois, n_timepoints)
+        simulated_timeseries: Tensor (n_rois, n_timepoints) or (batch, n_rois, n_timepoints)
+        roi_indices: Explicit ROI indices to plot
+        n_rois: Number of ROIs to plot if roi_indices is None
+        n_cols: Number of subplot columns in the grid
+        max_timepoints: Maximum number of timepoints to display
+        title: Figure title
+        save_path: Explicit output path
+        figsize: Optional figure size
+        use_pdf: Whether to save as PDF
+        default_name: Default filename when save_path is None
+
+    Returns:
+        Matplotlib figure
+    """
+    if real_timeseries.dim() == 3:
+        real_timeseries = real_timeseries[0]
+    if simulated_timeseries.dim() == 3:
+        simulated_timeseries = simulated_timeseries[0]
+
+    if real_timeseries.dim() != 2 or simulated_timeseries.dim() != 2:
+        raise ValueError("Inputs must be (n_rois, n_timepoints) or (batch, n_rois, n_timepoints).")
+
+    n_total_rois = min(real_timeseries.shape[0], simulated_timeseries.shape[0])
+    n_timepoints = min(real_timeseries.shape[1], simulated_timeseries.shape[1], max_timepoints)
+
+    real_np = real_timeseries[:, :n_timepoints].detach().cpu().numpy()
+    sim_np = simulated_timeseries[:, :n_timepoints].detach().cpu().numpy()
+
+    if roi_indices is None:
+        n_selected = min(n_rois, n_total_rois)
+        roi_indices = np.linspace(0, n_total_rois - 1, n_selected, dtype=int).tolist()
+    else:
+        roi_indices = [idx for idx in roi_indices if 0 <= idx < n_total_rois]
+        if not roi_indices:
+            raise ValueError("No valid ROI indices to plot.")
+
+    n_cols = max(1, n_cols)
+    n_rows = int(np.ceil(len(roi_indices) / n_cols))
+    if figsize is None:
+        figsize = (4 * n_cols, 2.4 * n_rows)
+
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize, sharex=True)
+    axes = np.array(axes).reshape(-1)
+
+    time = np.arange(n_timepoints)
+    for plot_idx, roi_idx in enumerate(roi_indices):
+        ax = axes[plot_idx]
+        ax.plot(time, real_np[roi_idx], label="Real", linewidth=1.1, color="#1f77b4")
+        ax.plot(time, sim_np[roi_idx], label="Sim", linewidth=1.0, alpha=0.85, color="#d62728")
+        ax.set_title(f"ROI {roi_idx}")
+        ax.grid(True, alpha=0.25)
+
+    for plot_idx in range(len(roi_indices), len(axes)):
+        axes[plot_idx].axis("off")
+
+    axes[0].legend(loc="upper right", fontsize=8)
+    for ax in axes[-n_cols:]:
+        ax.set_xlabel("Time")
+
+    plt.suptitle(title, fontsize=14)
+    plt.tight_layout()
+
+    if save_path is not None or default_name is not None:
+        final_path = _get_save_path(
+            save_path,
+            default_name or "real_vs_sim_multigrid",
+            use_pdf=use_pdf
+        )
+        final_path.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(final_path, dpi=300, bbox_inches='tight', format='pdf' if use_pdf else 'png')
+        print(f"Saved figure to {final_path}")
+
+    return fig
+
+
 def create_comparison_report(
     models: Dict[str, Any],
     target_fc: torch.Tensor,

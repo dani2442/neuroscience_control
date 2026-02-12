@@ -7,7 +7,7 @@ equations for more flexible and learnable brain dynamics.
 
 import torch
 import torch.nn as nn
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 from .base_model import BaseNeuroscienceModel
 import torchsde
 
@@ -197,12 +197,12 @@ class NeuralSDE(BaseNeuroscienceModel):
         if initial_state is None:
             # Random initial state
             y0 = 0.1 * torch.randn(batch_size, self.n_rois, device=self.device)
+            # For unconstrained generation, map random seed state to model state.
+            y0 = self.init_net(y0)
         else:
+            # Preserve user/data-provided initial condition exactly.
             y0 = initial_state.to(self.device)
             batch_size = y0.shape[0]
-        
-        # Transform initial state
-        y0 = self.init_net(y0)
         
         # Time points
         ts = torch.linspace(0, (n_steps - 1) * dt, n_steps, device=self.device)
@@ -245,4 +245,18 @@ class NeuralSDE(BaseNeuroscienceModel):
             params['sigma'] = self.sde_func.diffusion_net.sigma.detach().clone()
         
         return params
+
+    def get_model_config(self) -> Dict[str, Any]:
+        """Return constructor config needed to reconstruct this model."""
+        coupling_strength = 0.1
+        if self.sde_func.coupling is not None:
+            coupling_strength = float(self.sde_func.coupling.detach().cpu().item())
+
+        return {
+            "n_rois": int(self.n_rois),
+            "hidden_dim": int(self.hidden_dim),
+            "n_layers": int(self.n_layers),
+            "has_structural_connectivity": self.sde_func.sc is not None,
+            "coupling_strength": coupling_strength,
+        }
     

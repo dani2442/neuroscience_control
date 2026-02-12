@@ -16,6 +16,14 @@ class BaseNeuroscienceModel(nn.Module, ABC):
     - compute_fc(): Compute functional connectivity from generated timeseries
     """
     
+    CHECKPOINT_VERSION = 3
+    REQUIRED_CHECKPOINT_KEYS = (
+        "checkpoint_version",
+        "model_class",
+        "model_config",
+        "model_state_dict",
+    )
+
     def __init__(self, n_rois: int, device: str = "cpu"):
         """
         Initialize base model.
@@ -52,6 +60,14 @@ class BaseNeuroscienceModel(nn.Module, ABC):
     def get_parameters_dict(self) -> Dict[str, torch.Tensor]:
         """Return dictionary of model parameters."""
         pass
+
+    def get_model_config(self) -> Dict[str, Any]:
+        """
+        Return model constructor config required for checkpoint reconstruction.
+
+        Subclasses should override this when they require extra constructor args.
+        """
+        return {"n_rois": int(self.n_rois)}
     
     def compute_fc(self, timeseries: torch.Tensor) -> torch.Tensor:
         """
@@ -85,9 +101,10 @@ class BaseNeuroscienceModel(nn.Module, ABC):
             metadata: Optional metadata to save with checkpoint
         """
         checkpoint = {
+            'checkpoint_version': self.CHECKPOINT_VERSION,
             'model_state_dict': self.state_dict(),
-            'n_rois': self.n_rois,
             'model_class': self.__class__.__name__,
+            'model_config': self.get_model_config(),
         }
         
         if metadata is not None:
@@ -96,17 +113,39 @@ class BaseNeuroscienceModel(nn.Module, ABC):
         Path(filepath).parent.mkdir(parents=True, exist_ok=True)
         torch.save(checkpoint, filepath)
     
-    def load(self, filepath: str) -> Dict[str, Any]:
+    def load(self, filepath: str, strict: bool = True) -> Dict[str, Any]:
         """
         Load model checkpoint.
         
         Args:
             filepath: Path to checkpoint
+            strict: Whether to enforce an exact parameter/key match
             
         Returns:
             Metadata from checkpoint if available
         """
-        checkpoint = torch.load(filepath, map_location=self.device)
-        self.load_state_dict(checkpoint['model_state_dict'])
+        checkpoint = torch.load(
+            filepath,
+            map_location=self.device,
+            weights_only=False,
+        )
+        if not isinstance(checkpoint, dict):
+            raise ValueError(f"Checkpoint must be a dict: {filepath}")
+
+        missing = [k for k in self.REQUIRED_CHECKPOINT_KEYS if k not in checkpoint]
+        if missing:
+            missing_str = ", ".join(missing)
+            raise ValueError(
+                f"Legacy or invalid checkpoint (missing: {missing_str}): {filepath}"
+            )
+
+        model_class = checkpoint['model_class']
+        if model_class != self.__class__.__name__:
+            raise ValueError(
+                f"Checkpoint model class mismatch: expected {self.__class__.__name__}, "
+                f"got {model_class}"
+            )
+
+        self.load_state_dict(checkpoint['model_state_dict'], strict=strict)
         
         return checkpoint.get('metadata', {})

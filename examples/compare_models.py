@@ -11,62 +11,41 @@ import numpy as np
 from pathlib import Path
 import argparse
 import json
-import os
-import wandb
+import sys
 
 import matplotlib
 matplotlib.use('Agg')  # Non-interactive backend
 import matplotlib.pyplot as plt
 
-# Set up proxy before importing wandb
-os.environ["HTTP_PROXY"] = "http://proxy.nhr.fau.de:80"
-os.environ["HTTPS_PROXY"] = "http://proxy.nhr.fau.de:80"
+# Ensure imports work when running this file directly.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 # Import project modules
 from src.dataset import NeuroscienceDataset
-from src.models import CoupledHopfModel, NeuralSDE
+from src.models import load_model_from_checkpoint
 from src.metrics import compute_all_fc_metrics
 from src.utils import (
+    ensure_proxy_env,
     plot_fc_comparison,
     plot_model_comparison,
     plot_timeseries,
     create_comparison_report,
-    FIGURES_DIR
+    FIGURES_DIR,
+    managed_wandb_run,
+    print_section,
+    resolve_device,
+    seed_all,
+    wandb_log,
+    wandb_log_figure,
+    wandb_summary_update,
 )
-
-
-def setup_device(device: str = "auto") -> str:
-    """Set up computation device."""
-    if device == "auto":
-        if torch.cuda.is_available():
-            device = "cuda"
-            print(f"Using GPU: {torch.cuda.get_device_name(0)}")
-        else:
-            device = "cpu"
-            print("Using CPU")
-    return device
-
-
-def init_wandb(project: str, run_name: str, use_wandb: bool = True):
-    """Initialize wandb for comparison run."""    
-    settings = wandb.Settings(_service_transport="http")
-    
-    run = wandb.init(
-        project=project,
-        name=run_name,
-        settings=settings,
-        tags=["comparison", "evaluation"]
-    )
-    
-    print(f"Wandb initialized: {project}/{run_name}")
-    return run
 
 
 def load_data(data_path: str, device: str):
     """Load dataset."""
-    print(f"\n{'='*60}")
-    print("Loading Data")
-    print('='*60)
+    print_section("Loading Data")
     
     dataset = NeuroscienceDataset(
         filepath=data_path,
@@ -82,32 +61,39 @@ def load_data(data_path: str, device: str):
     return dataset
 
 
-def load_models(hopf_checkpoint: str, nsde_checkpoint: str, 
-                n_rois: int, device: str):
+def load_models(hopf_checkpoint: str, nsde_checkpoint: str, n_rois: int, device: str):
     """Load trained models from checkpoints."""
-    print(f"\n{'='*60}")
-    print("Loading Models")
-    print('='*60)
+    print_section("Loading Models")
     
     models = {}
     
     # Load Hopf model
     if hopf_checkpoint and Path(hopf_checkpoint).exists():
         print(f"Loading Hopf model from {hopf_checkpoint}")
-        hopf_model = CoupledHopfModel(n_rois=n_rois, device=device)
-        hopf_model.load(hopf_checkpoint)
-        models["Coupled Hopf"] = hopf_model
-        print("  - Hopf model loaded successfully")
+        try:
+            hopf_model, model_name, _ = load_model_from_checkpoint(hopf_checkpoint, device=device)
+            if hopf_model.n_rois != n_rois:
+                print(f"Warning: {model_name} ROI mismatch ({hopf_model.n_rois} != {n_rois}); skipping.")
+            else:
+                models["Coupled Hopf"] = hopf_model
+                print("  - Hopf model loaded successfully")
+        except Exception as exc:
+            print(f"Warning: Failed to load Hopf checkpoint: {exc}")
     else:
         print(f"Warning: Hopf checkpoint not found at {hopf_checkpoint}")
     
     # Load Neural SDE model
     if nsde_checkpoint and Path(nsde_checkpoint).exists():
         print(f"Loading Neural SDE model from {nsde_checkpoint}")
-        sde_model = NeuralSDE(n_rois=n_rois, device=device)
-        sde_model.load(nsde_checkpoint)
-        models["Neural SDE"] = sde_model
-        print("  - Neural SDE model loaded successfully")
+        try:
+            sde_model, model_name, _ = load_model_from_checkpoint(nsde_checkpoint, device=device)
+            if sde_model.n_rois != n_rois:
+                print(f"Warning: {model_name} ROI mismatch ({sde_model.n_rois} != {n_rois}); skipping.")
+            else:
+                models["Neural SDE"] = sde_model
+                print("  - Neural SDE model loaded successfully")
+        except Exception as exc:
+            print(f"Warning: Failed to load Neural SDE checkpoint: {exc}")
     else:
         print(f"Warning: Neural SDE checkpoint not found at {nsde_checkpoint}")
     
@@ -117,9 +103,7 @@ def load_models(hopf_checkpoint: str, nsde_checkpoint: str,
 def evaluate_models(models: dict, target_fc: torch.Tensor, 
                     n_timepoints: int, n_simulations: int = 10):
     """Evaluate all models and compute metrics."""
-    print(f"\n{'='*60}")
-    print("Evaluating Models")
-    print('='*60)
+    print_section("Evaluating Models")
     
     all_results = {}
     
@@ -156,9 +140,7 @@ def generate_comparison_figures(models: dict, target_fc: torch.Tensor,
                                  results: dict, n_timepoints: int,
                                  use_wandb: bool = True):
     """Generate all comparison figures."""
-    print(f"\n{'='*60}")
-    print("Generating Comparison Figures")
-    print('='*60)
+    print_section("Generating Comparison Figures")
     
     figures = {}
     
@@ -177,8 +159,11 @@ def generate_comparison_figures(models: dict, target_fc: torch.Tensor,
         )
         figures[f"{name}_fc"] = fig
         
-        if use_wandb and wandb.run is not None:
-            wandb.log({f"figures/{name}_fc_comparison": wandb.Image(fig)})
+        wandb_log_figure(
+            f"figures/{name}_fc_comparison",
+            fig,
+            use_wandb=use_wandb,
+        )
         plt.close()
         
         # Timeseries
@@ -191,8 +176,11 @@ def generate_comparison_figures(models: dict, target_fc: torch.Tensor,
         )
         figures[f"{name}_ts"] = fig
         
-        if use_wandb and wandb.run is not None:
-            wandb.log({f"figures/{name}_timeseries": wandb.Image(fig)})
+        wandb_log_figure(
+            f"figures/{name}_timeseries",
+            fig,
+            use_wandb=use_wandb,
+        )
         plt.close()
     
     # Model comparison bar plot
@@ -204,8 +192,7 @@ def generate_comparison_figures(models: dict, target_fc: torch.Tensor,
     )
     figures["comparison"] = fig
     
-    if use_wandb and wandb.run is not None:
-        wandb.log({"figures/model_comparison": wandb.Image(fig)})
+    wandb_log_figure("figures/model_comparison", fig, use_wandb=use_wandb)
     plt.close()
     
     # Comprehensive comparison report
@@ -218,8 +205,7 @@ def generate_comparison_figures(models: dict, target_fc: torch.Tensor,
     )
     figures["report"] = fig
     
-    if use_wandb and wandb.run is not None:
-        wandb.log({"figures/comparison_report": wandb.Image(fig)})
+    wandb_log_figure("figures/comparison_report", fig, use_wandb=use_wandb)
     plt.close()
     
     print(f"All figures saved to {FIGURES_DIR}")
@@ -282,26 +268,26 @@ def main():
     parser.add_argument("--output-path", type=str, default="results/comparison_results.json", help="Path to save comparison results")
     args = parser.parse_args()
     
-    print("="*60)
-    print("MODEL COMPARISON")
-    print("="*60)
+    print_section("MODEL COMPARISON")
+    ensure_proxy_env()
     
     # Setup
-    device = setup_device(args.device)
-    torch.manual_seed(42)
-    np.random.seed(42)
+    device = resolve_device(args.device)
+    seed_all(42)
     
     use_wandb = not args.no_wandb
     
-    # Initialize wandb
-    init_wandb(args.wandb_project, args.run_name, use_wandb)
-    
-    try:
+    with managed_wandb_run(
+        use_wandb=use_wandb,
+        project=args.wandb_project,
+        run_name=args.run_name,
+        tags=["comparison", "evaluation"],
+    ):
         # Load data
         dataset = load_data(args.data_path, device)
         target_fc = dataset.fc_mean
         n_timepoints = min(dataset.n_timepoints, 200)
-        
+
         # Load models
         models = load_models(
             args.hopf_checkpoint,
@@ -309,55 +295,49 @@ def main():
             n_rois=dataset.n_rois,
             device=device
         )
-        
+
         if not models:
             print("Error: No models could be loaded. Please check checkpoint paths.")
-            return
-        
+            return None
+
         # Evaluate models
         results = evaluate_models(
-            models, target_fc, n_timepoints, 
+            models,
+            target_fc,
+            n_timepoints,
             n_simulations=args.n_simulations
         )
-        
+
         # Log results to wandb
-        if use_wandb and wandb.run is not None:
-            for model_name, metrics in results.items():
-                for k, v in metrics.items():
-                    wandb.log({f"{model_name}/{k}": v})
-            wandb.summary.update({
-                "best_model": max(results.keys(), key=lambda x: results[x]['fc_correlation'])
-            })
-        
-        # Generate figures
-        figures = generate_comparison_figures(
-            models, target_fc, results, n_timepoints,
-            use_wandb=use_wandb
+        for model_name, metrics in results.items():
+            wandb_log(
+                {f"{model_name}/{k}": v for k, v in metrics.items()},
+                use_wandb=use_wandb,
+            )
+        wandb_summary_update(
+            {"best_model": max(results.keys(), key=lambda x: results[x]['fc_correlation'])},
+            use_wandb=use_wandb,
         )
-        
+
+        # Generate figures
+        generate_comparison_figures(
+            models,
+            target_fc,
+            results,
+            n_timepoints,
+            use_wandb=use_wandb,
+        )
+
         # Save results
         save_results(results, args.output_path)
-        
+
         # Print summary
         print_summary(results)
-        
-        print("\n" + "="*60)
-        print("COMPARISON COMPLETED SUCCESSFULLY")
-        print("="*60)
+
+        print_section("COMPARISON COMPLETED SUCCESSFULLY")
         print(f"\nResults saved to: {args.output_path}")
         print(f"Figures saved to: {FIGURES_DIR}")
-        
         return results
-        
-    except Exception as e:
-        print(f"\nError during execution: {e}")
-        import traceback
-        traceback.print_exc()
-        raise
-    finally:
-        # Finish wandb run
-        if wandb.run is not None:
-            wandb.finish()
 
 
 if __name__ == "__main__":

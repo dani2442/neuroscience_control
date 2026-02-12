@@ -7,7 +7,7 @@ nonlinear oscillators at the bifurcation point.
 
 import torch
 import torch.nn as nn
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 from .base_model import BaseNeuroscienceModel
 import torchsde
 
@@ -282,8 +282,17 @@ class CoupledHopfModel(BaseNeuroscienceModel):
             if torch.is_complex(z):
                 y0 = torch.cat([z.real, z.imag], dim=1)
             else:
-                # Assume it's already in real representation
-                y0 = z
+                if z.shape[1] == self.n_rois:
+                    # Real-valued initial condition only; add zero imaginary part.
+                    y0 = torch.cat([z, torch.zeros_like(z)], dim=1)
+                elif z.shape[1] == 2 * self.n_rois:
+                    # Already in real representation (real || imag).
+                    y0 = z
+                else:
+                    raise ValueError(
+                        f"Expected initial_state second dim to be {self.n_rois} or "
+                        f"{2 * self.n_rois}, got {z.shape[1]}"
+                    )
         
         # Time points
         ts = torch.linspace(0, (n_steps - 1) * dt, n_steps, device=self.device)
@@ -331,6 +340,18 @@ class CoupledHopfModel(BaseNeuroscienceModel):
             'omega': self.omega.detach().clone(),
         }
         return params
+
+    def get_model_config(self) -> Dict[str, Any]:
+        """Return constructor config needed to reconstruct this model."""
+        return {
+            "n_rois": int(self.n_rois),
+            "noise_sigma": float(self.noise_sigma),
+            "learnable_a": bool(self.learnable_a),
+            "learnable_g": bool(self.learnable_g),
+            "learnable_omega": bool(self.learnable_omega),
+            "initial_a": float(self.a.detach().mean().cpu().item()),
+            "initial_g": float(self.g.detach().cpu().item()),
+        }
     
     def set_parameters(
         self,

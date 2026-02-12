@@ -3,6 +3,7 @@
 from .trainer import Trainer
 from .grid_search import GridSearch, grid_search_hopf
 from .fine_tuning import FineTuner
+from .backprop import create_windowed_loaders, run_backprop_training
 from .config import TrainingConfig, HopfConfig, NeuralSDEConfig
 from .losses import CompositeLoss, build_loss, LOSS_REGISTRY
 
@@ -11,6 +12,8 @@ __all__ = [
     "GridSearch",
     "grid_search_hopf",
     "FineTuner",
+    "create_windowed_loaders",
+    "run_backprop_training",
     "TrainingConfig",
     "HopfConfig",
     "NeuralSDEConfig",

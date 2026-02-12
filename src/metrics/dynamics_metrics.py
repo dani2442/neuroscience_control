@@ -15,12 +15,20 @@ def detrend_linear(x: torch.Tensor) -> torch.Tensor:
     if x.ndim != 2:
         raise ValueError("x must be (T, N)")
     T, _ = x.shape
+    if T < 2:
+        return x
+
     device, dtype = x.device, x.dtype
 
+    # Closed-form per-channel linear regression avoids backend lstsq issues.
     t = torch.linspace(0.0, 1.0, T, device=device, dtype=dtype).unsqueeze(1)  # (T, 1)
-    A = torch.cat([t, torch.ones_like(t)], dim=1)  # (T, 2)
-    beta = torch.linalg.lstsq(A, x).solution  # (2, N)
-    trend = A @ beta
+    t_centered = t - t.mean(dim=0, keepdim=True)  # (T, 1)
+    x_mean = x.mean(dim=0, keepdim=True)  # (1, N)
+
+    denom = (t_centered * t_centered).sum(dim=0, keepdim=True).clamp_min(1e-12)  # (1, 1)
+    slope = (t_centered * (x - x_mean)).sum(dim=0, keepdim=True) / denom  # (1, N)
+    intercept = x_mean - slope * t.mean(dim=0, keepdim=True)  # (1, N)
+    trend = t * slope + intercept  # (T, N)
     return x - trend
 
 

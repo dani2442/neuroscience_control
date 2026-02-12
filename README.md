@@ -225,32 +225,21 @@ $$
 
 ## Training
 
-### Hopf Model: Grid Search / Backpropagation
+### Hopf Model: Grid Search
 
-The Coupled Hopf model now supports both:
-- `grid`: grid search over $(G, a)$
-- `backprop`: gradient-based training with `Trainer`
-- `both`: run both strategies in one command
+The Coupled Hopf model supports grid search over $(G, a)$:
 
 ```bash
 python examples/train_hopf.py \
     --data-path data/ts_young/ts_young_TR0.72.mat \
-    --training-mode grid \
     --experiment-name hopf_experiment \
     --wandb-project neuroscience-control
 ```
 
-Backpropagation mode:
+Backpropagation (Hopf or NSDE) is handled by:
 
 ```bash
-python examples/train_hopf.py \
-    --training-mode backprop \
-    --n-epochs 50 \
-    --lr 1e-3 \
-    --loss-fn fc_fcd_meta \
-    --loss-weight-fc 1.0 \
-    --loss-weight-fcd 1.0 \
-    --loss-weight-metastability 1.0
+python examples/train_backprop.py --model hopf --n-epochs 50 --loss-fn fc_fcd_meta
 ```
 
 ### Neural SDE: Backpropagation
@@ -265,6 +254,26 @@ python examples/train_nsde.py \
     --hidden-dim 32 \
     --loss-fn fc_fcd_meta \
     --experiment-name nsde_experiment
+```
+
+### Unified Backpropagation (NSDE + Hopf)
+
+Use one script for both models:
+
+```bash
+python examples/train_backprop.py --model nsde --n-epochs 50 --loss-fn fc_fcd_meta
+python examples/train_backprop.py --model hopf --n-epochs 50 --initial-a -0.02 --initial-g 0.5
+```
+
+### Neural SDE: Fine-tuning
+
+Fine-tune a pretrained NSDE checkpoint:
+
+```bash
+python examples/train_nsde_finetune.py \
+    --checkpoint checkpoints/nsde_best_<run_name>.pt \
+    --fine-tune-epochs 20 \
+    --fine-tune-lr 1e-4
 ```
 
 ### Configuration Parameters
@@ -291,8 +300,10 @@ python examples/train_nsde.py \
 
 | Script | Description |
 |--------|-------------|
-| [`examples/train_hopf.py`](examples/train_hopf.py) | Train Coupled Hopf via grid search and/or backprop |
+| [`examples/train_hopf.py`](examples/train_hopf.py) | Train Coupled Hopf via grid search |
 | [`examples/train_nsde.py`](examples/train_nsde.py) | Train Neural SDE via backpropagation |
+| [`examples/train_backprop.py`](examples/train_backprop.py) | Unified backprop training entrypoint for NSDE or Hopf |
+| [`examples/train_nsde_finetune.py`](examples/train_nsde_finetune.py) | Fine-tune a pretrained Neural SDE checkpoint |
 | [`examples/compare_models.py`](examples/compare_models.py) | Compare trained models |
 
 ### Model Comparison
