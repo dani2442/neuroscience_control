@@ -577,6 +577,7 @@ def create_comparison_report(
     models: Dict[str, Any],
     target_fc: torch.Tensor,
     n_timepoints: int = 200,
+    initial_state: Optional[torch.Tensor] = None,
     save_dir: Optional[str] = None,
     figsize: Tuple[int, int] = (16, 12),
     use_pdf: bool = True
@@ -588,6 +589,7 @@ def create_comparison_report(
         models: Dict mapping model names to model objects
         target_fc: Target functional connectivity
         n_timepoints: Timepoints to simulate
+        initial_state: Complex initial condition (1, n_rois). Required.
         save_dir: Directory to save results (defaults to paper/images/)
         figsize: Figure size
         use_pdf: Whether to save as PDF
@@ -620,11 +622,12 @@ def create_comparison_report(
     for i, (name, model) in enumerate(models.items()):
         # Simulate
         with torch.no_grad():
-            ts = model.forward(n_steps=n_timepoints, batch_size=1)
+            ts = model.forward(initial_state=initial_state, n_steps=n_timepoints)
             fc_pred = model.compute_fc(ts)
         
         fc_pred_np = fc_pred[0].detach().cpu().numpy()
-        ts_np = ts[0].detach().cpu().numpy()
+        ts_real = ts.real if torch.is_complex(ts) else ts
+        ts_np = ts_real[0].detach().cpu().numpy()
         
         # Plot FC
         ax_fc = fig.add_subplot(gs[0, i + 1])

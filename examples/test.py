@@ -54,6 +54,9 @@ def main(args: argparse.Namespace) -> None:
         device=device,
         max_subjects=args.max_subjects,
         dt=args.tr,
+        fourier_denoise=args.fourier_denoise,
+        denoise_f_lo=args.denoise_f_lo,
+        denoise_f_hi=args.denoise_f_hi,
     )
     print("\nDataset loaded:")
     print(f"  - subjects: {dataset.n_subjects}")
@@ -64,12 +67,11 @@ def main(args: argparse.Namespace) -> None:
     print(f"\nModel restored: {model_name}")
 
     window_size = min(args.window_size, dataset.n_timepoints // 4)
-    stride = args.stride if args.stride is not None else max(1, window_size // 2)
     _, _, test_loader = create_data_loaders(
         dataset=dataset,
         window_size=window_size,
-        stride=stride,
         batch_size=args.batch_size,
+        n_windows_per_epoch=args.n_windows_per_epoch,
         train_ratio=args.train_ratio,
         val_ratio=args.val_ratio,
         seed=args.seed,
@@ -110,7 +112,7 @@ def main(args: argparse.Namespace) -> None:
     initial_state = real_ts[:, :, 0]
 
     with torch.no_grad():
-        sim_ts = model.forward(initial_state=initial_state, n_steps=n_steps, dt=args.tr, batch_size=1)
+        sim_ts = model.forward(initial_state=initial_state, n_steps=n_steps, dt=args.tr)
 
     sim_fc = model.compute_fc(sim_ts)
     real_fc = model.compute_fc(real_ts)
@@ -131,8 +133,8 @@ def main(args: argparse.Namespace) -> None:
     }
 
     fig = plot_real_vs_sim_multigrid(
-        real_timeseries=real_ts,
-        simulated_timeseries=sim_ts,
+        real_timeseries=real_ts.real,
+        simulated_timeseries=sim_ts.real,
         n_rois=args.n_rois_plot,
         n_cols=args.grid_cols,
         max_timepoints=n_steps,
@@ -177,7 +179,7 @@ if __name__ == "__main__":
 
     parser.add_argument("--max-subjects", type=int, default=50, help="Limit subjects for evaluation")
     parser.add_argument("--window-size", type=int, default=100, help="Window size for test loader")
-    parser.add_argument("--stride", type=int, default=None, help="Window stride (default: window_size // 2)")
+    parser.add_argument("--n-windows-per-epoch", type=int, default=256, help="Random windows per epoch")
     parser.add_argument("--batch-size", type=int, default=32, help="Batch size for test loader")
     parser.add_argument("--train-ratio", type=float, default=0.7, help="Train split ratio")
     parser.add_argument("--val-ratio", type=float, default=0.15, help="Validation split ratio")
@@ -192,6 +194,11 @@ if __name__ == "__main__":
     parser.add_argument("--fcd-step-sec", type=float, default=2.0, help="FCD step (seconds)")
     parser.add_argument("--no-fcd", action="store_true", help="Disable FCD metric computation")
     parser.add_argument("--no-metastability", action="store_true", help="Disable metastability metric computation")
+
+    # Preprocessing
+    parser.add_argument("--fourier-denoise", action="store_true", help="Apply FFT bandpass denoising")
+    parser.add_argument("--denoise-f-lo", type=float, default=0.01, help="Denoising low cutoff (Hz)")
+    parser.add_argument("--denoise-f-hi", type=float, default=0.1, help="Denoising high cutoff (Hz)")
 
     parser.add_argument("--subject-index", type=int, default=0, help="Subject index for real-vs-sim trajectory plot")
     parser.add_argument("--sim-steps", type=int, default=200, help="Timepoints to simulate for real-vs-sim comparison")

@@ -50,6 +50,9 @@ def load_data(cfg: NeuralSDEConfig, device: str) -> NeuroscienceDataset:
         device=device,
         max_subjects=cfg.max_subjects,
         dt=cfg.tr,
+        fourier_denoise=cfg.fourier_denoise,
+        denoise_f_lo=cfg.denoise_f_lo,
+        denoise_f_hi=cfg.denoise_f_hi,
     )
 
     print("Loaded dataset:")
@@ -57,7 +60,7 @@ def load_data(cfg: NeuralSDEConfig, device: str) -> NeuroscienceDataset:
     print(f"  - Number of ROIs: {dataset.n_rois}")
     print(f"  - Number of timepoints: {dataset.n_timepoints}")
     print(f"  - FC matrix shape: {dataset.fc_mean.shape}")
-    print(f"  - Time array shape: {dataset.ts.shape}")
+    print(f"  - Timeseries dtype: {dataset.timeseries.dtype}")
     print(f"  - dt (TR): {dataset.dt}s")
     return dataset
 
@@ -158,9 +161,10 @@ def save_model_and_figures(
         use_wandb=cfg.use_wandb,
     )
 
-    n_paths = 5
+    n_paths = min(5, dataset.n_subjects)
+    initial_states = dataset.timeseries[:n_paths, :, 0]
     with torch.no_grad():
-        sde_ts = model.forward(n_steps=n_timepoints, dt=cfg.tr, batch_size=n_paths)
+        sde_ts = model.forward(initial_state=initial_states, n_steps=n_timepoints, dt=cfg.tr)
         sde_fc = model.compute_fc(sde_ts)
         sde_fc_mean = sde_fc.mean(dim=0)
 
@@ -196,7 +200,7 @@ def save_model_and_figures(
     plt.close(fig)
 
     fig = plot_timeseries(
-        sde_ts,
+        sde_ts.real,
         n_rois=5,
         title="Neural SDE (Finetuned) - Simulated Timeseries",
         default_name="nsde_finetuned_timeseries",
@@ -206,7 +210,7 @@ def save_model_and_figures(
     plt.close(fig)
 
     fig = plot_realizations(
-        sde_ts,
+        sde_ts.real,
         roi_index=0,
         n_realizations=min(6, sde_ts.shape[0]),
         title="Neural SDE (Finetuned) - Sample Realizations",

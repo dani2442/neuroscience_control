@@ -54,6 +54,9 @@ def load_data(cfg: NeuralSDEConfig | HopfConfig, device: str) -> NeuroscienceDat
         device=device,
         max_subjects=cfg.max_subjects,
         dt=cfg.tr,
+        fourier_denoise=cfg.fourier_denoise,
+        denoise_f_lo=cfg.denoise_f_lo,
+        denoise_f_hi=cfg.denoise_f_hi,
     )
 
     print("Loaded dataset:")
@@ -61,7 +64,7 @@ def load_data(cfg: NeuralSDEConfig | HopfConfig, device: str) -> NeuroscienceDat
     print(f"  - Number of ROIs: {dataset.n_rois}")
     print(f"  - Number of timepoints: {dataset.n_timepoints}")
     print(f"  - FC matrix shape: {dataset.fc_mean.shape}")
-    print(f"  - Time array shape: {dataset.ts.shape}")
+    print(f"  - Timeseries dtype: {dataset.timeseries.dtype}")
     print(f"  - dt (TR): {dataset.dt}s")
     return dataset
 
@@ -164,9 +167,10 @@ def save_model_and_figures(
         use_wandb=cfg.use_wandb,
     )
 
-    n_paths = 6
+    n_paths = min(6, dataset.n_subjects)
+    initial_states = dataset.timeseries[:n_paths, :, 0]
     with torch.no_grad():
-        simulated_ts = model.forward(n_steps=n_timepoints, dt=cfg.tr, batch_size=n_paths)
+        simulated_ts = model.forward(initial_state=initial_states, n_steps=n_timepoints, dt=cfg.tr)
         simulated_fc = model.compute_fc(simulated_ts)
         simulated_fc_mean = simulated_fc.mean(dim=0)
 
@@ -204,7 +208,7 @@ def save_model_and_figures(
     plt.close(fig)
 
     fig = plot_timeseries(
-        simulated_ts,
+        simulated_ts.real,
         n_rois=5,
         title=f"{model_title} (Backprop) - Simulated Timeseries",
         default_name=f"{model_name}_backprop_timeseries",
@@ -214,7 +218,7 @@ def save_model_and_figures(
     plt.close(fig)
 
     fig = plot_realizations(
-        simulated_ts,
+        simulated_ts.real,
         roi_index=0,
         n_realizations=min(6, simulated_ts.shape[0]),
         title=f"{model_title} (Backprop) - Sample Realizations",
@@ -266,6 +270,10 @@ def build_config(args: argparse.Namespace):
         fcd_step_sec=args.fcd_step_sec,
         compute_fcd_metrics=not args.no_fcd,
         compute_metastability_metrics=not args.no_metastability,
+        fourier_denoise=args.fourier_denoise,
+        denoise_f_lo=args.denoise_f_lo,
+        denoise_f_hi=args.denoise_f_hi,
+        n_windows_per_epoch=args.n_windows_per_epoch,
     )
 
     if args.model == "nsde":
@@ -331,6 +339,12 @@ def main(argv=None):
     parser.add_argument("--fcd-step-sec", type=float, default=2.0, help="FCD window step in seconds")
     parser.add_argument("--no-fcd", action="store_true", help="Disable FCD metrics")
     parser.add_argument("--no-metastability", action="store_true", help="Disable metastability metrics")
+
+    # Preprocessing
+    parser.add_argument("--fourier-denoise", action="store_true", help="Apply FFT bandpass denoising")
+    parser.add_argument("--denoise-f-lo", type=float, default=0.01, help="Denoising low cutoff (Hz)")
+    parser.add_argument("--denoise-f-hi", type=float, default=0.1, help="Denoising high cutoff (Hz)")
+    parser.add_argument("--n-windows-per-epoch", type=int, default=256, help="Random windows per epoch")
 
     # NSDE settings
     parser.add_argument("--hidden-dim", type=int, default=256, help="NSDE hidden dimension")

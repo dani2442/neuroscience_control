@@ -100,25 +100,27 @@ def load_models(hopf_checkpoint: str, nsde_checkpoint: str, n_rois: int, device:
     return models
 
 
-def evaluate_models(models: dict, target_fc: torch.Tensor, 
+def evaluate_models(models: dict, dataset: NeuroscienceDataset,
+                    target_fc: torch.Tensor, 
                     n_timepoints: int, n_simulations: int = 10):
     """Evaluate all models and compute metrics."""
     print_section("Evaluating Models")
     
     all_results = {}
+    n_eval = min(n_simulations, dataset.n_subjects)
+    initial_states = dataset.timeseries[:n_eval, :, 0]
     
     for name, model in models.items():
         print(f"\nEvaluating {name}...")
         
-        all_fc_corrs = []
-        all_fc_mses = []
-        
         with torch.no_grad():
-            for _ in range(n_simulations):
-                ts = model.forward(n_steps=n_timepoints, batch_size=1)
-                fc_pred = model.compute_fc(ts)
-                
-                metrics = compute_all_fc_metrics(fc_pred, target_fc.unsqueeze(0))
+            ts = model.forward(initial_state=initial_states, n_steps=n_timepoints)
+            fc_pred = model.compute_fc(ts)
+            
+            all_fc_corrs = []
+            all_fc_mses = []
+            for i in range(n_eval):
+                metrics = compute_all_fc_metrics(fc_pred[i:i+1], target_fc.unsqueeze(0))
                 all_fc_corrs.append(metrics['fc_correlation'])
                 all_fc_mses.append(metrics['fc_mse'])
         
@@ -136,18 +138,20 @@ def evaluate_models(models: dict, target_fc: torch.Tensor,
     return all_results
 
 
-def generate_comparison_figures(models: dict, target_fc: torch.Tensor,
+def generate_comparison_figures(models: dict, dataset: NeuroscienceDataset,
+                                 target_fc: torch.Tensor,
                                  results: dict, n_timepoints: int,
                                  use_wandb: bool = True):
     """Generate all comparison figures."""
     print_section("Generating Comparison Figures")
     
     figures = {}
+    initial_state = dataset.timeseries[:1, :, 0]
     
     # Individual FC comparisons
     for name, model in models.items():
         with torch.no_grad():
-            ts = model.forward(n_steps=n_timepoints, batch_size=1)
+            ts = model.forward(initial_state=initial_state, n_steps=n_timepoints)
             fc_pred = model.compute_fc(ts)[0]
         
         # FC comparison
@@ -168,7 +172,7 @@ def generate_comparison_figures(models: dict, target_fc: torch.Tensor,
         
         # Timeseries
         fig = plot_timeseries(
-            ts[0],
+            ts[0].real,
             n_rois=5,
             title=f"{name} - Simulated Timeseries",
             default_name=f"{name.lower().replace(' ', '_')}_timeseries",
@@ -200,6 +204,7 @@ def generate_comparison_figures(models: dict, target_fc: torch.Tensor,
         models=models,
         target_fc=target_fc,
         n_timepoints=n_timepoints,
+        initial_state=initial_state,
         save_dir=str(FIGURES_DIR),
         use_pdf=True
     )
@@ -303,6 +308,7 @@ def main():
         # Evaluate models
         results = evaluate_models(
             models,
+            dataset,
             target_fc,
             n_timepoints,
             n_simulations=args.n_simulations
@@ -322,6 +328,7 @@ def main():
         # Generate figures
         generate_comparison_figures(
             models,
+            dataset,
             target_fc,
             results,
             n_timepoints,

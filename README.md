@@ -92,7 +92,8 @@ model = CoupledHopfModel(
 
 # Simulate 200 timepoints
 with torch.no_grad():
-    timeseries = model.forward(n_steps=200, batch_size=10)  # (10, 68, 200)
+    initial_state = dataset.timeseries[:10, :, 0]  # complex initial conditions
+    timeseries = model.forward(initial_state=initial_state, n_steps=200)  # (10, 68, 200) complex
     fc_matrix = model.compute_fc(timeseries)                 # (10, 68, 68)
 
 print(f"Simulated timeseries shape: {timeseries.shape}")

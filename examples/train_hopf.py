@@ -50,6 +50,9 @@ def load_data(cfg: HopfConfig, device: str):
         device=device,
         max_subjects=cfg.max_subjects,
         dt=cfg.tr,
+        fourier_denoise=cfg.fourier_denoise,
+        denoise_f_lo=cfg.denoise_f_lo,
+        denoise_f_hi=cfg.denoise_f_hi,
     )
 
     print("Loaded dataset:")
@@ -57,8 +60,8 @@ def load_data(cfg: HopfConfig, device: str):
     print(f"  - Number of ROIs: {dataset.n_rois}")
     print(f"  - Number of timepoints: {dataset.n_timepoints}")
     print(f"  - FC matrix shape: {dataset.fc_mean.shape}")
-    print(f"  - Time array shape: {dataset.ts.shape}")
-    print(f"  - dt (TR): {dataset.dt}s")
+    print(f"  - Timeseries dtype: {dataset.timeseries.dtype}")
+    print(f"  - dt (TR): {dataset.dt}s"))
 
     omega = compute_omega_from_timeseries(
         dataset.timeseries,
@@ -86,9 +89,11 @@ def evaluate_hopf_model(
     """Evaluate FC/FCD/metastability for a trained Hopf model."""
     target_fc = dataset.fc_mean
     n_timepoints = min(dataset.n_timepoints, 200)
+    n_paths = min(n_paths, dataset.n_subjects)
+    initial_states = dataset.timeseries[:n_paths, :, 0]
 
     with torch.no_grad():
-        hopf_ts = hopf_model.forward(n_steps=n_timepoints, dt=cfg.tr, batch_size=n_paths)
+        hopf_ts = hopf_model.forward(initial_state=initial_states, n_steps=n_timepoints, dt=cfg.tr)
         hopf_fc = hopf_model.compute_fc(hopf_ts)
         hopf_fc_mean = hopf_fc.mean(dim=0)
 
@@ -130,6 +135,8 @@ def train_hopf_grid_search(
     target_fc = dataset.fc_mean
     n_rois = dataset.n_rois
     n_timepoints = min(dataset.n_timepoints, 200)
+    n_eval = min(cfg.n_simulations, dataset.n_subjects)
+    initial_states = dataset.timeseries[:n_eval, :, 0]
 
     print(f"Grid search over {len(cfg.g_values) * len(cfg.a_values)} parameter combinations")
     print(f"  - G values: {cfg.g_values}")
@@ -138,12 +145,12 @@ def train_hopf_grid_search(
     best_params, hopf_model = grid_search_hopf(
         target_fc=target_fc,
         n_rois=n_rois,
+        initial_states=initial_states,
         omega=omega,
         g_values=cfg.g_values,
         a_values=cfg.a_values,
         n_timepoints=n_timepoints,
         dt=cfg.tr,
-        batch_size=cfg.n_simulations,
         device=device,
     )
 
@@ -186,9 +193,10 @@ def save_model_and_figures(
         use_wandb=cfg.use_wandb,
     )
 
-    n_paths = 6
+    n_paths = min(6, dataset.n_subjects)
+    initial_states = dataset.timeseries[:n_paths, :, 0]
     with torch.no_grad():
-        hopf_ts = hopf_model.forward(n_steps=n_timepoints, dt=cfg.tr, batch_size=n_paths)
+        hopf_ts = hopf_model.forward(initial_state=initial_states, n_steps=n_timepoints, dt=cfg.tr)
         hopf_fc = hopf_model.compute_fc(hopf_ts)
         hopf_fc_mean = hopf_fc.mean(dim=0)
 
@@ -203,7 +211,7 @@ def save_model_and_figures(
     plt.close(fig)
 
     fig = plot_timeseries(
-        hopf_ts,
+        hopf_ts.real,
         n_rois=5,
         title="Coupled Hopf (Grid) - Simulated Timeseries",
         default_name="hopf_grid_timeseries",
@@ -213,7 +221,7 @@ def save_model_and_figures(
     plt.close(fig)
 
     fig = plot_realizations(
-        hopf_ts,
+        hopf_ts.real,
         roi_index=0,
         n_realizations=min(6, hopf_ts.shape[0]),
         title="Coupled Hopf (Grid) - Sample Realizations",
@@ -247,6 +255,11 @@ def main(argv=None):
     parser.add_argument("--no-fcd", action="store_true", help="Disable FCD metrics")
     parser.add_argument("--no-metastability", action="store_true", help="Disable metastability metrics")
 
+    # Preprocessing
+    parser.add_argument("--fourier-denoise", action="store_true", help="Apply FFT bandpass denoising")
+    parser.add_argument("--denoise-f-lo", type=float, default=0.01, help="Denoising low cutoff (Hz)")
+    parser.add_argument("--denoise-f-hi", type=float, default=0.1, help="Denoising high cutoff (Hz)")
+
     # Grid-search settings
     parser.add_argument("--g-values", type=float, nargs="*", default=None, help="Grid values for G")
     parser.add_argument("--a-values", type=float, nargs="*", default=None, help="Grid values for a")
@@ -273,6 +286,9 @@ def main(argv=None):
         compute_fcd_metrics=not args.no_fcd,
         compute_metastability_metrics=not args.no_metastability,
         n_simulations=args.n_simulations,
+        fourier_denoise=args.fourier_denoise,
+        denoise_f_lo=args.denoise_f_lo,
+        denoise_f_hi=args.denoise_f_hi,
     )
 
     if args.g_values:
