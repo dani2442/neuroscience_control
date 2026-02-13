@@ -28,7 +28,7 @@ DYN_METRICS = ("fcd_ks", "metastability_diff")
 LOSS_COMPONENT_METRICS = (
     "loss_fc_mse", "loss_fc_correlation",
     "loss_l2",
-    "loss_hilbert_amp", "loss_hilbert_omega",
+    "loss_amplitude", "loss_omega",
     "loss_fcd", "loss_metastability",
 )
 ALL_METRICS = FC_METRICS + TS_METRICS + DYN_METRICS + LOSS_COMPONENT_METRICS
@@ -250,8 +250,8 @@ class Trainer:
             "loss_weight_fc": "fc_correlation",
             "loss_weight_fc_mse": "fc_mse",
             "loss_weight_l2": "l2",
-            "loss_weight_hilbert_amp": "hilbert_amp",
-            "loss_weight_hilbert_omega": "hilbert_omega",
+            "loss_weight_amplitude": "amplitude",
+            "loss_weight_omega": "omega",
             "loss_weight_fcd": "fcd",
             "loss_weight_metastability": "metastability",
         }
@@ -306,13 +306,10 @@ class Trainer:
             metrics[name] = float(value.item())
 
         if compute_expensive:
-            # Use real part for timeseries/dynamics metrics
-            ts_p = ts_pred.real if torch.is_complex(ts_pred) else ts_pred
-            ts_t = ts_target.real if torch.is_complex(ts_target) else ts_target
-            metrics.update(compute_all_timeseries_metrics(ts_p, ts_t))
+            metrics.update(compute_all_timeseries_metrics(ts_pred, ts_target))
             dyn_metrics = compute_dynamics_fit_metrics(
-                ts_p,
-                ts_t,
+                ts_pred,
+                ts_target,
                 **self._dynamics_kwargs()
             )
             metrics.update(dyn_metrics)

@@ -210,12 +210,17 @@ def _to_real(ts: torch.Tensor) -> torch.Tensor:
 
 
 def _ensure_batch(ts: torch.Tensor) -> torch.Tensor:
-    ts = _to_real(ts)
+    """Add batch dimension if needed. Preserves dtype (complex or real)."""
     if ts.ndim == 2:
         return ts.unsqueeze(0)
     if ts.ndim != 3:
         raise ValueError("Timeseries must be (batch, n_rois, n_timepoints) or (n_rois, n_timepoints)")
     return ts
+
+
+def _ensure_batch_real(ts: torch.Tensor) -> torch.Tensor:
+    """Add batch dimension and convert to real."""
+    return _ensure_batch(_to_real(ts))
 
 
 def metastability_value(
@@ -227,14 +232,27 @@ def metastability_value(
     """
     Compute batch-mean metastability (differentiable).
 
+    For complex inputs the phases are extracted directly via
+    ``torch.angle(z)`` — no Hilbert transform is needed because
+    the complex timeseries is already an analytic signal.
+
+    For real inputs the legacy path (preprocess → Hilbert → phase)
+    is kept as a fallback.
+
     Args:
-        ts: (batch, n_rois, n_timepoints) or (n_rois, n_timepoints)
+        ts: (batch, n_rois, n_timepoints) or (n_rois, n_timepoints),
+             complex or real.
     """
     ts = _ensure_batch(ts)
+    is_complex = torch.is_complex(ts)
     vals = []
     for b in range(ts.shape[0]):
-        x = _preprocess_timeseries(ts[b].transpose(0, 1), tr, f_lo, f_hi)
-        phases = torch.angle(analytic_signal(x))
+        if is_complex:
+            # Direct phase extraction from complex analytic signal
+            phases = torch.angle(ts[b]).transpose(0, 1)  # (T, N)
+        else:
+            x = _preprocess_timeseries(ts[b].transpose(0, 1), tr, f_lo, f_hi)
+            phases = torch.angle(analytic_signal(x))  # (T, N)
         vals.append(kuramoto_metastability(phases))
     return torch.stack(vals).mean()
 
@@ -273,8 +291,8 @@ def fcd_mse_loss(
           (e.g., too-short series, invalid step), this returns ``0`` so training
           can proceed without NaNs.
     """
-    ts_pred = _ensure_batch(ts_pred)
-    ts_target = _ensure_batch(ts_target)
+    ts_pred = _ensure_batch_real(ts_pred)
+    ts_target = _ensure_batch_real(ts_target)
 
     batch = min(ts_pred.shape[0], ts_target.shape[0])
     if batch == 0:
@@ -340,20 +358,24 @@ def compute_dynamics_fit_metrics(
         - ``fcd_ks`` is reported as ``NaN`` when FCD windowing is not feasible for
           the provided series length / window parameters.
     """
-    ts_pred = _ensure_batch(ts_pred)
-    ts_target = _ensure_batch(ts_target)
+    ts_raw = _ensure_batch(ts_pred)   # keep complex for metastability
+    tt_raw = _ensure_batch(ts_target)
 
-    batch = min(ts_pred.shape[0], ts_target.shape[0])
+    # Real versions for FCD (needs real-valued preprocessing + FC windowing)
+    ts_pred_r = _to_real(ts_raw)
+    ts_target_r = _to_real(tt_raw)
+
+    batch = min(ts_raw.shape[0], tt_raw.shape[0])
     if batch == 0:
         raise ValueError("Timeseries batch dimension must be > 0.")
 
-    ts_pred = ts_pred[:batch]
-    ts_target = ts_target[:batch]
+    ts_pred_r = ts_pred_r[:batch]
+    ts_target_r = ts_target_r[:batch]
 
     # Align time dimensions to the shorter of the two to avoid length bias.
-    n_timepoints = min(ts_pred.shape[2], ts_target.shape[2])
-    ts_pred = ts_pred[:, :, :n_timepoints]
-    ts_target = ts_target[:, :, :n_timepoints]
+    n_timepoints = min(ts_pred_r.shape[2], ts_target_r.shape[2])
+    ts_pred_r = ts_pred_r[:, :, :n_timepoints]
+    ts_target_r = ts_target_r[:, :, :n_timepoints]
 
     win_len = int(round(fcd_win_sec / tr))
     win_step = int(round(fcd_step_sec / tr))
@@ -366,8 +388,8 @@ def compute_dynamics_fit_metrics(
             pred_dists: List[torch.Tensor] = []
             targ_dists: List[torch.Tensor] = []
             for b in range(batch):
-                pred = _preprocess_timeseries(ts_pred[b].transpose(0, 1), tr, f_lo, f_hi)
-                targ = _preprocess_timeseries(ts_target[b].transpose(0, 1), tr, f_lo, f_hi)
+                pred = _preprocess_timeseries(ts_pred_r[b].transpose(0, 1), tr, f_lo, f_hi)
+                targ = _preprocess_timeseries(ts_target_r[b].transpose(0, 1), tr, f_lo, f_hi)
                 pred_dist = fcd_distribution(pred, win_len, win_step)
                 targ_dist = fcd_distribution(targ, win_len, win_step)
                 if pred_dist.numel() == 0 or targ_dist.numel() == 0:
@@ -384,18 +406,9 @@ def compute_dynamics_fit_metrics(
 
     meta_diff = float("nan")
     if compute_metastability:
-        meta_pred_vals = []
-        meta_targ_vals = []
-        for b in range(batch):
-            pred = _preprocess_timeseries(ts_pred[b].transpose(0, 1), tr, f_lo, f_hi)
-            targ = _preprocess_timeseries(ts_target[b].transpose(0, 1), tr, f_lo, f_hi)
-            ph_pred = torch.angle(analytic_signal(pred))
-            ph_targ = torch.angle(analytic_signal(targ))
-            meta_pred_vals.append(kuramoto_metastability(ph_pred))
-            meta_targ_vals.append(kuramoto_metastability(ph_targ))
-
-        meta_pred = torch.stack(meta_pred_vals).mean()
-        meta_targ = torch.stack(meta_targ_vals).mean()
+        # metastability_value handles complex inputs directly
+        meta_pred = metastability_value(ts_raw[:batch, :, :n_timepoints], tr=tr, f_lo=f_lo, f_hi=f_hi)
+        meta_targ = metastability_value(tt_raw[:batch, :, :n_timepoints], tr=tr, f_lo=f_lo, f_hi=f_hi)
         meta_diff = float(torch.abs(meta_pred - meta_targ).item())
 
     return {

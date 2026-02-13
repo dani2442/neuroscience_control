@@ -62,13 +62,6 @@ class TestCompositeScore(unittest.TestCase):
         self.assertNotIn("fcd_mse", _HIGHER_IS_BETTER)
         self.assertNotIn("metastability_diff", _HIGHER_IS_BETTER)
 
-    def test_legacy_weight_aliases_are_supported(self) -> None:
-        metrics = {"fc_correlation": 0.8, "fcd_mse": 0.2, "metastability_diff": 0.1}
-        weights = {"fc_correlation_mean": 1.0, "fcd_mse_mean": 0.5, "metastability_l1_mean": 0.5}
-        score = GridSearch._composite_score(metrics, weights)
-        self.assertAlmostEqual(score, 0.65)
-
-
 class TestGridSearchEvaluateParams(unittest.TestCase):
     """Verify evaluate_params returns extra keys when target_timeseries given."""
 

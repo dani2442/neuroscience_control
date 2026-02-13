@@ -5,6 +5,7 @@ Grid-search training script for Coupled Hopf Model.
 
 import argparse
 import dataclasses
+import math
 import sys
 from pathlib import Path
 
@@ -133,6 +134,75 @@ def create_validation_loader(
         device=device,
     )
     return DataLoader(val_dataset, batch_size=cfg.batch_size, shuffle=False, drop_last=True)
+
+
+def evaluate_hopf_loader_metrics(
+    hopf_model: CoupledHopfModel,
+    loader: DataLoader,
+    cfg: HopfConfig,
+    *,
+    n_steps: int | None = None,
+) -> dict[str, float]:
+    """Evaluate FC/FCD/metastability with loader-based batch aggregation."""
+    sums: dict[str, float] = {}
+    counts: dict[str, int] = {}
+    sampled_batches = 0
+    metrics_limit = cfg.metrics_sample_batches
+
+    for batch_idx, batch in enumerate(loader):
+        windows, fc_targets, _ = batch
+        windows = windows.to(hopf_model.device)
+        fc_targets = fc_targets.to(hopf_model.device)
+
+        batch_steps = windows.shape[2]
+        n_sim_steps = min(batch_steps, n_steps) if n_steps is not None else batch_steps
+        target_window = windows[:, :, :n_sim_steps]
+        initial_state = target_window[:, :, 0]
+
+        if metrics_limit is None:
+            compute_expensive = True
+        elif metrics_limit <= 0:
+            compute_expensive = False
+        else:
+            compute_expensive = batch_idx < metrics_limit
+        if compute_expensive:
+            sampled_batches += 1
+
+        with torch.no_grad():
+            simulated = hopf_model.forward(initial_state=initial_state, n_steps=n_sim_steps, dt=cfg.tr)
+            fc_pred = hopf_model.compute_fc(simulated)
+            batch_metrics = compute_all_fc_metrics(fc_pred, fc_targets)
+            if compute_expensive:
+                ts_p = simulated.real if torch.is_complex(simulated) else simulated
+                ts_t = target_window.real if torch.is_complex(target_window) else target_window
+                batch_metrics.update(
+                    compute_dynamics_fit_metrics(
+                        ts_p,
+                        ts_t,
+                        tr=cfg.tr,
+                        f_lo=cfg.f_lo,
+                        f_hi=cfg.f_hi,
+                        fcd_win_sec=cfg.fcd_win_sec,
+                        fcd_step_sec=cfg.fcd_step_sec,
+                        compute_fcd=cfg.compute_fcd_metrics,
+                        compute_metastability=cfg.compute_metastability_metrics,
+                    )
+                )
+
+        for key, value in batch_metrics.items():
+            numeric = _to_float_metric(value)
+            if numeric is None or math.isnan(numeric):
+                continue
+            sums[key] = sums.get(key, 0.0) + numeric
+            counts[key] = counts.get(key, 0) + 1
+
+    metric_keys = ("fc_correlation", "fc_mse", "fcd_ks", "metastability_diff")
+    metrics = {
+        key: (sums[key] / counts[key]) if counts.get(key, 0) > 0 else float("nan")
+        for key in metric_keys
+    }
+    metrics["metrics_sampled_batches"] = len(loader) if metrics_limit is None else sampled_batches
+    return metrics
 
 
 def evaluate_hopf_model(
@@ -420,7 +490,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     print_section("COUPLED HOPF MODEL TRAINING (GRID SEARCH)")
-    ensure_proxy_env()
+    # ensure_proxy_env()
 
     cfg = HopfConfig(
         experiment_name=args.experiment_name,
@@ -459,8 +529,23 @@ def main(argv=None):
         dataset, omega = load_data(cfg, device)
         _, val_idx = split_subject_indices(cfg, dataset.n_subjects)
         val_loader = create_validation_loader(dataset, cfg, device, val_idx)
-        hopf_model, metrics, best_params = train_hopf_grid_search(dataset, omega, cfg, device)
+        hopf_model, grid_metrics, best_params = train_hopf_grid_search(dataset, omega, cfg, device)
         checkpoint = save_model_and_figures(hopf_model, dataset, val_loader, cfg)
+        val_window_size = getattr(getattr(val_loader, "dataset", None), "window_size", None)
+        final_metrics_all = evaluate_hopf_loader_metrics(
+            hopf_model,
+            val_loader,
+            cfg,
+            n_steps=val_window_size,
+        )
+        final_metrics = {
+            key: final_metrics_all.get(key, float("nan"))
+            for key in ("fc_correlation", "fc_mse", "fcd_ks", "metastability_diff")
+        }
+        wandb_summary_update(
+            {f"final_{k}": v for k, v in final_metrics.items()},
+            use_wandb=cfg.use_wandb,
+        )
     finally:
         finish_wandb_run()
 
@@ -468,13 +553,15 @@ def main(argv=None):
     print("HOPF GRID SEARCH COMPLETED SUCCESSFULLY")
     print("=" * 60)
     print(f"\nBest params: {best_params}")
-    print(f"Final metrics: {metrics}")
+    print(f"Grid-search metrics: {grid_metrics}")
+    print(f"Final metrics: {final_metrics}")
     print(f"Checkpoint: {checkpoint}")
     print(f"Figures saved to: {FIGURES_DIR}")
 
     return {
         "model": hopf_model,
-        "metrics": metrics,
+        "metrics": final_metrics,
+        "grid_metrics": grid_metrics,
         "params": best_params,
         "checkpoint": checkpoint,
     }

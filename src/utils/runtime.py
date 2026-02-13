@@ -65,7 +65,7 @@ def init_wandb_run(
     if not use_wandb:
         return None
 
-    ensure_proxy_env()
+    # ensure_proxy_env()
     run = wandb.init(
         project=project,
         entity=entity,

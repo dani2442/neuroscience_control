@@ -31,9 +31,9 @@ class TrainingConfig:
     val_ratio: float = 0.15
 
     # Fourier denoising
-    fourier_denoise: bool = False
-    denoise_f_lo: float = 0.01
-    denoise_f_hi: float = 0.1
+    fourier_denoise: bool = True
+    denoise_f_lo: float = 0.008
+    denoise_f_hi: float = 0.08
 
     # Dynamics metrics settings
     tr: float = 0.72
@@ -57,8 +57,8 @@ class TrainingConfig:
     loss_weight_fc: Optional[float] = None
     loss_weight_fc_mse: Optional[float] = None
     loss_weight_l2: Optional[float] = None
-    loss_weight_hilbert_amp: Optional[float] = None
-    loss_weight_hilbert_omega: Optional[float] = None
+    loss_weight_amplitude: Optional[float] = None
+    loss_weight_omega: Optional[float] = None
     loss_weight_fcd: Optional[float] = None
     loss_weight_metastability: Optional[float] = None
     early_stopping_patience: int = 15

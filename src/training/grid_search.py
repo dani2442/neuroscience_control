@@ -18,15 +18,6 @@ from src.dataset.preprocessing import compute_omega_from_timeseries
 # Metrics where a *higher* value is better; all others are lower-is-better.
 _HIGHER_IS_BETTER = frozenset({"fc_correlation"})
 
-# Backward-compatible aliases for historical metric names.
-_METRIC_ALIASES = {
-    "fc_correlation_mean": "fc_correlation",
-    "fc_mse_mean": "fc_mse",
-    "fcd_mse_mean": "fcd_mse",
-    "metastability_l1": "metastability_diff",
-    "metastability_l1_mean": "metastability_diff",
-}
-
 
 class GridSearch:
     """Grid search for hyperparameter optimization.
@@ -145,8 +136,7 @@ class GridSearch:
         NaN / missing metrics are silently skipped.
         """
         score = 0.0
-        for raw_key, weight in metric_weights.items():
-            key = _METRIC_ALIASES.get(raw_key, raw_key)
+        for key, weight in metric_weights.items():
             val = metrics.get(key, float("nan"))
             if not np.isfinite(val):
                 continue
@@ -191,10 +181,9 @@ class GridSearch:
             if use_composite:
                 score = self._composite_score(metrics, metric_weights)
             else:
-                metric_key = _METRIC_ALIASES.get(metric, metric)
-                if metric_key not in metrics:
-                    raise KeyError(f"Metric '{metric_key}' not found in evaluated metrics.")
-                score = metrics[metric_key]
+                if metric not in metrics:
+                    raise KeyError(f"Metric '{metric}' not found in evaluated metrics.")
+                score = metrics[metric]
 
             # Always accept the first candidate, then compare finite scores.
             if self.best_metrics is None or (

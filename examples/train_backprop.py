@@ -21,7 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.dataset import NeuroscienceDataset, compute_omega_from_timeseries
 from src.models import CoupledHopfModel, NeuralSDE
-from src.metrics import compute_all_fc_metrics, compute_dynamics_fit_metrics
+from src.training.trainer import Trainer
 from src.training import (
     HopfConfig,
     LOSS_REGISTRY,
@@ -187,12 +187,14 @@ def build_model(
 
 def save_model_and_figures(
     model: NeuralSDE | CoupledHopfModel,
+    trainer: Trainer,
     metrics_store,
     dataset: NeuroscienceDataset,
     val_loader,
     cfg: NeuralSDEConfig | HopfConfig,
     *,
     model_name: str,
+    window_size: int,
 ):
     """Save checkpoint, compute final metrics, and produce figures."""
     print_section("STEP 3: Saving Model and Generating Figures")
@@ -228,20 +230,15 @@ def save_model_and_figures(
         simulated_fc = model.compute_fc(simulated_ts)
         simulated_fc_mean = simulated_fc.mean(dim=0)
 
-    final_metrics = compute_all_fc_metrics(simulated_fc_mean.unsqueeze(0), target_fc.unsqueeze(0))
-    target_ts = val_timeseries[: simulated_ts.shape[0], :, :n_timepoints]
-    dyn_metrics = compute_dynamics_fit_metrics(
-        simulated_ts,
-        target_ts,
-        tr=cfg.tr,
-        f_lo=cfg.f_lo,
-        f_hi=cfg.f_hi,
-        fcd_win_sec=cfg.fcd_win_sec,
-        fcd_step_sec=cfg.fcd_step_sec,
-        compute_fcd=cfg.compute_fcd_metrics,
-        compute_metastability=cfg.compute_metastability_metrics,
+    # Keep "final" summary aligned with loader-based epoch/test metric semantics.
+    val_eval_metrics = trainer.validate(
+        val_loader=val_loader,
+        n_steps=window_size,
+        dt=cfg.tr,
+        verbose=False,
     )
-    final_metrics.update(dyn_metrics)
+    final_metric_keys = ("fc_correlation", "fc_mse", "fcd_ks", "metastability_diff")
+    final_metrics = {name: val_eval_metrics.get(name, float("nan")) for name in final_metric_keys}
     print(f"Final metrics: {final_metrics}")
 
     wandb_summary_update(
@@ -311,8 +308,8 @@ def build_config(args: argparse.Namespace):
         loss_weight_fc=args.loss_weight_fc,
         loss_weight_fc_mse=args.loss_weight_fc_mse,
         loss_weight_l2=args.loss_weight_l2,
-        loss_weight_hilbert_amp=args.loss_weight_hilbert_amp,
-        loss_weight_hilbert_omega=args.loss_weight_hilbert_omega,
+        loss_weight_amplitude=args.loss_weight_amplitude,
+        loss_weight_omega=args.loss_weight_omega,
         loss_weight_fcd=args.loss_weight_fcd,
         loss_weight_metastability=args.loss_weight_metastability,
         batch_size=args.batch_size,
@@ -382,8 +379,8 @@ def main(argv=None):
     parser.add_argument("--loss-weight-fc", dest="loss_weight_fc", type=float, help=argparse.SUPPRESS)
     parser.add_argument("--loss-weight-fc-mse", type=float, default=None, help="Weight for `loss_fc_mse` (overrides preset)")
     parser.add_argument("--loss-weight-l2", type=float, default=.1, help="Weight for L2 timeseries loss (overrides preset)")
-    parser.add_argument("--loss-weight-hilbert-amp", type=float, default=10., help="Weight for Hilbert amplitude loss (overrides preset)")
-    parser.add_argument("--loss-weight-hilbert-omega", type=float, default=10., help="Weight for Hilbert phase L2 loss (legacy key: omega; overrides preset)")
+    parser.add_argument("--loss-weight-amplitude", type=float, default=10., help="Weight for amplitude loss (|z| envelope; overrides preset)")
+    parser.add_argument("--loss-weight-omega", type=float, default=10., help="Weight for instantaneous-frequency loss (overrides preset)")
     parser.add_argument("--loss-weight-fcd", type=float, default=None, help="Weight for `loss_fcd` (overrides preset)")
     parser.add_argument(
         "--loss-weight-metastability",
@@ -395,8 +392,8 @@ def main(argv=None):
     # Dynamics settings
     parser.add_argument("--max-subjects", type=int, default=20, help="Limit number of subjects (first N)")
     parser.add_argument("--tr", type=float, default=0.72, help="Repetition time / simulation dt (seconds)")
-    parser.add_argument("--f-lo", type=float, default=0.04, help="Bandpass low cutoff (Hz)")
-    parser.add_argument("--f-hi", type=float, default=0.07, help="Bandpass high cutoff (Hz)")
+    parser.add_argument("--f-lo", type=float, default=0.008, help="Bandpass low cutoff (Hz)")
+    parser.add_argument("--f-hi", type=float, default=0.08, help="Bandpass high cutoff (Hz)")
     parser.add_argument("--fcd-win-sec", type=float, default=60.0, help="Sliding-window length for FCD metrics/losses (seconds)")
     parser.add_argument("--fcd-step-sec", type=float, default=2.0, help="Sliding-window step for FCD metrics/losses (seconds)")
     parser.add_argument("--no-fcd-ks", dest="no_fcd", action="store_true", help="Disable `fcd_ks` metric computation")
@@ -467,11 +464,13 @@ def main(argv=None):
 
         checkpoint_path, final_metrics = save_model_and_figures(
             model=model,
+            trainer=trainer,
             metrics_store=metrics_store,
             dataset=dataset,
             val_loader=val_loader,
             cfg=cfg,
             model_name=args.model,
+            window_size=window_size,
         )
     finally:
         if trainer is not None:
