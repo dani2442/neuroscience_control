@@ -63,9 +63,9 @@ class NeuroscienceDataset(Dataset):
         device: str = "cpu",
         max_subjects: Optional[int] = None,
         dt: float = 0.72,
-        fourier_denoise: bool = False,
-        denoise_f_lo: float = 0.01,
-        denoise_f_hi: float = 0.1,
+        fourier_denoise: bool = True,
+        denoise_f_lo: float = 0.08,
+        denoise_f_hi: float = 0.008,
     ):
         self.device = device
         self.dt = dt

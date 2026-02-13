@@ -24,11 +24,14 @@ This project provides a PyTorch-based framework for **whole-brain modeling** of 
 
 2. **Neural SDE Model** — A data-driven approach using neural networks to parameterize stochastic differential equations (SDEs) for flexible, learnable brain dynamics.
 
+Both models operate entirely in **complex-valued** space: state, drift, diffusion, and Brownian motion are all complex tensors.  The observed BOLD signal is taken as the real part of the complex state.
+
 ### Key Features
 
 - 🧠 **Biologically-grounded modeling** with structural connectivity integration
+- 🔢 **Native complex-valued SDEs** — state, drift, diffusion, and Brownian motion are complex tensors (`torch.complex64` / `complex128`)
 - 📈 **Multiple evaluation metrics**: Functional Connectivity (FC), FC Dynamics (FCD), and Metastability
-- 🔬 **Stochastic simulation** via [`torchsde`](https://github.com/google-research/torchsde) for proper SDE integration
+- 🔬 **Stochastic simulation** via [`torchsde`](https://github.com/dani2442/torchsde) with complex Brownian motion support
 - 📊 **Weights & Biases** integration for experiment tracking
 - ⚡ **GPU-accelerated** training and simulation
 
@@ -64,7 +67,7 @@ The project requires the following main dependencies (automatically installed):
 | Package     | Description                           |
 |-------------|---------------------------------------|
 | `torch`     | Deep learning framework               |
-| `torchsde`  | SDE solvers for PyTorch               |
+| `torchsde`  | SDE solvers for PyTorch (complex-valued fork) |
 | `numpy`     | Numerical computing                   |
 | `scipy`     | Scientific computing utilities        |
 | `matplotlib`| Visualization                         |
@@ -120,22 +123,25 @@ bold_signal = model.generate_bold(
 
 ### Coupled Hopf Model
 
-The **Coupled Hopf Model** represents each brain region as a nonlinear oscillator governed by a supercritical Hopf bifurcation. The dynamics are described by the stochastic differential equation:
+The **Coupled Hopf Model** represents each brain region as a nonlinear oscillator governed by a supercritical Hopf bifurcation. The dynamics are described by the complex-valued stochastic differential equation:
 
 $$
-dz_i = \left[ \left( a + i\omega_i - |z_i|^2 \right) z_i + G \sum_{j=1}^{N} C_{ij}(z_j - z_i) \right] dt + \sigma \, dW_i
+dz_i = \left[ \left( a + i\omega_i - |z_i|^2 \right) z_i + G \sum_{j=1}^{N} C_{ij} z_j \right] dt + \sigma \, dW_i
 $$
 
-Where:
-- $z_i \in \mathbb{C}$ — Complex oscillator state for region $i$
-- $a \in \mathbb{R}$ — **Bifurcation parameter** controlling local dynamics ($a < 0$: damped, $a > 0$: oscillatory)
-- $\omega_i$ — **Intrinsic frequency** of region $i$ (estimated from data)
-- $G \geq 0$ — **Global coupling strength**
-- $C_{ij}$ — **Structural connectivity** matrix from DTI tractography
-- $\sigma$ — **Noise amplitude**
-- $W_i$ — Complex Wiener process
+where $W_i = W_{1,i} + i\,W_{2,i}$ is a **complex Brownian motion** constructed from two independent standard real Brownian motions.
 
-The simulated BOLD signal is the real part: $s_i(t) = \Re(z_i(t)) = x_i(t)$
+| Symbol | Description |
+|--------|-------------|
+| $z_i \in \mathbb{C}$ | Complex oscillator state for region $i$ |
+| $a \in \mathbb{R}$ | **Bifurcation parameter** ($a < 0$: damped, $a > 0$: oscillatory) |
+| $\omega_i$ | **Intrinsic frequency** of region $i$ (estimated from data) |
+| $G \geq 0$ | **Global coupling strength** |
+| $C_{ij}$ | **Structural connectivity** matrix from DTI tractography |
+| $\sigma$ | **Noise amplitude** |
+| $W_i$ | Complex Wiener process ($W_{1,i} + i W_{2,i}$) |
+
+The state, drift, and diffusion are all complex-valued.  The simulated BOLD signal is the real part: $s_i(t) = \Re(z_i(t))$.
 
 **Key insight**: The brain is hypothesized to operate near the critical point ($a \approx 0$), balancing flexibility and stability.
 
@@ -156,13 +162,13 @@ model = CoupledHopfModel(
 
 ### Neural SDE Model
 
-The **Neural SDE Model** uses neural networks to parameterize the drift and diffusion terms of an SDE:
+The **Neural SDE Model** uses neural networks to parameterize the drift and diffusion terms of a **complex-valued** SDE:
 
 $$
-dX_t = f_\theta(X_t) \, dt + g_\phi(X_t) \, dW_t
+dZ_t = f_\theta(Z_t) \, dt + g_\phi(Z_t) \, dW_t
 $$
 
-Where $f_\theta$ and $g_\phi$ are learnable neural networks. This provides maximum flexibility for learning complex brain dynamics directly from data.
+where $Z_t \in \mathbb{C}^N$, $f_\theta, g_\phi$ are learnable neural networks that accept and return complex tensors, and $W_t$ is complex Brownian motion.  Internally each network converts the complex state to a real representation via `torch.view_as_real`, processes it through a standard real-valued MLP, and converts back to complex via `torch.view_as_complex`.  This provides maximum flexibility for learning complex brain dynamics directly from data.
 
 ```python
 from src.models import NeuralSDE
@@ -469,7 +475,7 @@ If you use this code in your research, please cite:
 ## Related Work
 
 - [Deco et al., 2017](https://doi.org/10.1038/s41598-017-03073-5) — Whole-brain coupled Hopf model
-- [torchsde](https://github.com/google-research/torchsde) — SDE solvers for PyTorch
+- [torchsde](https://github.com/dani2442/torchsde) — SDE solvers for PyTorch (complex-valued fork)
 - [The Virtual Brain](https://www.thevirtualbrain.org/) — Open-source brain simulation platform
 
 ---

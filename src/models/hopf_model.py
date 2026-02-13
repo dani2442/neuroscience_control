@@ -1,6 +1,8 @@
 """Coupled Hopf Model for brain dynamics simulation.
 
 Complex oscillatory neural dynamics using coupled nonlinear oscillators.
+Native complex-valued SDE: state, drift, diffusion, and Brownian motion
+are all complex.
 """
 
 import torch
@@ -13,7 +15,13 @@ import torchsde
 class HopfSDEFunc(nn.Module):
     """SDE function for Hopf oscillator dynamics (torchsde-compatible).
 
-    State is stored as (batch, 2*n_rois): first half real, second half imaginary.
+    State is complex: ``(batch, n_rois)`` with ``dtype=complex64/128``.
+
+    .. math::
+        dz = \\bigl[(a + i\\omega - |z|^2)\\,z + G\\,C\\,z\\bigr]\\,dt
+             + \\sigma\\,dW
+
+    where :math:`W` is a complex Brownian motion.
     """
 
     noise_type = "diagonal"
@@ -29,15 +37,13 @@ class HopfSDEFunc(nn.Module):
         self.structural_connectivity = structural_connectivity
 
     def f(self, t: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        """Drift: z * (a + iω − |z|²) + G·C@z in real representation."""
-        yr, yi = y[:, :self.n_rois], y[:, self.n_rois:]
-        z2 = yr ** 2 + yi ** 2
-        a_z2 = self.a - z2
+        """Drift: z · (a + iω − |z|²) + G·C@z  (complex)."""
+        z_sq = torch.abs(y) ** 2  # |z|², real
         omega = self.omega.unsqueeze(0)
-
-        dr = yr * a_z2 - yi * omega + self.global_coupling * (yr @ self.structural_connectivity.T)
-        di = yi * a_z2 + yr * omega + self.global_coupling * (yi @ self.structural_connectivity.T)
-        return torch.cat([dr, di], dim=1)
+        local = y * (self.a - z_sq + 1j * omega)
+        sc = self.structural_connectivity.to(y.dtype)
+        coupling = self.global_coupling * (y @ sc.T)
+        return local + coupling
 
     def g(self, t: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         return self.noise_sigma * torch.ones_like(y)
@@ -122,26 +128,16 @@ class CoupledHopfModel(BaseNeuroscienceModel):
         z = initial_state.to(self.device)
         if not torch.is_complex(z):
             z = torch.complex(z, torch.zeros_like(z))
-        batch_size = z.shape[0]
-        y0 = torch.cat([z.real, z.imag], dim=1)  # (batch, 2*n_rois)
 
         ts = torch.linspace(0, (n_steps - 1) * dt, n_steps, device=self.device)
-        bm = torchsde.BrownianInterval(
-            t0=ts[0], t1=ts[-1],
-            size=(batch_size, 2 * self.n_rois),
-            device=self.device, dtype=y0.dtype,
-        )
 
-        sdeint_kwargs = {"method": method, "bm": bm}
+        sdeint_kwargs = {"method": method}
         if dt_min is not None:
             sdeint_kwargs["dt"] = dt_min
 
-        trajectory = torchsde.sdeint(self.sde_func, y0, ts, **sdeint_kwargs)
-        # (n_steps, batch, 2*n_rois) → complex (batch, n_rois, n_steps)
-        return torch.complex(
-            trajectory[:, :, :self.n_rois],
-            trajectory[:, :, self.n_rois:],
-        ).permute(1, 2, 0)
+        trajectory = torchsde.sdeint(self.sde_func, z, ts, **sdeint_kwargs)
+        # (n_steps, batch, n_rois), complex → (batch, n_rois, n_steps)
+        return trajectory.permute(1, 2, 0)
 
     def get_parameters_dict(self) -> Dict[str, torch.Tensor]:
         return {

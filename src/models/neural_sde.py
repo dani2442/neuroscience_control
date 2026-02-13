@@ -1,7 +1,8 @@
 """Neural SDE Model for brain dynamics simulation.
 
 Uses neural networks to parameterize SDE drift and diffusion for
-learnable complex brain dynamics.
+learnable complex brain dynamics.  The SDE state, drift, diffusion,
+and Brownian motion are all **complex-valued**.
 """
 
 import torch
@@ -12,10 +13,18 @@ import torchsde
 
 
 class DriftNetwork(nn.Module):
-    """Neural network for the SDE drift term."""
+    """Neural network for the SDE drift term.
 
-    def __init__(self, state_dim: int, hidden_dim: int = 64, n_layers: int = 2):
+    Accepts complex input ``(batch, n_rois)`` and returns complex output
+    of the same shape.  Internally the complex tensor is flattened to a
+    ``2 * n_rois`` real representation, processed by a real-valued MLP,
+    and reshaped back to complex.
+    """
+
+    def __init__(self, n_rois: int, hidden_dim: int = 64, n_layers: int = 2):
         super().__init__()
+        self.n_rois = n_rois
+        state_dim = 2 * n_rois  # real representation width
         layers = []
         in_dim = state_dim
         for _ in range(n_layers):
@@ -25,14 +34,25 @@ class DriftNetwork(nn.Module):
         self.net = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
+        # x: complex (batch, n_rois)
+        x_real = torch.view_as_real(x).reshape(x.shape[0], -1)  # (batch, 2*n_rois)
+        out = self.net(x_real)  # (batch, 2*n_rois)
+        return torch.view_as_complex(out.reshape(x.shape[0], self.n_rois, 2))
 
 
 class DiffusionNetwork(nn.Module):
-    """Neural network for the SDE diffusion term (diagonal noise)."""
+    """Neural network for the SDE diffusion term (diagonal noise).
 
-    def __init__(self, state_dim: int, hidden_dim: int = 32):
+    Accepts complex input ``(batch, n_rois)`` and returns complex output
+    of the same shape.  Internally uses a real-valued MLP with
+    ``Softplus`` output activation so that both real and imaginary
+    components of the diffusion coefficient are non-negative.
+    """
+
+    def __init__(self, n_rois: int, hidden_dim: int = 32):
         super().__init__()
+        self.n_rois = n_rois
+        state_dim = 2 * n_rois
         self.net = nn.Sequential(
             nn.Linear(state_dim, hidden_dim),
             nn.Tanh(),
@@ -41,13 +61,18 @@ class DiffusionNetwork(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
+        x_real = torch.view_as_real(x).reshape(x.shape[0], -1)  # (batch, 2*n_rois)
+        out = self.net(x_real)  # (batch, 2*n_rois)
+        return torch.view_as_complex(out.reshape(x.shape[0], self.n_rois, 2))
 
 
 class NeuralSDEFunc(nn.Module):
-    """SDE function for torchsde. dX = f(X)dt + g(X)dW.
+    """SDE function for torchsde.  dZ = f(Z)dt + g(Z)dW.
 
-    State dimension is 2*n_rois (real || imag) for complex dynamics.
+    The state ``Z`` is complex ``(batch, n_rois)``; drift ``f`` and
+    diffusion ``g`` return complex tensors of the same shape.
+    Complex Brownian motion :math:`W = W_1 + iW_2` is handled by
+    ``torchsde`` when the initial condition is complex.
     """
 
     noise_type = "diagonal"
@@ -63,10 +88,9 @@ class NeuralSDEFunc(nn.Module):
     ):
         super().__init__()
         self.n_rois = n_rois
-        state_dim = 2 * n_rois
 
-        self.drift_net = DriftNetwork(state_dim, hidden_dim, n_layers)
-        self.diffusion_net = DiffusionNetwork(state_dim, hidden_dim // 2)
+        self.drift_net = DriftNetwork(n_rois, hidden_dim, n_layers)
+        self.diffusion_net = DiffusionNetwork(n_rois, hidden_dim // 2)
 
         if structural_connectivity is not None:
             self.register_buffer('sc', structural_connectivity)
@@ -78,10 +102,9 @@ class NeuralSDEFunc(nn.Module):
     def f(self, t: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         drift = self.drift_net(y)
         if self.sc is not None:
-            yr, yi = y[:, :self.n_rois], y[:, self.n_rois:]
-            cr = self.coupling * (yr @ self.sc.T)
-            ci = self.coupling * (yi @ self.sc.T)
-            drift = drift + torch.cat([cr, ci], dim=1)
+            sc = self.sc.to(y.dtype)
+            coupling = self.coupling * (y @ sc.T)
+            drift = drift + coupling
         return drift
 
     def g(self, t: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
@@ -89,9 +112,10 @@ class NeuralSDEFunc(nn.Module):
 
 
 class NeuralSDE(BaseNeuroscienceModel):
-    """Neural SDE model for brain dynamics with complex states.
+    """Neural SDE model for brain dynamics with native complex states.
 
-    Internally uses 2×n_rois real representation; external interface is complex.
+    The SDE state, drift, diffusion, and Brownian motion are complex-valued.
+    External interface: complex in, complex out.
     """
 
     def __init__(
@@ -139,26 +163,16 @@ class NeuralSDE(BaseNeuroscienceModel):
         z = initial_state.to(self.device)
         if not torch.is_complex(z):
             z = torch.complex(z, torch.zeros_like(z))
-        batch_size = z.shape[0]
-        y0 = torch.cat([z.real, z.imag], dim=1)  # (batch, 2*n_rois)
 
         ts = torch.linspace(0, (n_steps - 1) * dt, n_steps, device=self.device)
-        bm = torchsde.BrownianInterval(
-            t0=ts[0], t1=ts[-1],
-            size=(batch_size, 2 * self.n_rois),
-            device=self.device, dtype=y0.dtype,
-        )
 
-        sdeint_kwargs = {"method": method, "bm": bm}
+        sdeint_kwargs = {"method": method}
         if dt_min is not None:
             sdeint_kwargs["dt"] = dt_min
 
-        trajectory = torchsde.sdeint(self.sde_func, y0, ts, **sdeint_kwargs)
-        # (n_steps, batch, 2*n_rois) → complex (batch, n_rois, n_steps)
-        return torch.complex(
-            trajectory[:, :, :self.n_rois],
-            trajectory[:, :, self.n_rois:],
-        ).permute(1, 2, 0)
+        trajectory = torchsde.sdeint(self.sde_func, z, ts, **sdeint_kwargs)
+        # (n_steps, batch, n_rois), complex → (batch, n_rois, n_steps)
+        return trajectory.permute(1, 2, 0)
 
     def get_parameters_dict(self) -> Dict[str, torch.Tensor]:
         params = {}

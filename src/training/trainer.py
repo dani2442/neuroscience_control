@@ -148,8 +148,8 @@ class Trainer:
         """Initialize wandb with proxy settings."""
                 
         # Set proxy environment variables
-        os.environ["HTTP_PROXY"] = "http://proxy.nhr.fau.de:80"
-        os.environ["HTTPS_PROXY"] = "http://proxy.nhr.fau.de:80"
+        # os.environ["HTTP_PROXY"] = "http://proxy.nhr.fau.de:80"
+        # os.environ["HTTPS_PROXY"] = "http://proxy.nhr.fau.de:80"
         
         # Configure wandb settings with proxy
         settings = wandb.Settings(

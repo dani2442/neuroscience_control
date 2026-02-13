@@ -61,21 +61,25 @@ def loss_l2_timeseries(
     **_kwargs,
 ) -> torch.Tensor:
     r"""
-    Standard :math:`L^2` error between predicted and target timeseries.
+    :math:`L^2` error between predicted and target timeseries.
 
-    .. math::
-        \mathcal{L} = \frac{1}{B \cdot N \cdot T}
-            \sum_{b,n,t} \bigl(x^{\mathrm{pred}}_{b,n,t}
-                               - x^{\mathrm{target}}_{b,n,t}\bigr)^2
+    Supports both real and complex tensors.  For complex inputs the loss
+    is :math:`\frac{1}{B N T}\sum |x^{\mathrm{pred}} - x^{\mathrm{target}}|^2`
+    (i.e. the squared modulus, capturing both real and imaginary parts).
 
     Both tensors are expected in shape ``(batch, n_rois, n_timepoints)``.
     If the time dimensions differ the shorter one is used.
     """
-    ts_pred = _ensure_batch(ts_pred)
-    ts_target = _ensure_batch(ts_target)
+    if ts_pred.ndim == 2:
+        ts_pred = ts_pred.unsqueeze(0)
+    if ts_target.ndim == 2:
+        ts_target = ts_target.unsqueeze(0)
     T = min(ts_pred.shape[2], ts_target.shape[2])
     B = min(ts_pred.shape[0], ts_target.shape[0])
-    return F.mse_loss(ts_pred[:B, :, :T], ts_target[:B, :, :T])
+    diff = ts_pred[:B, :, :T] - ts_target[:B, :, :T]
+    if torch.is_complex(diff):
+        return (diff.real ** 2 + diff.imag ** 2).mean()
+    return (diff ** 2).mean()
 
 
 def _hilbert_amplitude_omega_timeseries(
@@ -99,27 +103,24 @@ def _hilbert_amplitude_omega_timeseries(
     ts = _ensure_batch(ts)
     B, N, T = ts.shape
 
-    amp_list = []
-    omega_list = []
-    for b in range(B):
-        # x: (T, N) after transpose
-        x = _preprocess_timeseries(ts[b].transpose(0, 1), tr, f_lo, f_hi)
-        z = analytic_signal(x)  # (T, N), complex
+    # Merge batch and ROI dims so helpers see a single (T, B*N) matrix.
+    x = ts.reshape(B * N, T).transpose(0, 1)       # (T, B*N)
+    x = _preprocess_timeseries(x, tr, f_lo, f_hi)  # (T, B*N)
+    z = analytic_signal(x)                          # (T, B*N), complex
 
-        amplitude = z.abs()                        # (T, N)
-        phase = torch.angle(z)                     # (T, N)
-        # Instantaneous frequency via finite-difference of unwrapped phase.
-        # torch has no unwrap; use angle-difference mod 2π instead.
-        dphi = torch.diff(phase, dim=0)            # (T-1, N)
-        # Wrap to (-π, π]
-        dphi = dphi - 2.0 * math.pi * torch.round(dphi / (2.0 * math.pi))
-        inst_omega = dphi / tr                     # rad / s, (T-1, N)
+    amplitude = z.abs()                             # (T, B*N)
+    phase = torch.angle(z)                          # (T, B*N)
 
-        amp_list.append(amplitude.transpose(0, 1))      # (N, T)
-        omega_list.append(inst_omega.transpose(0, 1))   # (N, T-1)
+    # Instantaneous frequency via finite-difference of unwrapped phase.
+    # torch has no unwrap; use angle-difference mod 2π instead.
+    dphi = torch.diff(phase, dim=0)                 # (T-1, B*N)
+    # Wrap to (-π, π]
+    dphi = dphi - 2.0 * math.pi * torch.round(dphi / (2.0 * math.pi))
+    inst_omega = dphi / tr                          # rad / s, (T-1, B*N)
 
-    amp = torch.stack(amp_list, dim=0)         # (B, N, T)
-    omega = torch.stack(omega_list, dim=0)     # (B, N, T-1)
+    # Reshape back to (B, N, T) / (B, N, T-1)
+    amp = amplitude.transpose(0, 1).reshape(B, N, T)
+    omega = inst_omega.transpose(0, 1).reshape(B, N, T - 1)
     return amp, omega
 
 
@@ -148,7 +149,7 @@ def loss_hilbert_amplitude(
     amp_targ, _ = _hilbert_amplitude_omega_timeseries(ts_target, tr, f_lo, f_hi)
     B = min(amp_pred.shape[0], amp_targ.shape[0])
     mean_real_amp = amp_targ[:B].mean(dim=2, keepdim=True)  # (B, N, 1)
-    sq_l2_per_series = ((amp_pred[:B] - mean_real_amp) ** 2).sum(dim=2)  # (B, N)
+    sq_l2_per_series = ((amp_pred[:B] - mean_real_amp) ** 2).mean(dim=2)  # (B, N)
     return sq_l2_per_series.mean()
 
 
@@ -174,7 +175,7 @@ def loss_hilbert_omega(
     _, omega_targ = _hilbert_amplitude_omega_timeseries(ts_target, tr, f_lo, f_hi)
     B = min(omega_pred.shape[0], omega_targ.shape[0])
     mean_real_omega = omega_targ[:B].mean(dim=2, keepdim=True)  # (B, N, 1)
-    sq_l2_per_series = ((omega_pred[:B] - mean_real_omega) ** 2).sum(dim=2)  # (B, N)
+    sq_l2_per_series = ((omega_pred[:B] - mean_real_omega) ** 2).mean(dim=2)  # (B, N)
     return sq_l2_per_series.mean()
 
 
@@ -265,6 +266,8 @@ class CompositeLoss:
     # Which terms need timeseries (ts) vs functional connectivity (fc) inputs
     _TS_TERMS = {"l2", "hilbert_amp", "hilbert_omega", "fcd", "metastability"}
     _FC_TERMS = {"fc_mse", "fc_correlation"}
+    # TS terms that accept complex tensors directly (no real conversion)
+    _COMPLEX_TS_TERMS = {"l2"}
 
     def __init__(
         self,
@@ -311,8 +314,11 @@ class CompositeLoss:
             fn = LOSS_REGISTRY[name]
             if name in self._FC_TERMS:
                 value = fn(fc_pred=fc_pred, fc_target=fc_target, **self.dyn_kwargs)
+            elif name in self._COMPLEX_TS_TERMS:
+                # L2 loss operates on complex timeseries directly
+                value = fn(ts_pred=ts_pred, ts_target=ts_target, **self.dyn_kwargs)
             else:
-                # Convert complex timeseries to real for TS loss terms
+                # Hilbert/FCD/metastability: extract real part for spectral analysis
                 ts_p = ts_pred.real if torch.is_complex(ts_pred) else ts_pred
                 ts_t = ts_target.real if torch.is_complex(ts_target) else ts_target
                 value = fn(ts_pred=ts_p, ts_target=ts_t, **self.dyn_kwargs)
