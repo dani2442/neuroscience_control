@@ -12,6 +12,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import torch
+import wandb
 
 # Ensure imports work when running this file directly (absolute or relative path).
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -42,6 +43,49 @@ from src.utils import (
     wandb_log_figure,
     wandb_summary_update,
 )
+
+
+def _to_float_metric(value):
+    """Convert supported metric values to float for logging."""
+    if isinstance(value, torch.Tensor):
+        value = value.item()
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def log_train_validation_metrics(metrics_store, *, use_wandb: bool) -> None:
+    """Log every train/validation metric from MetricsStore with consistent notation."""
+    if not use_wandb or wandb.run is None:
+        return
+
+    wandb.define_metric("epoch")
+    wandb.define_metric("train/*", step_metric="epoch")
+    wandb.define_metric("validation/*", step_metric="epoch")
+    n_epochs = max(len(metrics_store.train_metrics), len(metrics_store.val_metrics))
+    for idx in range(n_epochs):
+        train_entry = metrics_store.train_metrics[idx] if idx < len(metrics_store.train_metrics) else {}
+        val_entry = metrics_store.val_metrics[idx] if idx < len(metrics_store.val_metrics) else {}
+        epoch = int(train_entry.get("epoch", val_entry.get("epoch", idx)))
+        log_data = {"epoch": epoch}
+
+        for key, value in train_entry.items():
+            if key == "epoch":
+                continue
+            numeric = _to_float_metric(value)
+            if numeric is not None:
+                log_data[f"train/{key}"] = numeric
+
+        for key, value in val_entry.items():
+            if key == "epoch":
+                continue
+            numeric = _to_float_metric(value)
+            if numeric is not None:
+                log_data[f"validation/{key}"] = numeric
+
+        # Avoid explicit step rewinds when replaying metrics after training.
+        wandb.log(log_data)
 
 
 def load_data(cfg: NeuralSDEConfig | HopfConfig, device: str) -> NeuroscienceDataset:
@@ -145,6 +189,7 @@ def save_model_and_figures(
     model: NeuralSDE | CoupledHopfModel,
     metrics_store,
     dataset: NeuroscienceDataset,
+    val_loader,
     cfg: NeuralSDEConfig | HopfConfig,
     *,
     model_name: str,
@@ -152,8 +197,17 @@ def save_model_and_figures(
     """Save checkpoint, compute final metrics, and produce figures."""
     print_section("STEP 3: Saving Model and Generating Figures")
 
-    target_fc = dataset.fc_mean
-    n_timepoints = min(dataset.n_timepoints, 200)
+    val_dataset = getattr(val_loader, "dataset", None)
+    if val_dataset is None or not hasattr(val_dataset, "timeseries") or not hasattr(val_dataset, "fc_matrices"):
+        raise ValueError("val_loader must expose dataset.timeseries and dataset.fc_matrices for evaluation.")
+
+    val_timeseries = val_dataset.timeseries
+    val_fc_matrices = val_dataset.fc_matrices
+    if val_timeseries.shape[0] == 0:
+        raise ValueError("Validation loader dataset is empty; cannot generate final figures.")
+
+    target_fc = val_fc_matrices.mean(dim=0)
+    n_timepoints = min(val_timeseries.shape[2], 200)
 
     checkpoint_dir = Path(cfg.checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -167,15 +221,15 @@ def save_model_and_figures(
         use_wandb=cfg.use_wandb,
     )
 
-    n_paths = min(6, dataset.n_subjects)
-    initial_states = dataset.timeseries[:n_paths, :, 0]
+    n_paths = min(6, val_timeseries.shape[0])
+    initial_states = val_timeseries[:n_paths, :, 0]
     with torch.no_grad():
         simulated_ts = model.forward(initial_state=initial_states, n_steps=n_timepoints, dt=cfg.tr)
         simulated_fc = model.compute_fc(simulated_ts)
         simulated_fc_mean = simulated_fc.mean(dim=0)
 
     final_metrics = compute_all_fc_metrics(simulated_fc_mean.unsqueeze(0), target_fc.unsqueeze(0))
-    target_ts = dataset.timeseries[: simulated_ts.shape[0], :, :n_timepoints]
+    target_ts = val_timeseries[: simulated_ts.shape[0], :, :n_timepoints]
     dyn_metrics = compute_dynamics_fit_metrics(
         simulated_ts,
         target_ts,
@@ -207,7 +261,7 @@ def save_model_and_figures(
     wandb_log_figure("figures/fc_comparison", fig, use_wandb=cfg.use_wandb)
     plt.close(fig)
 
-    real_ts = dataset.timeseries[0]  # first subject
+    real_ts = val_timeseries[0]  # first validation subject
     fig = plot_simulation_multigrid(
         real_timeseries=real_ts.real,
         simulated_runs=simulated_ts.real,
@@ -296,7 +350,7 @@ def build_config(args: argparse.Namespace):
 def main(argv=None):
     """CLI entrypoint."""
     parser = argparse.ArgumentParser(description="Train NSDE or Hopf with backpropagation")
-    parser.add_argument("--model", type=str, default="hopf", choices=["nsde", "hopf"], help="Model to train")
+    parser.add_argument("--model", type=str, default="nsde", choices=["nsde", "hopf"], help="Model to train")
     parser.add_argument("--data-path", type=str, default="data/ts_young/ts_young_TR0.72.mat", help="Path to data file")
     parser.add_argument("--wandb-project", type=str, default="neuroscience-control", help="Wandb project name")
     parser.add_argument("--experiment-name", type=str, default=None, help="Experiment name")
@@ -305,10 +359,10 @@ def main(argv=None):
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
 
     # Backprop settings
-    parser.add_argument("--n-epochs", type=int, default=10, help="Number of training epochs")
+    parser.add_argument("--n-epochs", type=int, default=50, help="Number of training epochs")
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
     parser.add_argument("--batch-size", type=int, default=32, help="Batch size")
-    parser.add_argument("--window-size", type=int, default=200, help="Window size for training")
+    parser.add_argument("--window-size", type=int, default=150, help="Window size for training")
     _VALID_LOSS_NAMES = sorted(set(LOSS_REGISTRY.keys()) | set(LOSS_PRESETS.keys()) | {"custom"})
     parser.add_argument(
         "--loss-fn",
@@ -318,17 +372,24 @@ def main(argv=None):
         help="Training objective (preset name or individual term)",
     )
 
-    parser.add_argument("--loss-weight-fc", type=float, default=None, help="Weight for FC correlation loss (overrides preset)")
-    parser.add_argument("--loss-weight-fc-mse", type=float, default=None, help="Weight for FC MSE loss (overrides preset)")
-    parser.add_argument("--loss-weight-l2", type=float, default=None, help="Weight for L2 timeseries loss (overrides preset)")
-    parser.add_argument("--loss-weight-hilbert-amp", type=float, default=None, help="Weight for Hilbert amplitude loss (overrides preset)")
-    parser.add_argument("--loss-weight-hilbert-omega", type=float, default=None, help="Weight for Hilbert omega loss (overrides preset)")
-    parser.add_argument("--loss-weight-fcd", type=float, default=None, help="Weight for FCD loss term (overrides preset)")
+    parser.add_argument(
+        "--loss-weight-fc-correlation",
+        dest="loss_weight_fc",
+        type=float,
+        default=None,
+        help="Weight for `loss_fc_correlation` (overrides preset)",
+    )
+    parser.add_argument("--loss-weight-fc", dest="loss_weight_fc", type=float, help=argparse.SUPPRESS)
+    parser.add_argument("--loss-weight-fc-mse", type=float, default=None, help="Weight for `loss_fc_mse` (overrides preset)")
+    parser.add_argument("--loss-weight-l2", type=float, default=.1, help="Weight for L2 timeseries loss (overrides preset)")
+    parser.add_argument("--loss-weight-hilbert-amp", type=float, default=10., help="Weight for Hilbert amplitude loss (overrides preset)")
+    parser.add_argument("--loss-weight-hilbert-omega", type=float, default=10., help="Weight for Hilbert phase L2 loss (legacy key: omega; overrides preset)")
+    parser.add_argument("--loss-weight-fcd", type=float, default=None, help="Weight for `loss_fcd` (overrides preset)")
     parser.add_argument(
         "--loss-weight-metastability",
         type=float,
         default=None,
-        help="Weight for metastability loss term (overrides preset)",
+        help="Weight for `loss_metastability` (overrides preset)",
     )
 
     # Dynamics settings
@@ -336,10 +397,17 @@ def main(argv=None):
     parser.add_argument("--tr", type=float, default=0.72, help="Repetition time / simulation dt (seconds)")
     parser.add_argument("--f-lo", type=float, default=0.04, help="Bandpass low cutoff (Hz)")
     parser.add_argument("--f-hi", type=float, default=0.07, help="Bandpass high cutoff (Hz)")
-    parser.add_argument("--fcd-win-sec", type=float, default=60.0, help="FCD window length in seconds")
-    parser.add_argument("--fcd-step-sec", type=float, default=2.0, help="FCD window step in seconds")
-    parser.add_argument("--no-fcd", action="store_true", help="Disable FCD metrics")
-    parser.add_argument("--no-metastability", action="store_true", help="Disable metastability metrics")
+    parser.add_argument("--fcd-win-sec", type=float, default=60.0, help="Sliding-window length for FCD metrics/losses (seconds)")
+    parser.add_argument("--fcd-step-sec", type=float, default=2.0, help="Sliding-window step for FCD metrics/losses (seconds)")
+    parser.add_argument("--no-fcd-ks", dest="no_fcd", action="store_true", help="Disable `fcd_ks` metric computation")
+    parser.add_argument("--no-fcd", dest="no_fcd", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--no-metastability-diff",
+        dest="no_metastability",
+        action="store_true",
+        help="Disable `metastability_diff` metric computation",
+    )
+    parser.add_argument("--no-metastability", dest="no_metastability", action="store_true", help=argparse.SUPPRESS)
 
     # Preprocessing
     parser.add_argument("--fourier-denoise", action="store_true", help="Apply FFT bandpass denoising")
@@ -348,7 +416,7 @@ def main(argv=None):
     parser.add_argument("--n-windows-per-epoch", type=int, default=256, help="Random windows per epoch")
 
     # NSDE settings
-    parser.add_argument("--hidden-dim", type=int, default=256, help="NSDE hidden dimension")
+    parser.add_argument("--hidden-dim", type=int, default=128, help="NSDE hidden dimension")
     parser.add_argument("--n-layers", type=int, default=2, help="NSDE drift network layers")
 
     # Hopf settings
@@ -401,6 +469,7 @@ def main(argv=None):
             model=model,
             metrics_store=metrics_store,
             dataset=dataset,
+            val_loader=val_loader,
             cfg=cfg,
             model_name=args.model,
         )

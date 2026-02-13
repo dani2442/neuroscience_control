@@ -251,10 +251,17 @@ def main(argv=None):
     parser.add_argument("--tr", type=float, default=0.72, help="Repetition time / simulation dt (seconds)")
     parser.add_argument("--f-lo", type=float, default=0.04, help="Bandpass low cutoff (Hz)")
     parser.add_argument("--f-hi", type=float, default=0.07, help="Bandpass high cutoff (Hz)")
-    parser.add_argument("--fcd-win-sec", type=float, default=60.0, help="FCD window length in seconds")
-    parser.add_argument("--fcd-step-sec", type=float, default=2.0, help="FCD window step in seconds")
-    parser.add_argument("--no-fcd", action="store_true", help="Disable FCD metrics")
-    parser.add_argument("--no-metastability", action="store_true", help="Disable metastability metrics")
+    parser.add_argument("--fcd-win-sec", type=float, default=60.0, help="Sliding-window length for FCD metrics/losses (seconds)")
+    parser.add_argument("--fcd-step-sec", type=float, default=2.0, help="Sliding-window step for FCD metrics/losses (seconds)")
+    parser.add_argument("--no-fcd-ks", dest="no_fcd", action="store_true", help="Disable `fcd_ks` metric computation")
+    parser.add_argument("--no-fcd", dest="no_fcd", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--no-metastability-diff",
+        dest="no_metastability",
+        action="store_true",
+        help="Disable `metastability_diff` metric computation",
+    )
+    parser.add_argument("--no-metastability", dest="no_metastability", action="store_true", help=argparse.SUPPRESS)
 
     parser.add_argument("--fine-tune-epochs", type=int, default=20, help="Number of fine-tuning epochs")
     parser.add_argument("--fine-tune-lr", type=float, default=1e-4, help="Fine-tuning learning rate")

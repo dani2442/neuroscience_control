@@ -10,9 +10,22 @@ from tqdm import tqdm
 
 from src.models.hopf_model import CoupledHopfModel
 from src.models.base_model import BaseNeuroscienceModel
-from src.metrics import fc_correlation, fc_mse
+from src.metrics import fc_correlation, fc_mse, fcd_mse_loss, metastability_l1_loss
 from src.dataset import NeuroscienceDataset
 from src.dataset.preprocessing import compute_omega_from_timeseries
+
+
+# Metrics where a *higher* value is better; all others are lower-is-better.
+_HIGHER_IS_BETTER = frozenset({"fc_correlation"})
+
+# Backward-compatible aliases for historical metric names.
+_METRIC_ALIASES = {
+    "fc_correlation_mean": "fc_correlation",
+    "fc_mse_mean": "fc_mse",
+    "fcd_mse_mean": "fcd_mse",
+    "metastability_l1": "metastability_diff",
+    "metastability_l1_mean": "metastability_diff",
+}
 
 
 class GridSearch:
@@ -21,10 +34,14 @@ class GridSearch:
     Evaluates model performance across a grid of hyperparameters
     using batch simulation with data-derived initial states.
 
-    .. note::
-        By default the grid search optimizes FC correlation only.  FCD
-        and metastability are *not* evaluated during the search (for speed)
-        but are computed post-hoc on the best model by the calling script.
+    Supports composite scoring via ``metric_weights`` in :meth:`search`.
+    When weights are provided for FCD and/or metastability the search
+    optimises the weighted sum
+
+        score = Σ_k  sign_k × w_k × metric_k
+
+    where *sign_k* is +1 for higher-is-better metrics (FC correlation)
+    and −1 for lower-is-better metrics (FCD MSE, metastability difference).
     """
 
     def __init__(
@@ -55,6 +72,12 @@ class GridSearch:
         initial_states: torch.Tensor,
         n_timepoints: int,
         dt: float = 0.72,
+        target_timeseries: Optional[torch.Tensor] = None,
+        tr: float = 0.72,
+        f_lo: float = 0.04,
+        f_hi: float = 0.07,
+        fcd_win_sec: float = 60.0,
+        fcd_step_sec: float = 2.0,
     ) -> Dict[str, float]:
         """Evaluate a model with given initial states.
 
@@ -64,6 +87,13 @@ class GridSearch:
             initial_states: Complex tensor (batch, n_rois).
             n_timepoints: Simulation length.
             dt: Time step.
+            target_timeseries: Optional complex tensor (batch, n_rois, T) for
+                computing FCD and metastability losses.
+            tr: Repetition time in seconds (for dynamics processing).
+            f_lo: Bandpass low cutoff Hz.
+            f_hi: Bandpass high cutoff Hz.
+            fcd_win_sec: FCD window length in seconds.
+            fcd_step_sec: FCD window step in seconds.
         """
         batch_size = initial_states.shape[0]
         with torch.no_grad():
@@ -77,12 +107,52 @@ class GridSearch:
                 fc_corrs.append(fc_correlation(fc_pred[i:i+1], target_fc.unsqueeze(0)).item())
                 fc_mses.append(fc_mse(fc_pred[i:i+1], target_fc.unsqueeze(0)).item())
 
-        return {
-            'fc_correlation_mean': np.mean(fc_corrs),
-            'fc_correlation_std': np.std(fc_corrs),
-            'fc_mse_mean': np.mean(fc_mses),
-            'fc_mse_std': np.std(fc_mses),
+        metrics: Dict[str, float] = {
+            "fc_correlation": np.mean(fc_corrs),
+            "fc_correlation_std": np.std(fc_corrs),
+            "fc_mse": np.mean(fc_mses),
+            "fc_mse_std": np.std(fc_mses),
         }
+
+        # ---- FCD and metastability (only when target timeseries available) ----
+        if target_timeseries is not None:
+            target_ts = target_timeseries[:batch_size, :, :n_timepoints]
+
+            fcd_val = fcd_mse_loss(
+                timeseries, target_ts,
+                tr=tr, f_lo=f_lo, f_hi=f_hi,
+                fcd_win_sec=fcd_win_sec, fcd_step_sec=fcd_step_sec,
+            ).item()
+            metrics["fcd_mse"] = fcd_val
+
+            meta_val = metastability_l1_loss(
+                timeseries, target_ts,
+                tr=tr, f_lo=f_lo, f_hi=f_hi,
+            ).item()
+            metrics["metastability_diff"] = meta_val
+
+        return metrics
+
+    @staticmethod
+    def _composite_score(
+        metrics: Dict[str, float],
+        metric_weights: Dict[str, float],
+    ) -> float:
+        """Compute a weighted composite score.
+
+        Higher-is-better metrics (in ``_HIGHER_IS_BETTER``) contribute
+        positively; all other metrics contribute negatively.
+        NaN / missing metrics are silently skipped.
+        """
+        score = 0.0
+        for raw_key, weight in metric_weights.items():
+            key = _METRIC_ALIASES.get(raw_key, raw_key)
+            val = metrics.get(key, float("nan"))
+            if not np.isfinite(val):
+                continue
+            sign = 1.0 if key in _HIGHER_IS_BETTER else -1.0
+            score += sign * weight * val
+        return score
 
     def search(
         self,
@@ -92,8 +162,10 @@ class GridSearch:
         initial_states: torch.Tensor,
         n_timepoints: int,
         dt: float = 0.72,
-        metric: str = "fc_correlation_mean",
+        metric: str = "fc_correlation",
+        metric_weights: Optional[Dict[str, float]] = None,
         verbose: bool = True,
+        eval_kwargs: Optional[Dict[str, Any]] = None,
     ) -> Tuple[Dict[str, Any], Dict[str, float]]:
         combinations = self._generate_param_combinations()
         if not combinations:
@@ -103,17 +175,27 @@ class GridSearch:
             print(f"Grid search over {len(combinations)} parameter combinations")
             combinations = tqdm(combinations)
 
+        _eval_kwargs = eval_kwargs or {}
+        use_composite = metric_weights is not None
+
         for params in combinations:
             full_kwargs = {**model_kwargs, **params, 'device': self.device}
             model = model_class(**full_kwargs)
 
-            metrics = self.evaluate_params(model, target_fc, initial_states, n_timepoints, dt)
+            metrics = self.evaluate_params(
+                model, target_fc, initial_states, n_timepoints, dt,
+                **_eval_kwargs,
+            )
             self.results.append({'params': params, 'metrics': metrics})
 
-            if metric not in metrics:
-                raise KeyError(f"Metric '{metric}' not found in evaluated metrics.")
+            if use_composite:
+                score = self._composite_score(metrics, metric_weights)
+            else:
+                metric_key = _METRIC_ALIASES.get(metric, metric)
+                if metric_key not in metrics:
+                    raise KeyError(f"Metric '{metric_key}' not found in evaluated metrics.")
+                score = metrics[metric_key]
 
-            score = metrics[metric]
             # Always accept the first candidate, then compare finite scores.
             if self.best_metrics is None or (
                 np.isfinite(score) and (not np.isfinite(self.best_score) or score > self.best_score)
@@ -157,6 +239,13 @@ def grid_search_hopf(
     n_timepoints: int = 200,
     dt: float = 0.72,
     device: str = "cpu",
+    target_timeseries: Optional[torch.Tensor] = None,
+    tr: float = 0.72,
+    f_lo: float = 0.04,
+    f_hi: float = 0.07,
+    fcd_win_sec: float = 60.0,
+    fcd_step_sec: float = 2.0,
+    metric_weights: Optional[Dict[str, float]] = None,
 ) -> Tuple[Dict[str, Any], CoupledHopfModel]:
     """Grid search for Hopf model parameters.
 
@@ -170,6 +259,15 @@ def grid_search_hopf(
         n_timepoints: Simulation length.
         dt: Time step.
         device: Device.
+        target_timeseries: Optional (batch, n_rois, T) for FCD/meta scoring.
+        tr: Repetition time (seconds) for dynamics preprocessing.
+        f_lo: Bandpass low cutoff (Hz).
+        f_hi: Bandpass high cutoff (Hz).
+        fcd_win_sec: FCD window length (seconds).
+        fcd_step_sec: FCD window step (seconds).
+        metric_weights: Optional dict mapping metric names to weights for
+            composite scoring (e.g. ``{"fc_correlation": 1.0,
+            "fcd_mse": 0.5, "metastability_diff": 0.5}``).
 
     Returns:
         (best_params, fitted_model)
@@ -192,6 +290,15 @@ def grid_search_hopf(
         'learnable_g': False,
     }
 
+    # Build eval kwargs for dynamics metrics when target timeseries provided.
+    eval_kwargs: Dict[str, Any] = {}
+    if target_timeseries is not None:
+        eval_kwargs.update(
+            target_timeseries=target_timeseries,
+            tr=tr, f_lo=f_lo, f_hi=f_hi,
+            fcd_win_sec=fcd_win_sec, fcd_step_sec=fcd_step_sec,
+        )
+
     best_params, best_metrics = grid_search.search(
         model_class=CoupledHopfModel,
         model_kwargs=model_kwargs,
@@ -199,10 +306,12 @@ def grid_search_hopf(
         initial_states=initial_states,
         n_timepoints=n_timepoints,
         dt=dt,
+        metric_weights=metric_weights,
+        eval_kwargs=eval_kwargs,
     )
 
     print(f"\nBest parameters: {best_params}")
-    print(f"Best FC correlation: {best_metrics['fc_correlation_mean']:.4f} "
+    print(f"Best fc_correlation: {best_metrics['fc_correlation']:.4f} "
           f"± {best_metrics['fc_correlation_std']:.4f}")
 
     best_model = CoupledHopfModel(

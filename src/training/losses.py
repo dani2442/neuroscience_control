@@ -37,13 +37,22 @@ def loss_fc_mse(
     return fc_mse(fc_pred, fc_target)
 
 
-def loss_fc_corr(
+def loss_fc_correlation(
     fc_pred: torch.Tensor,
     fc_target: torch.Tensor,
     **_kwargs,
 ) -> torch.Tensor:
     """1 − Pearson correlation between FC matrices (upper triangle)."""
     return 1.0 - fc_correlation(fc_pred, fc_target)
+
+
+def loss_fc_corr(
+    fc_pred: torch.Tensor,
+    fc_target: torch.Tensor,
+    **_kwargs,
+) -> torch.Tensor:
+    """Backward-compatible alias for :func:`loss_fc_correlation`."""
+    return loss_fc_correlation(fc_pred, fc_target)
 
 
 def loss_l2_timeseries(
@@ -69,14 +78,14 @@ def loss_l2_timeseries(
     return F.mse_loss(ts_pred[:B, :, :T], ts_target[:B, :, :T])
 
 
-def _hilbert_amplitude_omega(
+def _hilbert_amplitude_omega_timeseries(
     ts: torch.Tensor,
     tr: float,
     f_lo: float,
     f_hi: float,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
-    Compute per-region mean amplitude and mean instantaneous frequency
+    Compute per-region amplitude and instantaneous-frequency timeseries
     from the analytic (Hilbert) signal.
 
     Args:
@@ -84,8 +93,8 @@ def _hilbert_amplitude_omega(
         tr, f_lo, f_hi: bandpass parameters
 
     Returns:
-        mean_amplitude: ``(batch, n_rois)``
-        mean_omega:     ``(batch, n_rois)``  (rad / s)
+        amplitude: ``(batch, n_rois, n_timepoints)``
+        omega:     ``(batch, n_rois, n_timepoints - 1)``  (rad / s)
     """
     ts = _ensure_batch(ts)
     B, N, T = ts.shape
@@ -106,12 +115,12 @@ def _hilbert_amplitude_omega(
         dphi = dphi - 2.0 * math.pi * torch.round(dphi / (2.0 * math.pi))
         inst_omega = dphi / tr                     # rad / s, (T-1, N)
 
-        amp_list.append(amplitude.mean(dim=0))      # (N,)
-        omega_list.append(inst_omega.mean(dim=0))   # (N,)
+        amp_list.append(amplitude.transpose(0, 1))      # (N, T)
+        omega_list.append(inst_omega.transpose(0, 1))   # (N, T-1)
 
-    mean_amp = torch.stack(amp_list, dim=0)    # (B, N)
-    mean_omega = torch.stack(omega_list, dim=0)  # (B, N)
-    return mean_amp, mean_omega
+    amp = torch.stack(amp_list, dim=0)         # (B, N, T)
+    omega = torch.stack(omega_list, dim=0)     # (B, N, T-1)
+    return amp, omega
 
 
 def loss_hilbert_amplitude(
@@ -123,21 +132,24 @@ def loss_hilbert_amplitude(
     **_kwargs,
 ) -> torch.Tensor:
     r"""
-    L² error on the per-region mean envelope amplitude extracted via the
-    Hilbert transform.
+    L² error between predicted envelope amplitude and target mean envelope
+    amplitude extracted via the Hilbert transform.
 
     .. math::
-        \mathcal{L}_{\mathrm{amp}} = \frac{1}{N}
-            \sum_n \bigl(\bar{A}_n^{\mathrm{pred}}
-                        - \bar{A}_n^{\mathrm{target}}\bigr)^2
+        \mathcal{L}_{\mathrm{amp}} =
+            \frac{1}{BN}\sum_{b,n}\sum_t
+            \bigl(A^{\mathrm{pred}}_{b,n}(t)
+                  - \bar{A}^{\mathrm{target}}_{b,n}\bigr)^2
 
-    where :math:`\bar{A}_n = \frac{1}{T}\sum_t |z_n(t)|` is the temporal
-    mean of the analytic-signal envelope for region *n*.
+    where :math:`\bar{A}^{\mathrm{target}}_{b,n} = \frac{1}{T_\mathrm{target}}
+    \sum_t A^{\mathrm{target}}_{b,n}(t)`.
     """
-    amp_pred, _ = _hilbert_amplitude_omega(ts_pred, tr, f_lo, f_hi)
-    amp_targ, _ = _hilbert_amplitude_omega(ts_target, tr, f_lo, f_hi)
+    amp_pred, _ = _hilbert_amplitude_omega_timeseries(ts_pred, tr, f_lo, f_hi)
+    amp_targ, _ = _hilbert_amplitude_omega_timeseries(ts_target, tr, f_lo, f_hi)
     B = min(amp_pred.shape[0], amp_targ.shape[0])
-    return F.mse_loss(amp_pred[:B], amp_targ[:B])
+    mean_real_amp = amp_targ[:B].mean(dim=2, keepdim=True)  # (B, N, 1)
+    sq_l2_per_series = ((amp_pred[:B] - mean_real_amp) ** 2).sum(dim=2)  # (B, N)
+    return sq_l2_per_series.mean()
 
 
 def loss_hilbert_omega(
@@ -149,18 +161,21 @@ def loss_hilbert_omega(
     **_kwargs,
 ) -> torch.Tensor:
     r"""
-    L² error on the per-region mean instantaneous frequency extracted via
-    the Hilbert transform.
+    L² error between predicted instantaneous frequency and target mean
+    instantaneous frequency extracted via the Hilbert transform.
 
     .. math::
-        \mathcal{L}_{\omega} = \frac{1}{N}
-            \sum_n \bigl(\bar{\omega}_n^{\mathrm{pred}}
-                        - \bar{\omega}_n^{\mathrm{target}}\bigr)^2
+        \mathcal{L}_{\omega} =
+            \frac{1}{BN}\sum_{b,n}\sum_t
+            \bigl(\omega^{\mathrm{pred}}_{b,n}(t)
+                  - \bar{\omega}^{\mathrm{target}}_{b,n}\bigr)^2
     """
-    _, omega_pred = _hilbert_amplitude_omega(ts_pred, tr, f_lo, f_hi)
-    _, omega_targ = _hilbert_amplitude_omega(ts_target, tr, f_lo, f_hi)
+    _, omega_pred = _hilbert_amplitude_omega_timeseries(ts_pred, tr, f_lo, f_hi)
+    _, omega_targ = _hilbert_amplitude_omega_timeseries(ts_target, tr, f_lo, f_hi)
     B = min(omega_pred.shape[0], omega_targ.shape[0])
-    return F.mse_loss(omega_pred[:B], omega_targ[:B])
+    mean_real_omega = omega_targ[:B].mean(dim=2, keepdim=True)  # (B, N, 1)
+    sq_l2_per_series = ((omega_pred[:B] - mean_real_omega) ** 2).sum(dim=2)  # (B, N)
+    return sq_l2_per_series.mean()
 
 
 def loss_fcd(
@@ -217,12 +232,16 @@ LossFn = Callable[..., torch.Tensor]
 
 LOSS_REGISTRY: Dict[str, LossFn] = {
     "fc_mse":       lambda fc_pred, fc_target, **kw: loss_fc_mse(fc_pred, fc_target),
-    "fc_corr":      lambda fc_pred, fc_target, **kw: loss_fc_corr(fc_pred, fc_target),
+    "fc_correlation": lambda fc_pred, fc_target, **kw: loss_fc_correlation(fc_pred, fc_target),
     "l2":           lambda ts_pred, ts_target, **kw: loss_l2_timeseries(ts_pred, ts_target),
     "hilbert_amp":  lambda ts_pred, ts_target, **kw: loss_hilbert_amplitude(ts_pred, ts_target, **kw),
     "hilbert_omega": lambda ts_pred, ts_target, **kw: loss_hilbert_omega(ts_pred, ts_target, **kw),
     "fcd":          lambda ts_pred, ts_target, **kw: loss_fcd(ts_pred, ts_target, **kw),
     "metastability": lambda ts_pred, ts_target, **kw: loss_metastability(ts_pred, ts_target, **kw),
+}
+
+_LOSS_TERM_ALIASES: Dict[str, str] = {
+    "fc_corr": "fc_correlation",
 }
 
 
@@ -237,7 +256,7 @@ class CompositeLoss:
     Example::
 
         loss_fn = CompositeLoss(
-            weights={"fc_corr": 1.0, "l2": 0.5, "hilbert_amp": 0.2},
+            weights={"fc_correlation": 1.0, "l2": 0.5, "hilbert_amp": 0.2},
             dyn_kwargs={"tr": 0.72, "f_lo": 0.04, "f_hi": 0.07},
         )
         total, components = loss_fn(fc_pred, fc_target, ts_pred, ts_target)
@@ -245,21 +264,26 @@ class CompositeLoss:
 
     # Which terms need timeseries (ts) vs functional connectivity (fc) inputs
     _TS_TERMS = {"l2", "hilbert_amp", "hilbert_omega", "fcd", "metastability"}
-    _FC_TERMS = {"fc_mse", "fc_corr"}
+    _FC_TERMS = {"fc_mse", "fc_correlation"}
 
     def __init__(
         self,
         weights: Dict[str, float],
         dyn_kwargs: Optional[Dict[str, float]] = None,
     ) -> None:
-        unknown = set(weights) - set(LOSS_REGISTRY)
+        normalized_weights: Dict[str, float] = {}
+        for raw_name, value in weights.items():
+            name = _LOSS_TERM_ALIASES.get(raw_name, raw_name)
+            normalized_weights[name] = normalized_weights.get(name, 0.0) + value
+
+        unknown = set(normalized_weights) - set(LOSS_REGISTRY)
         if unknown:
             raise ValueError(
                 f"Unknown loss terms: {unknown}. "
                 f"Available: {sorted(LOSS_REGISTRY)}"
             )
         # Drop zero-weight terms so we never compute them
-        self.weights = {k: v for k, v in weights.items() if v != 0.0}
+        self.weights = {k: v for k, v in normalized_weights.items() if v != 0.0}
         self.dyn_kwargs = dyn_kwargs or {}
 
     def __call__(
@@ -309,11 +333,11 @@ class CompositeLoss:
 
 _PRESETS: Dict[str, Dict[str, float]] = {
     "mse":         {"fc_mse": 1.0},
-    "correlation": {"fc_corr": 1.0},
-    "combined":    {"fc_mse": 1.0, "fc_corr": 0.5},
-    "fc_fcd_meta": {"fc_corr": 1.0, "fcd": 1.0, "metastability": 1.0},
+    "correlation": {"fc_correlation": 1.0},
+    "combined":    {"fc_mse": 1.0, "fc_correlation": 0.5},
+    "fc_fcd_meta": {"fc_correlation": 1.0, "fcd": 1.0, "metastability": 1.0},
     "full":        {
-        "fc_corr": 1.0,
+        "fc_correlation": 1.0,
         "l2": 1.0,
         "hilbert_amp": 1.0,
         "hilbert_omega": 1.0,

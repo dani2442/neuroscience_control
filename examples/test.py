@@ -89,7 +89,7 @@ def main(args: argparse.Namespace) -> None:
     print(f"\nModel restored: {model_name}")
 
     window_size = min(args.window_size, dataset.n_timepoints // 4)
-    _, _, test_loader = create_data_loaders(
+    _, val_loader, test_loader = create_data_loaders(
         dataset=dataset,
         window_size=window_size,
         batch_size=args.batch_size,
@@ -99,6 +99,8 @@ def main(args: argparse.Namespace) -> None:
         seed=args.seed,
         device=device,
     )
+    print(f"Validation batches: {len(val_loader)}")
+    print(f"Test batches: {len(test_loader)}")
 
     cfg = TrainingConfig(
         experiment_name=f"eval_{checkpoint_path.stem}",
@@ -232,10 +234,17 @@ if __name__ == "__main__":
     parser.add_argument("--tr", type=float, default=0.72, help="Repetition time / simulation dt (seconds)")
     parser.add_argument("--f-lo", type=float, default=0.04, help="Bandpass low cutoff (Hz)")
     parser.add_argument("--f-hi", type=float, default=0.07, help="Bandpass high cutoff (Hz)")
-    parser.add_argument("--fcd-win-sec", type=float, default=60.0, help="FCD window length (seconds)")
-    parser.add_argument("--fcd-step-sec", type=float, default=2.0, help="FCD step (seconds)")
-    parser.add_argument("--no-fcd", action="store_true", help="Disable FCD metric computation")
-    parser.add_argument("--no-metastability", action="store_true", help="Disable metastability metric computation")
+    parser.add_argument("--fcd-win-sec", type=float, default=60.0, help="Sliding-window length for FCD metrics/losses (seconds)")
+    parser.add_argument("--fcd-step-sec", type=float, default=2.0, help="Sliding-window step for FCD metrics/losses (seconds)")
+    parser.add_argument("--no-fcd-ks", dest="no_fcd", action="store_true", help="Disable `fcd_ks` metric computation")
+    parser.add_argument("--no-fcd", dest="no_fcd", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--no-metastability-diff",
+        dest="no_metastability",
+        action="store_true",
+        help="Disable `metastability_diff` metric computation",
+    )
+    parser.add_argument("--no-metastability", dest="no_metastability", action="store_true", help=argparse.SUPPRESS)
 
     # Preprocessing
     parser.add_argument("--fourier-denoise", action="store_true", help="Apply FFT bandpass denoising")

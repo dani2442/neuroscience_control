@@ -191,7 +191,7 @@ $$
 $$
 
 **Training terms**:
-- `loss_fc_corr = 1 - corr(v(FC_pred), v(FC_target))`
+- `loss_fc_correlation = 1 - corr(v(FC_pred), v(FC_target))`
 - `loss_fc_mse = MSE(v(FC_pred), v(FC_target))`
 
 **Evaluation metrics**:
@@ -239,17 +239,17 @@ $$
 $$
 
 For backpropagation, `--loss-fn fc_fcd_meta` uses:
-- `loss_fc_corr` (FC term)
+- `loss_fc_correlation` (FC term)
 - `loss_fcd` (MSE surrogate, not KS)
 - `loss_metastability`
 
-For Hopf grid search (`examples/train_hopf.py`), model selection optimizes FC correlation only; FCD/Metastability are evaluated post-hoc on the selected model.
+For Hopf grid search (`examples/train_hopf.py`), model selection uses the composite score `w_FC·fc_correlation − w_FCD·fcd_mse − w_Meta·metastability_diff` (weights configurable via `--weight-fc-correlation`, `--weight-fcd-mse`, `--weight-metastability-diff`; defaults 1.0, 0.5, 0.5). FCD/Metastability are also reported as evaluation metrics.
 
 ### Metric Usage by Script
 
 | Script | Training / selection objective | Reported metrics |
 |--------|--------------------------------|------------------|
-| [`examples/train_hopf.py`](examples/train_hopf.py) | Grid search by `fc_correlation_mean` | `fc_correlation`, `fc_mse`, `fcd_ks`, `metastability_diff` |
+| [`examples/train_hopf.py`](examples/train_hopf.py) | Grid search by composite `w_FC·fc_correlation - w_FCD·fcd_mse - w_Meta·metastability_diff` | `fc_correlation`, `fc_mse`, `fcd_ks`, `metastability_diff` |
 | [`examples/train_backprop.py`](examples/train_backprop.py) | `--loss-fn` composite (`loss_*` terms) | Epoch/test: FC + timeseries + dynamics metrics; final: `fc_correlation`, `fc_mse`, `fcd_ks`, `metastability_diff` |
 | [`examples/train_nsde_finetune.py`](examples/train_nsde_finetune.py) | Fine-tuning via `Trainer` composite loss | Test/summary include FC + timeseries + dynamics metrics; final: `fc_correlation`, `fc_mse`, `fcd_ks`, `metastability_diff` |
 | [`examples/test.py`](examples/test.py) | No training (checkpoint evaluation) | Loader-based metrics + per-run real-vs-sim: FC + timeseries + dynamics metrics |
@@ -318,12 +318,12 @@ python examples/train_nsde_finetune.py \
 | `--f-hi` | Bandpass high cutoff (Hz) | 0.07 |
 | `--fcd-win-sec` | FCD window length (seconds) | 60.0 |
 | `--fcd-step-sec` | FCD window step (seconds) | 2.0 |
-| `--no-fcd` | Disable FCD metrics | False |
-| `--no-metastability` | Disable metastability metrics | False |
+| `--no-fcd-ks` | Disable `fcd_ks` metric computation | False |
+| `--no-metastability-diff` | Disable `metastability_diff` metric computation | False |
 | `--loss-fn` | Loss preset (`mse`, `correlation`, `combined`, `fc_fcd_meta`, `full`, `custom`) or individual term | `combined` |
-| `--loss-weight-fc` | FC term weight override (backprop) | preset default |
-| `--loss-weight-fcd` | FCD term weight override (backprop) | preset default |
-| `--loss-weight-metastability` | Metastability term weight override (backprop) | preset default |
+| `--loss-weight-fc-correlation` | `loss_fc_correlation` weight override (backprop) | preset default |
+| `--loss-weight-fcd` | `loss_fcd` weight override (backprop) | preset default |
+| `--loss-weight-metastability` | `loss_metastability` weight override (backprop) | preset default |
 
 ---
 

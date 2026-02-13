@@ -50,13 +50,6 @@ def compute_omega_from_timeseries(
     return 2 * np.pi * omega_hz
 
 
-def compute_omega_uniform(
-    n_rois: int, f_lo: float = 0.04, f_hi: float = 0.07, device: str = "cpu",
-) -> torch.Tensor:
-    """Uniformly spaced angular frequencies across a band."""
-    return 2 * np.pi * torch.linspace(f_lo, f_hi, n_rois, device=device)
-
-
 class RandomWindowDataset(Dataset):
     """Dataset that randomly samples windows from timeseries each call.
 

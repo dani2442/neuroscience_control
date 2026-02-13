@@ -5,7 +5,6 @@ from .preprocessing import (
     RandomWindowDataset,
     create_data_loaders,
     compute_omega_from_timeseries,
-    compute_omega_uniform,
 )
 
 __all__ = [
@@ -16,5 +15,4 @@ __all__ = [
     "RandomWindowDataset",
     "create_data_loaders",
     "compute_omega_from_timeseries",
-    "compute_omega_uniform",
 ]

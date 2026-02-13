@@ -114,6 +114,11 @@ class HopfConfig(TrainingConfig):
     learnable_a: bool = False
     learnable_g: bool = False
 
+    # Composite grid-search scoring weights
+    weight_fc: float = 1.0
+    weight_fcd: float = 0.5
+    weight_meta: float = 0.5
+
 
 @dataclass
 class NeuralSDEConfig(TrainingConfig):

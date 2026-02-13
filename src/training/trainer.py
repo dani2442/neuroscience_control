@@ -26,7 +26,7 @@ FC_METRICS = ("loss", "fc_correlation", "fc_mse")
 TS_METRICS = ("power_spectrum_distance", "temporal_correlation", "autocorr_distance")
 DYN_METRICS = ("fcd_ks", "metastability_diff")
 LOSS_COMPONENT_METRICS = (
-    "loss_fc_mse", "loss_fc_corr",
+    "loss_fc_mse", "loss_fc_correlation",
     "loss_l2",
     "loss_hilbert_amp", "loss_hilbert_omega",
     "loss_fcd", "loss_metastability",
@@ -112,6 +112,9 @@ class Trainer:
             weight_overrides=weight_overrides,
             dyn_kwargs=dyn_kwargs,
         )
+        self.active_loss_component_metrics = tuple(
+            f"loss_{name}" for name in self.loss_obj.weights.keys()
+        )
         
         # Set up optimizer
         if optimizer is None:
@@ -167,7 +170,7 @@ class Trainer:
         # Ensure all epoch metrics are tracked against epoch
         wandb.define_metric("epoch")
         wandb.define_metric("train/*", step_metric="epoch")
-        wandb.define_metric("val/*", step_metric="epoch")
+        wandb.define_metric("validation/*", step_metric="epoch")
         wandb.define_metric("best/*", step_metric="epoch")
         wandb.define_metric("test/*", step_metric="epoch")
         
@@ -181,11 +184,14 @@ class Trainer:
         if self.wandb_run is not None:
             log_dict = {f"{prefix}/{k}" if prefix else k: v for k, v in metrics.items()}
             log_dict["epoch"] = step
-            wandb.log(log_dict, step=step)
+            wandb.log(log_dict)
 
     def _normalize_epoch_metrics(self, metrics: Dict[str, float]) -> Dict[str, float]:
         """Ensure a consistent set of epoch metrics for wandb logging."""
-        normalized = {key: metrics.get(key, float("nan")) for key in WANDB_EPOCH_METRICS}
+        expected_keys = tuple(
+            dict.fromkeys(WANDB_EPOCH_METRICS + self.active_loss_component_metrics)
+        )
+        normalized = {key: metrics.get(key, float("nan")) for key in expected_keys}
         for key, value in metrics.items():
             if key not in normalized:
                 normalized[key] = value
@@ -204,10 +210,10 @@ class Trainer:
         val_metrics = self._normalize_epoch_metrics(val_metrics)
         log_dict = {
             **{f"train/{k}": v for k, v in train_metrics.items()},
-            **{f"val/{k}": v for k, v in val_metrics.items()},
+            **{f"validation/{k}": v for k, v in val_metrics.items()},
             "epoch": step
         }
-        wandb.log(log_dict, step=step)
+        wandb.log(log_dict)
     
     def _log_wandb_artifact(self, filepath: str, name: str, artifact_type: str = "model"):
         """Log artifact to wandb."""
@@ -241,7 +247,7 @@ class Trainer:
             return {}
         overrides: Dict[str, float] = {}
         _MAP = {
-            "loss_weight_fc": "fc_corr",
+            "loss_weight_fc": "fc_correlation",
             "loss_weight_fc_mse": "fc_mse",
             "loss_weight_l2": "l2",
             "loss_weight_hilbert_amp": "hilbert_amp",
@@ -411,11 +417,12 @@ class Trainer:
             if verbose:
                 postfix = {
                     "loss": f"{accumulator.average('loss'):.4f}",
-                    "fc_corr": f"{accumulator.average('fc_correlation'):.4f}"
+                    "fc_correlation": f"{accumulator.average('fc_correlation'):.4f}"
                 }
                 iterable.set_postfix(postfix)
 
-        metrics = {name: accumulator.average(name) for name in ALL_METRICS}
+        metric_names = sorted(set(ALL_METRICS) | set(accumulator.sums.keys()))
+        metrics = {name: accumulator.average(name) for name in metric_names}
         if self.metrics_sample_batches is None:
             metrics["metrics_sampled_batches"] = len(loader)
         else:
@@ -560,7 +567,7 @@ class Trainer:
                 print(f"Epoch {epoch:4d} | "
                       f"Train Loss: {train_metrics['loss']:.4f} | "
                       f"Val Loss: {val_metrics['loss']:.4f} | "
-                      f"Val FC Corr: {val_metrics['fc_correlation']:.4f} | "
+                      f"Val fc_correlation: {val_metrics['fc_correlation']:.4f} | "
                       f"Time: {elapsed:.1f}s")
             
             # Early stopping

@@ -132,8 +132,8 @@ def evaluate_models(models: dict, dataset: NeuroscienceDataset,
         }
         
         all_results[name] = results
-        print(f"  FC Correlation: {results['fc_correlation']:.4f} ± {results['fc_correlation_std']:.4f}")
-        print(f"  FC MSE: {results['fc_mse']:.4f} ± {results['fc_mse_std']:.4f}")
+        print(f"  fc_correlation: {results['fc_correlation']:.4f} ± {results['fc_correlation_std']:.4f}")
+        print(f"  fc_mse: {results['fc_mse']:.4f} ± {results['fc_mse_std']:.4f}")
     
     return all_results
 
@@ -243,7 +243,7 @@ def print_summary(results: dict):
     print("="*60)
     
     print("\n" + "-"*40)
-    print(f"{'Model':<20} {'FC Corr':<15} {'FC MSE':<15}")
+    print(f"{'Model':<20} {'fc_correlation':<15} {'fc_mse':<15}")
     print("-"*40)
     
     for name, metrics in results.items():
@@ -255,8 +255,8 @@ def print_summary(results: dict):
     
     # Determine best model
     best_model = max(results.keys(), key=lambda x: results[x]['fc_correlation'])
-    print(f"\nBest model (by FC correlation): {best_model}")
-    print(f"  FC Correlation: {results[best_model]['fc_correlation']:.4f}")
+    print(f"\nBest model (by fc_correlation): {best_model}")
+    print(f"  fc_correlation: {results[best_model]['fc_correlation']:.4f}")
 
 
 def main():
