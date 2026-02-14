@@ -18,7 +18,8 @@ class HopfSDEFunc(nn.Module):
     State is complex: ``(batch, n_rois)`` with ``dtype=complex64/128``.
 
     .. math::
-        dz = \\bigl[(a + i\\omega - |z|^2)\\,z + G\\,C\\,z\\bigr]\\,dt
+        dz = \\bigl[(a + i\\omega - |z|^2)\\,z
+             + G\\sum_j C_{ij}(z_j - z_i)\\bigr]\\,dt
              + \\sigma\\,dW
 
     where :math:`W` is a complex Brownian motion.
@@ -37,12 +38,14 @@ class HopfSDEFunc(nn.Module):
         self.structural_connectivity = structural_connectivity
 
     def f(self, t: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        """Drift: z · (a + iω − |z|²) + G·C@z  (complex)."""
+        """Drift: z·(a + iω − |z|²) + G·Σ_j C_ij(z_j−z_i)  (complex)."""
         z_sq = torch.abs(y) ** 2  # |z|², real
         omega = self.omega.unsqueeze(0)
         local = y * (self.a - z_sq + 1j * omega)
         sc = self.structural_connectivity.to(y.dtype)
-        coupling = self.global_coupling * (y @ sc.T)
+        coupled_sum = y @ sc.T
+        row_sum = sc.sum(dim=1, keepdim=True).T
+        coupling = self.global_coupling * (coupled_sum - y * row_sum)
         return local + coupling
 
     def g(self, t: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
@@ -52,7 +55,7 @@ class HopfSDEFunc(nn.Module):
 class CoupledHopfModel(BaseNeuroscienceModel):
     """Coupled Hopf oscillator model.
 
-    dz/dt = z·(a + iω − |z|²) + G·C@z + σ·dW
+    dz/dt = z·(a + iω − |z|²) + G·Σ_j C_ij(z_j−z_i) + σ·dW
     """
 
     def __init__(

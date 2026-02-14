@@ -126,7 +126,7 @@ bold_signal = model.generate_bold(
 The **Coupled Hopf Model** represents each brain region as a nonlinear oscillator governed by a supercritical Hopf bifurcation. The dynamics are described by the complex-valued stochastic differential equation:
 
 $$
-dz_i = \left[ \left( a + i\omega_i - |z_i|^2 \right) z_i + G \sum_{j=1}^{N} C_{ij} z_j \right] dt + \sigma \, dW_i
+dz_i = \left[ \left( a + i\omega_i - |z_i|^2 \right) z_i + G \sum_{j=1}^{N} C_{ij} (z_j - z_i) \right] dt + \sigma \, dW_i
 $$
 
 where $W_i = W_{1,i} + i\,W_{2,i}$ is a **complex Brownian motion** constructed from two independent standard real Brownian motions.
