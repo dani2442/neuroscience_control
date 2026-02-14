@@ -9,11 +9,13 @@ import torch
 
 from .base_model import BaseNeuroscienceModel
 from .hopf_model import CoupledHopfModel
+from .hybrid_hopf_model import HybridHopfModel
 from .neural_sde import NeuralSDE
 
 
 MODEL_REGISTRY = {
     "CoupledHopfModel": CoupledHopfModel,
+    "HybridHopfModel": HybridHopfModel,
     "NeuralSDE": NeuralSDE,
 }
 REQUIRED_CHECKPOINT_KEYS = (
