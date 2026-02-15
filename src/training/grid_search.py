@@ -89,16 +89,24 @@ class GridSearch:
             )
             fc_pred = model.compute_fc(timeseries)
 
-            fc_corrs, fc_mses = [], []
-            for i in range(batch_size):
-                fc_corrs.append(fc_correlation(fc_pred[i:i+1], target_fc.unsqueeze(0)).item())
-                fc_mses.append(fc_mse(fc_pred[i:i+1], target_fc.unsqueeze(0)).item())
+            # Mean-FC approach: average simulated FCs, then compare to target.
+            # This is the standard methodology in computational neuroscience
+            # (Deco et al.) and matches the evaluation in evaluate_hopf_model.
+            fc_pred_mean = fc_pred.mean(dim=0)
+            fc_corr_val = fc_correlation(fc_pred_mean.unsqueeze(0), target_fc.unsqueeze(0)).item()
+            fc_mse_val = fc_mse(fc_pred_mean.unsqueeze(0), target_fc.unsqueeze(0)).item()
+
+            # Per-subject stats kept for diagnostics.
+            fc_corrs = [fc_correlation(fc_pred[i:i+1], target_fc.unsqueeze(0)).item() for i in range(batch_size)]
+            fc_mses_list = [fc_mse(fc_pred[i:i+1], target_fc.unsqueeze(0)).item() for i in range(batch_size)]
 
         metrics: Dict[str, float] = {
-            "fc_correlation": np.mean(fc_corrs),
+            "fc_correlation": fc_corr_val,
             "fc_correlation_std": np.std(fc_corrs),
-            "fc_mse": np.mean(fc_mses),
-            "fc_mse_std": np.std(fc_mses),
+            "fc_correlation_per_subject": np.mean(fc_corrs),
+            "fc_mse": fc_mse_val,
+            "fc_mse_std": np.std(fc_mses_list),
+            "fc_mse_per_subject": np.mean(fc_mses_list),
         }
 
         # ---- FCD and metastability (only when target timeseries available) ----
@@ -228,6 +236,7 @@ def grid_search_hopf(
     fcd_win_sec: float = 60.0,
     fcd_step_sec: float = 2.0,
     metric_weights: Optional[Dict[str, float]] = None,
+    noise_sigma: float = 0.0,
 ) -> Tuple[Dict[str, Any], CoupledHopfModel]:
     """Grid search for Hopf model parameters.
 
@@ -248,6 +257,7 @@ def grid_search_hopf(
         metric_weights: Optional dict mapping metric names to weights for
             composite scoring (e.g. ``{"fc_correlation": 1.0,
             "fcd_mse": 0.5, "metastability_diff": 0.5}``).
+        noise_sigma: Noise scale for SDE diffusion (0.0 = deterministic ODE).
 
     Returns:
         (best_params, fitted_model)
@@ -266,6 +276,7 @@ def grid_search_hopf(
         'n_rois': n_rois,
         'structural_connectivity': structural_connectivity,
         'omega': omega,
+        'noise_sigma': noise_sigma,
         'learnable_a': False,
         'learnable_g': False,
     }
@@ -300,6 +311,7 @@ def grid_search_hopf(
         omega=omega,
         initial_g=best_params['initial_g'],
         initial_a=best_params['initial_a'],
+        noise_sigma=noise_sigma,
         device=device,
     )
 

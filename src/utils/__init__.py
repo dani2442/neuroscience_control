@@ -26,6 +26,15 @@ from .runtime import (
     finish_wandb_run,
     managed_wandb_run,
 )
+from .evaluation import (
+    to_float_metric,
+    prefixed_metrics,
+    generate_fc_figure,
+    generate_multigrid_figure,
+    save_checkpoint,
+    log_hopf_best_params,
+    extract_val_data,
+)
 
 __all__ = [
     "plot_fc_comparison",
@@ -50,4 +59,11 @@ __all__ = [
     "wandb_log_artifact",
     "finish_wandb_run",
     "managed_wandb_run",
+    "to_float_metric",
+    "prefixed_metrics",
+    "generate_fc_figure",
+    "generate_multigrid_figure",
+    "save_checkpoint",
+    "log_hopf_best_params",
+    "extract_val_data",
 ]

@@ -33,26 +33,18 @@ from src.training.losses import _PRESETS as LOSS_PRESETS
 from src.utils import (
     FIGURES_DIR,
     ensure_proxy_env,
-    plot_fc_comparison,
-    plot_simulation_multigrid,
+    extract_val_data,
+    generate_fc_figure,
+    generate_multigrid_figure,
+    log_hopf_best_params,
     print_section,
     resolve_device,
+    save_checkpoint,
     seed_all,
+    to_float_metric,
     wandb_log,
-    wandb_log_artifact,
-    wandb_log_figure,
     wandb_summary_update,
 )
-
-
-def _to_float_metric(value):
-    """Convert supported metric values to float for logging."""
-    if isinstance(value, torch.Tensor):
-        value = value.item()
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
 
 
 def log_train_validation_metrics(metrics_store, *, use_wandb: bool) -> None:
@@ -73,14 +65,14 @@ def log_train_validation_metrics(metrics_store, *, use_wandb: bool) -> None:
         for key, value in train_entry.items():
             if key == "epoch":
                 continue
-            numeric = _to_float_metric(value)
+            numeric = to_float_metric(value)
             if numeric is not None:
                 log_data[f"train/{key}"] = numeric
 
         for key, value in val_entry.items():
             if key == "epoch":
                 continue
-            numeric = _to_float_metric(value)
+            numeric = to_float_metric(value)
             if numeric is not None:
                 log_data[f"validation/{key}"] = numeric
 
@@ -199,36 +191,15 @@ def save_model_and_figures(
     """Save checkpoint, compute final metrics, and produce figures."""
     print_section("STEP 3: Saving Model and Generating Figures")
 
-    val_dataset = getattr(val_loader, "dataset", None)
-    if val_dataset is None or not hasattr(val_dataset, "timeseries") or not hasattr(val_dataset, "fc_matrices"):
-        raise ValueError("val_loader must expose dataset.timeseries and dataset.fc_matrices for evaluation.")
+    val_timeseries, val_fc_matrices, target_fc, n_timepoints = extract_val_data(val_loader)
 
-    val_timeseries = val_dataset.timeseries
-    val_fc_matrices = val_dataset.fc_matrices
-    if val_timeseries.shape[0] == 0:
-        raise ValueError("Validation loader dataset is empty; cannot generate final figures.")
-
-    target_fc = val_fc_matrices.mean(dim=0)
-    n_timepoints = min(val_timeseries.shape[2], 200)
-
-    checkpoint_dir = Path(cfg.checkpoint_dir)
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    checkpoint_path = checkpoint_dir / f"{model_name}_backprop_best_{cfg.run_name}.pt"
-    model.save(str(checkpoint_path))
-    print(f"Model saved to {checkpoint_path}")
-
-    wandb_log_artifact(
-        f"{model_name}_backprop_model_{cfg.run_name}",
-        checkpoint_path,
+    checkpoint_path = save_checkpoint(
+        model,
+        checkpoint_name=f"{model_name}_backprop_best_{cfg.run_name}.pt",
+        artifact_name=f"{model_name}_backprop_model_{cfg.run_name}",
+        checkpoint_dir=cfg.checkpoint_dir,
         use_wandb=cfg.use_wandb,
     )
-
-    n_paths = min(6, val_timeseries.shape[0])
-    initial_states = val_timeseries[:n_paths, :, 0]
-    with torch.no_grad():
-        simulated_ts = model.forward(initial_state=initial_states, n_steps=n_timepoints, dt=cfg.tr)
-        simulated_fc = model.compute_fc(simulated_ts)
-        simulated_fc_mean = simulated_fc.mean(dim=0)
 
     # Keep "final" summary aligned with loader-based epoch/test metric semantics.
     val_eval_metrics = trainer.validate(
@@ -248,46 +219,25 @@ def save_model_and_figures(
 
     model_title = "Neural SDE" if model_name == "nsde" else "Coupled Hopf"
 
-    fig = plot_fc_comparison(
-        simulated_fc_mean,
-        target_fc,
+    generate_fc_figure(
+        model, val_timeseries, target_fc, n_timepoints, cfg.tr,
         title=f"{model_title} (Backprop) - FC Comparison",
         default_name=f"{model_name}_backprop_fc_comparison",
-        use_pdf=True,
+        use_wandb=cfg.use_wandb,
     )
-    wandb_log_figure("figures/fc_comparison", fig, use_wandb=cfg.use_wandb)
-    plt.close(fig)
 
-    real_ts = val_timeseries[0]  # first validation subject
-    fig = plot_simulation_multigrid(
-        real_timeseries=real_ts.real,
-        simulated_runs=simulated_ts.real,
+    generate_multigrid_figure(
+        model, val_timeseries, n_timepoints, cfg.tr,
+        n_simulations=cfg.n_simulations,
         n_rois=12,
         n_cols=4,
-        max_timepoints=n_timepoints,
         title=f"{model_title} (Backprop) - Real vs Simulated",
         default_name=f"{model_name}_backprop_real_vs_sim_multigrid",
-        use_pdf=True,
+        use_wandb=cfg.use_wandb,
     )
-    wandb_log_figure("figures/real_vs_sim_multigrid", fig, use_wandb=cfg.use_wandb)
-    plt.close(fig)
 
-    # Log best a and G for Hopf model
-    if model_name == "hopf" and hasattr(model, "a") and hasattr(model, "g"):
-        best_a = model.a.item() if model.a.dim() == 0 else model.a.mean().item()
-        best_G = model.g.item() if model.g.dim() == 0 else model.g.mean().item()
-        wandb_log(
-            {
-                "best_params/a": best_a,
-                "best_params/G": best_G,
-            },
-            use_wandb=cfg.use_wandb,
-        )
-        wandb_summary_update(
-            {"best_a": best_a, "best_G": best_G},
-            use_wandb=cfg.use_wandb,
-        )
-        print(f"Best Hopf params — a: {best_a:.6f}, G: {best_G:.6f}")
+    if model_name == "hopf":
+        log_hopf_best_params(model, use_wandb=cfg.use_wandb)
 
     print(f"Figures saved to {FIGURES_DIR}")
     return checkpoint_path, final_metrics
@@ -408,8 +358,8 @@ def main(argv=None):
 
     # Preprocessing
     parser.add_argument("--fourier-denoise", action="store_true", help="Apply FFT bandpass denoising")
-    parser.add_argument("--denoise-f-lo", type=float, default=0.01, help="Denoising low cutoff (Hz)")
-    parser.add_argument("--denoise-f-hi", type=float, default=0.1, help="Denoising high cutoff (Hz)")
+    parser.add_argument("--denoise-f-lo", type=float, default=0.008, help="Denoising low cutoff (Hz)")
+    parser.add_argument("--denoise-f-hi", type=float, default=0.08, help="Denoising high cutoff (Hz)")
     parser.add_argument("--n-windows-per-epoch", type=int, default=256, help="Random windows per epoch")
 
     # NSDE settings
@@ -419,7 +369,7 @@ def main(argv=None):
     # Hopf settings
     parser.add_argument("--initial-a", type=float, default=-0.02, help="Initial Hopf bifurcation parameter")
     parser.add_argument("--initial-g", type=float, default=0.5, help="Initial Hopf coupling")
-    parser.add_argument("--noise-sigma", type=float, default=0.05, help="Hopf noise scale")
+    parser.add_argument("--noise-sigma", type=float, default=0.0, help="Hopf noise scale (0.0 = deterministic)")
 
     args = parser.parse_args(argv)
     if args.experiment_name is None:

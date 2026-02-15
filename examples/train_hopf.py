@@ -28,38 +28,20 @@ from src.training import HopfConfig, grid_search_hopf
 from src.utils import (
     FIGURES_DIR,
     ensure_proxy_env,
+    extract_val_data,
     finish_wandb_run,
+    generate_fc_figure,
+    generate_multigrid_figure,
     init_wandb_run,
-    plot_fc_comparison,
-    plot_simulation_multigrid,
+    prefixed_metrics,
     print_section,
     resolve_device,
+    save_checkpoint,
     seed_all,
+    to_float_metric,
     wandb_log,
-    wandb_log_artifact,
-    wandb_log_figure,
     wandb_summary_update,
 )
-
-
-def _to_float_metric(value):
-    """Convert supported metric values to float for logging."""
-    if isinstance(value, torch.Tensor):
-        value = value.item()
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _prefixed_metrics(prefix: str, metrics: dict[str, float]) -> dict[str, float]:
-    """Attach a namespace prefix and keep only numeric entries."""
-    payload: dict[str, float] = {}
-    for key, value in metrics.items():
-        numeric = _to_float_metric(value)
-        if numeric is not None:
-            payload[f"{prefix}/{key}"] = numeric
-    return payload
 
 
 def load_data(cfg: HopfConfig, device: str):
@@ -186,7 +168,7 @@ def evaluate_hopf_loader_metrics(
                 )
 
         for key, value in batch_metrics.items():
-            numeric = _to_float_metric(value)
+            numeric = to_float_metric(value)
             if numeric is None or math.isnan(numeric):
                 continue
             sums[key] = sums.get(key, 0.0) + numeric
@@ -267,15 +249,22 @@ def train_hopf_grid_search(
         wandb.define_metric("metrics/*", step_metric="epoch")
         wandb.define_metric("best_params/*", step_metric="epoch")
 
-    target_fc = dataset.fc_mean
+    # ---- Train / validation split BEFORE grid search (no data leakage) ----
+    train_idx, val_idx = split_subject_indices(cfg, dataset.n_subjects)
     n_rois = dataset.n_rois
     n_timepoints = min(dataset.n_timepoints, 200)
-    n_eval = min(cfg.n_simulations, dataset.n_subjects)
-    initial_states = dataset.timeseries[:n_eval, :, 0]
+
+    # Grid search uses only the training subjects.
+    train_fc = dataset.fc_matrices[train_idx].mean(dim=0)
+    n_eval = min(cfg.n_simulations, len(train_idx))
+    eval_train_idx = train_idx[:n_eval]
+    initial_states = dataset.timeseries[eval_train_idx, :, 0]
+    target_ts = dataset.timeseries[eval_train_idx, :, :n_timepoints]
 
     print(f"Grid search over {len(cfg.g_values) * len(cfg.a_values)} parameter combinations")
     print(f"  - G values: {cfg.g_values}")
     print(f"  - a values: {cfg.a_values}")
+    print(f"  - Train subjects: {len(train_idx)}, Val subjects: {len(val_idx)}")
 
     # Build composite metric weights from CLI.
     metric_weights = {}
@@ -287,7 +276,7 @@ def train_hopf_grid_search(
         metric_weights["metastability_diff"] = cfg.weight_meta
 
     best_params, hopf_model = grid_search_hopf(
-        target_fc=target_fc,
+        target_fc=train_fc,
         n_rois=n_rois,
         initial_states=initial_states,
         omega=omega,
@@ -296,31 +285,31 @@ def train_hopf_grid_search(
         n_timepoints=n_timepoints,
         dt=cfg.tr,
         device=device,
-        target_timeseries=dataset.timeseries[:n_eval, :, :n_timepoints],
+        target_timeseries=target_ts,
         tr=cfg.tr,
         fcd_win_sec=cfg.fcd_win_sec,
         fcd_step_sec=cfg.fcd_step_sec,
         metric_weights=metric_weights if metric_weights else None,
+        noise_sigma=cfg.noise_sigma,
     )
 
-    metrics = evaluate_hopf_model(hopf_model, dataset, cfg)
-    train_idx, val_idx = split_subject_indices(cfg, dataset.n_subjects)
+    # Evaluate on train and validation splits with consistent methodology.
+    n_eval_paths = max(10, cfg.n_simulations)
     train_metrics = evaluate_hopf_model(
         hopf_model,
         dataset,
         cfg,
-        n_paths=cfg.n_simulations,
+        n_paths=n_eval_paths,
         subject_indices=train_idx,
     )
     val_metrics = evaluate_hopf_model(
         hopf_model,
         dataset,
         cfg,
-        n_paths=cfg.n_simulations,
+        n_paths=n_eval_paths,
         subject_indices=val_idx,
     )
 
-    print(f"Grid-search Hopf metrics: {metrics}")
     print(f"Train metrics: {train_metrics}")
     print(f"Validation metrics: {val_metrics}")
 
@@ -328,21 +317,19 @@ def train_hopf_grid_search(
         "epoch": 0,
         "best_params/G": float(best_params.get("initial_g", 0.0)),
         "best_params/a": float(best_params.get("initial_a", 0.0)),
-        **_prefixed_metrics("train", train_metrics),
-        **_prefixed_metrics("validation", val_metrics),
-        **_prefixed_metrics("metrics", metrics),
+        **prefixed_metrics("train", train_metrics),
+        **prefixed_metrics("validation", val_metrics),
     }
     wandb_log(log_payload, use_wandb=cfg.use_wandb)
     wandb_summary_update(
         {
             **{f"train_{k}": v for k, v in train_metrics.items()},
             **{f"validation_{k}": v for k, v in val_metrics.items()},
-            **{f"metrics_{k}": v for k, v in metrics.items()},
         },
         use_wandb=cfg.use_wandb,
     )
 
-    return hopf_model, metrics, best_params
+    return hopf_model, train_metrics, best_params
 
 
 def save_model_and_figures(
@@ -354,60 +341,32 @@ def save_model_and_figures(
     """Save model and generate FC/timeseries/realization figures."""
     print_section("STEP 3: Saving Model and Generating Figures")
 
-    val_dataset = getattr(val_loader, "dataset", None)
-    if val_dataset is None or not hasattr(val_dataset, "timeseries") or not hasattr(val_dataset, "fc_matrices"):
-        raise ValueError("val_loader must expose dataset.timeseries and dataset.fc_matrices for evaluation.")
+    val_timeseries, val_fc_matrices, target_fc, n_timepoints = extract_val_data(val_loader)
 
-    val_timeseries = val_dataset.timeseries
-    val_fc_matrices = val_dataset.fc_matrices
-    if val_timeseries.shape[0] == 0:
-        raise ValueError("Validation loader dataset is empty; cannot generate final figures.")
-
-    target_fc = val_fc_matrices.mean(dim=0)
-    n_timepoints = min(val_timeseries.shape[2], 200)
-
-    checkpoint_dir = Path(cfg.checkpoint_dir)
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    checkpoint_path = checkpoint_dir / f"hopf_grid_best_{cfg.run_name}.pt"
-    hopf_model.save(str(checkpoint_path))
-    print(f"Model saved to {checkpoint_path}")
-
-    wandb_log_artifact(
-        f"hopf_model_grid_{cfg.run_name}",
-        checkpoint_path,
+    checkpoint_path = save_checkpoint(
+        hopf_model,
+        checkpoint_name=f"hopf_grid_best_{cfg.run_name}.pt",
+        artifact_name=f"hopf_model_grid_{cfg.run_name}",
+        checkpoint_dir=cfg.checkpoint_dir,
         use_wandb=cfg.use_wandb,
     )
 
-    n_paths = min(6, val_timeseries.shape[0])
-    initial_states = val_timeseries[:n_paths, :, 0]
-    with torch.no_grad():
-        hopf_ts = hopf_model.forward(initial_state=initial_states, n_steps=n_timepoints, dt=cfg.tr)
-        hopf_fc = hopf_model.compute_fc(hopf_ts)
-        hopf_fc_mean = hopf_fc.mean(dim=0)
-
-    fig = plot_fc_comparison(
-        hopf_fc_mean,
-        target_fc,
+    generate_fc_figure(
+        hopf_model, val_timeseries, target_fc, n_timepoints, cfg.tr,
         title="Coupled Hopf (Grid) - FC Comparison",
         default_name="hopf_grid_fc_comparison",
-        use_pdf=True,
+        use_wandb=cfg.use_wandb,
     )
-    wandb_log_figure("figures/fc_comparison", fig, use_wandb=cfg.use_wandb)
-    plt.close(fig)
 
-    real_ts = val_timeseries[0]  # first validation subject
-    fig = plot_simulation_multigrid(
-        real_timeseries=real_ts.real,
-        simulated_runs=hopf_ts.real,
-        n_rois=12,
-        n_cols=4,
-        max_timepoints=n_timepoints,
+    generate_multigrid_figure(
+        hopf_model, val_timeseries, n_timepoints, cfg.tr,
+        n_simulations=cfg.n_simulations,
+        n_rois=3,
+        n_cols=3,
         title="Coupled Hopf (Grid) - Real vs Simulated",
         default_name="hopf_grid_real_vs_sim_multigrid",
-        use_pdf=True,
+        use_wandb=cfg.use_wandb,
     )
-    wandb_log_figure("figures/real_vs_sim_multigrid", fig, use_wandb=cfg.use_wandb)
-    plt.close(fig)
 
     print(f"Figures saved to {FIGURES_DIR}")
     return checkpoint_path
@@ -424,7 +383,7 @@ def main(argv=None):
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
 
     # Data / dynamics settings
-    parser.add_argument("--max-subjects", type=int, default=50, help="Limit number of subjects (first N)")
+    parser.add_argument("--max-subjects", type=int, default=90, help="Limit number of subjects (first N)")
     parser.add_argument("--tr", type=float, default=0.72, help="Repetition time in seconds")
     parser.add_argument("--f-lo", type=float, default=0.04, help="Bandpass low cutoff (Hz)")
     parser.add_argument("--f-hi", type=float, default=0.07, help="Bandpass high cutoff (Hz)")
@@ -432,57 +391,34 @@ def main(argv=None):
     parser.add_argument("--fcd-step-sec", type=float, default=2.0, help="Sliding-window step for FCD metrics/losses (seconds)")
     parser.add_argument("--no-fcd-ks", dest="no_fcd", action="store_true", help="Disable `fcd_ks` metric computation")
     parser.add_argument("--no-fcd", dest="no_fcd", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument(
-        "--no-metastability-diff",
-        dest="no_metastability",
-        action="store_true",
-        help="Disable `metastability_diff` metric computation",
-    )
+    parser.add_argument("--no-metastability-diff", dest="no_metastability", action="store_true", help="Disable `metastability_diff` metric computation")
     parser.add_argument("--no-metastability", dest="no_metastability", action="store_true", help=argparse.SUPPRESS)
 
     # Preprocessing
     parser.add_argument("--fourier-denoise", action="store_true", help="Apply FFT bandpass denoising")
-    parser.add_argument("--denoise-f-lo", type=float, default=0.01, help="Denoising low cutoff (Hz)")
-    parser.add_argument("--denoise-f-hi", type=float, default=0.1, help="Denoising high cutoff (Hz)")
+    parser.add_argument("--denoise-f-lo", type=float, default=0.008, help="Denoising low cutoff (Hz)")
+    parser.add_argument("--denoise-f-hi", type=float, default=0.08, help="Denoising high cutoff (Hz)")
 
     # Grid-search settings
     parser.add_argument("--g-values", type=float, nargs="*", default=None, help="Grid values for G")
     parser.add_argument("--a-values", type=float, nargs="*", default=None, help="Grid values for a")
     parser.add_argument("--n-simulations", type=int, default=10, help="Number of stochastic simulations per grid point")
-    parser.add_argument(
-        "--weight-fc-correlation",
-        dest="weight_fc",
-        type=float,
-        default=1.0,
-        help="Weight for `fc_correlation` in grid-search composite score",
-    )
+    parser.add_argument("--weight-fc-correlation", dest="weight_fc", type=float, default=1.0, help="Weight for `fc_correlation` in grid-search composite score")
     parser.add_argument("--weight-fc", dest="weight_fc", type=float, help=argparse.SUPPRESS)
-    parser.add_argument(
-        "--weight-fcd-mse",
-        dest="weight_fcd",
-        type=float,
-        default=None,
-        help="Weight for `fcd_mse` in grid-search composite score",
-    )
-    parser.add_argument("--weight-fcd", default=0.5, dest="weight_fcd", type=float, help=argparse.SUPPRESS)
-    parser.add_argument(
-        "--weight-metastability-diff",
-        dest="weight_meta",
-        type=float,
-        default=None,
-        help="Weight for `metastability_diff` in grid-search composite score",
-    )
-    parser.add_argument("--weight-meta", default=0.5, dest="weight_meta", type=float, help=argparse.SUPPRESS)
+    parser.add_argument("--weight-fcd-mse", dest="weight_fcd", type=float, default=None, help="Weight for `fcd_mse` in grid-search composite score")
+    parser.add_argument("--weight-fcd", default=1., dest="weight_fcd", type=float, help=argparse.SUPPRESS)
+    parser.add_argument("--weight-metastability-diff", dest="weight_meta", type=float, default=None, help="Weight for `metastability_diff` in grid-search composite score")
+    parser.add_argument("--weight-meta", default=1., dest="weight_meta", type=float, help=argparse.SUPPRESS)
 
     # Hopf settings
     parser.add_argument("--initial-a", type=float, default=-0.02, help="Initial Hopf bifurcation parameter")
     parser.add_argument("--initial-g", type=float, default=0.5, help="Initial Hopf coupling")
-    parser.add_argument("--noise-sigma", type=float, default=0.05, help="Hopf noise scale")
+    parser.add_argument("--noise-sigma", type=float, default=0.00, help="Hopf noise scale")
 
     args = parser.parse_args(argv)
 
     print_section("COUPLED HOPF MODEL TRAINING (GRID SEARCH)")
-    # ensure_proxy_env()
+    ensure_proxy_env()
 
     cfg = HopfConfig(
         experiment_name=args.experiment_name,
@@ -521,7 +457,7 @@ def main(argv=None):
         dataset, omega = load_data(cfg, device)
         _, val_idx = split_subject_indices(cfg, dataset.n_subjects)
         val_loader = create_validation_loader(dataset, cfg, device, val_idx)
-        hopf_model, grid_metrics, best_params = train_hopf_grid_search(dataset, omega, cfg, device)
+        hopf_model, train_metrics, best_params = train_hopf_grid_search(dataset, omega, cfg, device)
         checkpoint = save_model_and_figures(hopf_model, dataset, val_loader, cfg)
         val_window_size = getattr(getattr(val_loader, "dataset", None), "window_size", None)
         final_metrics_all = evaluate_hopf_loader_metrics(
@@ -545,15 +481,15 @@ def main(argv=None):
     print("HOPF GRID SEARCH COMPLETED SUCCESSFULLY")
     print("=" * 60)
     print(f"\nBest params: {best_params}")
-    print(f"Grid-search metrics: {grid_metrics}")
-    print(f"Final metrics: {final_metrics}")
+    print(f"Train metrics: {train_metrics}")
+    print(f"Final metrics (val loader): {final_metrics}")
     print(f"Checkpoint: {checkpoint}")
     print(f"Figures saved to: {FIGURES_DIR}")
 
     return {
         "model": hopf_model,
         "metrics": final_metrics,
-        "grid_metrics": grid_metrics,
+        "train_metrics": train_metrics,
         "params": best_params,
         "checkpoint": checkpoint,
     }
