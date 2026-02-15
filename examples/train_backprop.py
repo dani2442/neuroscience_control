@@ -128,6 +128,7 @@ def build_model(
     n_layers: int,
     initial_a: float,
     initial_g: float,
+    structural_connectivity: torch.Tensor | None = None,
 ):
     """Create model instance for selected mode."""
     if model_name == "nsde":
@@ -157,6 +158,7 @@ def build_model(
 
         model = CoupledHopfModel(
             n_rois=dataset.n_rois,
+            structural_connectivity=structural_connectivity,
             omega=omega,
             initial_a=initial_a,
             initial_g=initial_g,
@@ -357,7 +359,7 @@ def main(argv=None):
     parser.add_argument("--no-metastability", dest="no_metastability", action="store_true", help=argparse.SUPPRESS)
 
     # Preprocessing
-    parser.add_argument("--fourier-denoise", action="store_true", help="Apply FFT bandpass denoising")
+    parser.add_argument("--fourier-denoise", action="store_true", default=True, help="Apply FFT bandpass denoising")
     parser.add_argument("--denoise-f-lo", type=float, default=0.008, help="Denoising low cutoff (Hz)")
     parser.add_argument("--denoise-f-hi", type=float, default=0.08, help="Denoising high cutoff (Hz)")
     parser.add_argument("--n-windows-per-epoch", type=int, default=256, help="Random windows per epoch")
@@ -369,7 +371,7 @@ def main(argv=None):
     # Hopf settings
     parser.add_argument("--initial-a", type=float, default=-0.02, help="Initial Hopf bifurcation parameter")
     parser.add_argument("--initial-g", type=float, default=0.5, help="Initial Hopf coupling")
-    parser.add_argument("--noise-sigma", type=float, default=0.0, help="Hopf noise scale (0.0 = deterministic)")
+    parser.add_argument("--noise-sigma", type=float, default=0.5, help="Hopf noise scale (0.0 = deterministic)")
 
     args = parser.parse_args(argv)
     if args.experiment_name is None:
@@ -388,6 +390,7 @@ def main(argv=None):
     train_loader, val_loader, test_loader, window_size = create_loaders(dataset, cfg, device)
 
     print_section("STEP 2: Training Model (Backpropagation)")
+    structural_connectivity = dataset.fc_mean
     model = build_model(
         args.model,
         dataset,
@@ -397,6 +400,7 @@ def main(argv=None):
         n_layers=args.n_layers,
         initial_a=args.initial_a,
         initial_g=args.initial_g,
+        structural_connectivity=structural_connectivity,
     )
 
     trainer = None

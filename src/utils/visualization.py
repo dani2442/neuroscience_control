@@ -521,11 +521,22 @@ def plot_simulation_multigrid(
     axes = np.array(axes).reshape(-1)
     time = np.arange(n_timepoints)
 
+    n_runs = sim_np.shape[0]
     for plot_idx, roi_idx in enumerate(roi_indices):
         ax = axes[plot_idx]
         sim_mean = sim_np[:, roi_idx, :].mean(axis=0)
         sim_std = sim_np[:, roi_idx, :].std(axis=0)
         ax.plot(time, real_np[roi_idx], linewidth=1.1, color="#1f77b4", label="Real")
+        # Individual simulated trajectories
+        for run_idx in range(n_runs):
+            ax.plot(
+                time,
+                sim_np[run_idx, roi_idx, :],
+                linewidth=0.6,
+                color="#d62728",
+                alpha=0.5,
+                label="Sim trajectory" if run_idx == 0 else None,
+            )
         ax.plot(time, sim_mean, linewidth=1.0, color="#d62728", alpha=0.95, label="Sim mean")
         ax.fill_between(
             time,

@@ -81,7 +81,7 @@ def load_data(cfg: HopfConfig, device: str):
         f"{omega.max().item() / (2 * 3.14159):.4f}] Hz"
     )
 
-    return dataset, omega
+    return dataset, omega, dataset.fc_mean
 
 
 def split_subject_indices(cfg: HopfConfig, n_subjects: int) -> tuple[torch.Tensor, torch.Tensor]:
@@ -228,6 +228,7 @@ def evaluate_hopf_model(
 def train_hopf_grid_search(
     dataset: NeuroscienceDataset,
     omega: torch.Tensor,
+    structural_connectivity: torch.Tensor,
     cfg: HopfConfig,
     device: str,
 ):
@@ -279,6 +280,7 @@ def train_hopf_grid_search(
         target_fc=train_fc,
         n_rois=n_rois,
         initial_states=initial_states,
+        structural_connectivity=structural_connectivity,
         omega=omega,
         g_values=cfg.g_values,
         a_values=cfg.a_values,
@@ -360,11 +362,11 @@ def save_model_and_figures(
 
     generate_multigrid_figure(
         hopf_model, val_timeseries, n_timepoints, cfg.tr,
-        n_simulations=cfg.n_simulations,
+        n_simulations=1,
         n_rois=3,
         n_cols=3,
         title="Coupled Hopf (Grid) - Real vs Simulated",
-        default_name="hopf_grid_real_vs_sim_multigrid",
+        default_name="hopf_grid_real_vs_sim",
         use_wandb=cfg.use_wandb,
     )
 
@@ -383,7 +385,7 @@ def main(argv=None):
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
 
     # Data / dynamics settings
-    parser.add_argument("--max-subjects", type=int, default=90, help="Limit number of subjects (first N)")
+    parser.add_argument("--max-subjects", type=int, default=50, help="Limit number of subjects (first N)")
     parser.add_argument("--tr", type=float, default=0.72, help="Repetition time in seconds")
     parser.add_argument("--f-lo", type=float, default=0.04, help="Bandpass low cutoff (Hz)")
     parser.add_argument("--f-hi", type=float, default=0.07, help="Bandpass high cutoff (Hz)")
@@ -395,7 +397,7 @@ def main(argv=None):
     parser.add_argument("--no-metastability", dest="no_metastability", action="store_true", help=argparse.SUPPRESS)
 
     # Preprocessing
-    parser.add_argument("--fourier-denoise", action="store_true", help="Apply FFT bandpass denoising")
+    parser.add_argument("--fourier-denoise", action="store_true", default=True, help="Apply FFT bandpass denoising")
     parser.add_argument("--denoise-f-lo", type=float, default=0.008, help="Denoising low cutoff (Hz)")
     parser.add_argument("--denoise-f-hi", type=float, default=0.08, help="Denoising high cutoff (Hz)")
 
@@ -411,9 +413,9 @@ def main(argv=None):
     parser.add_argument("--weight-meta", default=1., dest="weight_meta", type=float, help=argparse.SUPPRESS)
 
     # Hopf settings
-    parser.add_argument("--initial-a", type=float, default=-0.02, help="Initial Hopf bifurcation parameter")
-    parser.add_argument("--initial-g", type=float, default=0.5, help="Initial Hopf coupling")
-    parser.add_argument("--noise-sigma", type=float, default=0.00, help="Hopf noise scale")
+    # parser.add_argument("--initial-a", type=float, default=0.0, help="Initial Hopf bifurcation parameter")
+    # parser.add_argument("--initial-g", type=float, default=0.0, help="Initial Hopf coupling")
+    parser.add_argument("--noise-sigma", type=float, default=0.2, help="Hopf noise scale")
 
     args = parser.parse_args(argv)
 
@@ -454,10 +456,10 @@ def main(argv=None):
     seed_all(cfg.seed)
 
     try:
-        dataset, omega = load_data(cfg, device)
+        dataset, omega, structural_connectivity = load_data(cfg, device)
         _, val_idx = split_subject_indices(cfg, dataset.n_subjects)
         val_loader = create_validation_loader(dataset, cfg, device, val_idx)
-        hopf_model, train_metrics, best_params = train_hopf_grid_search(dataset, omega, cfg, device)
+        hopf_model, train_metrics, best_params = train_hopf_grid_search(dataset, omega, structural_connectivity, cfg, device)
         checkpoint = save_model_and_figures(hopf_model, dataset, val_loader, cfg)
         val_window_size = getattr(getattr(val_loader, "dataset", None), "window_size", None)
         final_metrics_all = evaluate_hopf_loader_metrics(
