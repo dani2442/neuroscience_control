@@ -186,7 +186,9 @@ model = NeuralSDE(
 
 ## Metrics
 
-The framework evaluates model fit using three complementary metrics aligned with the neuroscience literature:
+The framework evaluates model fit using three complementary metrics aligned with the neuroscience literature.
+
+All time-domain metrics use the discrete time-average $\frac{1}{T}\sum_{t=1}^T f(t)$ as the uniform-$\Delta t$ approximation to $\frac{1}{T}\int_0^T f(t)\,dt$, then averaged over the batch and ROIs.  Since both data and model outputs are **complex analytic signals** (bandpass-filtered and Hilbert-transformed at dataset-load time), no additional signal preprocessing is applied inside the metrics.
 
 ### 1. Functional Connectivity (FC)
 
@@ -206,7 +208,7 @@ $$
 
 ### 2. Functional Connectivity Dynamics (FCD)
 
-Captures how FC evolves over time using sliding windows:
+Captures how FC evolves over time using sliding windows on the **real part** of the complex analytic signal (no additional preprocessing):
 
 1. Compute windowed FC at each time window
 2. Build FCD matrix: correlation between windowed FC patterns
@@ -222,7 +224,8 @@ Captures how FC evolves over time using sliding windows:
 
 ### 3. Metastability
 
-Temporal variability of global synchronization using the Kuramoto order parameter:
+Temporal variability of global synchronization using the Kuramoto order parameter.
+Phases are extracted directly from the complex analytic signal via $\phi_i(t) = \arg(z_i(t))$ — no Hilbert transform or bandpass is needed at metric time:
 
 $$
 R(t) = \left| \frac{1}{N} \sum_{i=1}^{N} e^{i\phi_i(t)} \right|
@@ -320,8 +323,8 @@ python examples/train_nsde_finetune.py \
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `--tr` | Repetition time (seconds) | 0.72 |
-| `--f-lo` | Bandpass low cutoff (Hz) | 0.04 |
-| `--f-hi` | Bandpass high cutoff (Hz) | 0.07 |
+| `--f-lo` | Bandpass low cutoff (Hz) — used only for Hopf intrinsic frequency estimation | 0.04 |
+| `--f-hi` | Bandpass high cutoff (Hz) — used only for Hopf intrinsic frequency estimation | 0.07 |
 | `--fcd-win-sec` | FCD window length (seconds) | 60.0 |
 | `--fcd-step-sec` | FCD window step (seconds) | 2.0 |
 | `--no-fcd-ks` | Disable `fcd_ks` metric computation | False |
@@ -376,6 +379,7 @@ neuroscience_control/
 │   │   ├── neural_sde.py  # Neural SDE model
 │   │   └── base_model.py  # Base class for models
 │   ├── metrics/           # Evaluation metrics
+│   │   ├── _utils.py      # Shared helpers (to_real, ensure_batch, zscore, …)
 │   │   ├── fc_metrics.py  # FC correlation, MSE
 │   │   ├── dynamics_metrics.py # FCD, metastability
 │   │   └── timeseries_metrics.py # Power spectrum, autocorrelation
@@ -394,20 +398,19 @@ neuroscience_control/
 
 ## Preprocessing Pipeline
 
-The code path uses three related preprocessing stages:
+The code path uses two related preprocessing stages:
 
 1. **Dataset preprocessing (`NeuroscienceDataset`)**
 - Z-score each ROI time series.
 - Optional FFT brick-wall bandpass denoising via `--fourier-denoise` (`--denoise-f-lo`, `--denoise-f-hi`; defaults 0.01–0.1 Hz when enabled).
 - Convert to complex analytic signal via Hilbert transform.
 
-2. **Dynamics-metric preprocessing (`compute_dynamics_fit_metrics`)**
-- Per sample: linear detrend -> FFT bandpass (`--f-lo`, `--f-hi`, defaults 0.04–0.07 Hz) -> z-score.
-- Used before FCD and metastability calculations.
+All downstream metrics and losses operate directly on this complex analytic signal — FCD uses the real part (`.real`), metastability extracts phases via `torch.angle(z)`, and timeseries metrics (power spectrum, temporal correlation, autocorrelation) use the real part.
 
-3. **Intrinsic frequency estimation for Hopf (`compute_omega_from_timeseries`)**
+2. **Intrinsic frequency estimation for Hopf (`compute_omega_from_timeseries`)**
 - FFT-based estimation in `[f_lo, f_hi]` (default 0.04–0.07 Hz), using peak-power (default) or weighted mode.
 - Returns angular frequencies (rad/s).
+- `--f-lo` and `--f-hi` are only used for this omega estimation, not for metric preprocessing.
 
 ```python
 from src.dataset import NeuroscienceDataset

@@ -20,8 +20,8 @@ from typing import Callable, Dict, Optional, Sequence
 import torch
 import torch.nn.functional as F
 
+from ..metrics._utils import ensure_batch
 from ..metrics.dynamics_metrics import (
-    _ensure_batch,
     fcd_mse_loss as _fcd_mse_loss,
     metastability_l1_loss as _metastability_l1_loss,
 )
@@ -93,7 +93,7 @@ def _complex_amplitude_omega(
         amplitude: ``(batch, n_rois, n_timepoints)``  — |z|
         omega:     ``(batch, n_rois, n_timepoints - 1)``  — rad/s
     """
-    ts = _ensure_batch(ts)
+    ts = ensure_batch(ts)
     if not torch.is_complex(ts):
         raise ValueError(
             "_complex_amplitude_omega expects complex input; "
@@ -165,8 +165,6 @@ def loss_fcd(
     ts_pred: torch.Tensor,
     ts_target: torch.Tensor,
     tr: float = 0.72,
-    f_lo: float = 0.04,
-    f_hi: float = 0.07,
     fcd_win_sec: float = 60.0,
     fcd_step_sec: float = 2.0,
     **_kwargs,
@@ -181,24 +179,17 @@ def loss_fcd(
     """
     return _fcd_mse_loss(
         ts_pred, ts_target,
-        tr=tr, f_lo=f_lo, f_hi=f_hi,
-        fcd_win_sec=fcd_win_sec, fcd_step_sec=fcd_step_sec,
+        tr=tr, fcd_win_sec=fcd_win_sec, fcd_step_sec=fcd_step_sec,
     )
 
 
 def loss_metastability(
     ts_pred: torch.Tensor,
     ts_target: torch.Tensor,
-    tr: float = 0.72,
-    f_lo: float = 0.04,
-    f_hi: float = 0.07,
     **_kwargs,
 ) -> torch.Tensor:
     """L1 difference of Kuramoto metastability."""
-    return _metastability_l1_loss(
-        ts_pred, ts_target,
-        tr=tr, f_lo=f_lo, f_hi=f_hi,
-    )
+    return _metastability_l1_loss(ts_pred, ts_target)
 
 
 # ---------------------------------------------------------------------------

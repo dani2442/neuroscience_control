@@ -65,8 +65,6 @@ class GridSearch:
         dt: float = 0.72,
         target_timeseries: Optional[torch.Tensor] = None,
         tr: float = 0.72,
-        f_lo: float = 0.04,
-        f_hi: float = 0.07,
         fcd_win_sec: float = 60.0,
         fcd_step_sec: float = 2.0,
     ) -> Dict[str, float]:
@@ -80,9 +78,7 @@ class GridSearch:
             dt: Time step.
             target_timeseries: Optional complex tensor (batch, n_rois, T) for
                 computing FCD and metastability losses.
-            tr: Repetition time in seconds (for dynamics processing).
-            f_lo: Bandpass low cutoff Hz.
-            f_hi: Bandpass high cutoff Hz.
+            tr: Repetition time in seconds (for FCD window sizing).
             fcd_win_sec: FCD window length in seconds.
             fcd_step_sec: FCD window step in seconds.
         """
@@ -111,14 +107,13 @@ class GridSearch:
 
             fcd_val = fcd_mse_loss(
                 timeseries, target_ts,
-                tr=tr, f_lo=f_lo, f_hi=f_hi,
+                tr=tr,
                 fcd_win_sec=fcd_win_sec, fcd_step_sec=fcd_step_sec,
             ).item()
             metrics["fcd_mse"] = fcd_val
 
             meta_val = metastability_l1_loss(
                 timeseries, target_ts,
-                tr=tr, f_lo=f_lo, f_hi=f_hi,
             ).item()
             metrics["metastability_diff"] = meta_val
 
@@ -230,8 +225,6 @@ def grid_search_hopf(
     device: str = "cpu",
     target_timeseries: Optional[torch.Tensor] = None,
     tr: float = 0.72,
-    f_lo: float = 0.04,
-    f_hi: float = 0.07,
     fcd_win_sec: float = 60.0,
     fcd_step_sec: float = 2.0,
     metric_weights: Optional[Dict[str, float]] = None,
@@ -249,9 +242,7 @@ def grid_search_hopf(
         dt: Time step.
         device: Device.
         target_timeseries: Optional (batch, n_rois, T) for FCD/meta scoring.
-        tr: Repetition time (seconds) for dynamics preprocessing.
-        f_lo: Bandpass low cutoff (Hz).
-        f_hi: Bandpass high cutoff (Hz).
+        tr: Repetition time (seconds) for FCD window sizing.
         fcd_win_sec: FCD window length (seconds).
         fcd_step_sec: FCD window step (seconds).
         metric_weights: Optional dict mapping metric names to weights for
@@ -284,7 +275,7 @@ def grid_search_hopf(
     if target_timeseries is not None:
         eval_kwargs.update(
             target_timeseries=target_timeseries,
-            tr=tr, f_lo=f_lo, f_hi=f_hi,
+            tr=tr,
             fcd_win_sec=fcd_win_sec, fcd_step_sec=fcd_step_sec,
         )
 

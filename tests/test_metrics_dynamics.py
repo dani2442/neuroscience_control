@@ -13,15 +13,14 @@ class TestDynamicsMetrics(unittest.TestCase):
         torch.manual_seed(13)
 
     def test_fcd_ks_is_finite_with_standard_settings(self) -> None:
-        ts_pred = torch.randn(2, 10, 240)
-        ts_targ = ts_pred + 0.05 * torch.randn_like(ts_pred)
+        # Complex inputs (analytic signals) as expected by the pipeline.
+        ts_pred = torch.randn(2, 10, 240, dtype=torch.complex64)
+        ts_targ = ts_pred + 0.05 * torch.randn(2, 10, 240, dtype=torch.complex64)
 
         metrics = compute_dynamics_fit_metrics(
             ts_pred,
             ts_targ,
             tr=0.72,
-            f_lo=0.04,
-            f_hi=0.07,
             fcd_win_sec=60.0,
             fcd_step_sec=2.0,
             compute_fcd=True,
@@ -36,15 +35,13 @@ class TestDynamicsMetrics(unittest.TestCase):
         self.assertFalse(math.isnan(metrics["metastability_diff"]))
 
     def test_fcd_ks_is_nan_when_windowing_not_feasible(self) -> None:
-        ts_pred = torch.randn(2, 10, 80)
-        ts_targ = torch.randn(2, 10, 80)
+        ts_pred = torch.randn(2, 10, 80, dtype=torch.complex64)
+        ts_targ = torch.randn(2, 10, 80, dtype=torch.complex64)
 
         metrics = compute_dynamics_fit_metrics(
             ts_pred,
             ts_targ,
             tr=0.72,
-            f_lo=0.04,
-            f_hi=0.07,
             fcd_win_sec=60.0,  # win_len ~83 > 80 -> FCD unavailable
             fcd_step_sec=2.0,
             compute_fcd=True,

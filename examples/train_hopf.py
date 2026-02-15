@@ -173,15 +173,11 @@ def evaluate_hopf_loader_metrics(
             fc_pred = hopf_model.compute_fc(simulated)
             batch_metrics = compute_all_fc_metrics(fc_pred, fc_targets)
             if compute_expensive:
-                ts_p = simulated.real if torch.is_complex(simulated) else simulated
-                ts_t = target_window.real if torch.is_complex(target_window) else target_window
                 batch_metrics.update(
                     compute_dynamics_fit_metrics(
-                        ts_p,
-                        ts_t,
+                        simulated,
+                        target_window,
                         tr=cfg.tr,
-                        f_lo=cfg.f_lo,
-                        f_hi=cfg.f_hi,
                         fcd_win_sec=cfg.fcd_win_sec,
                         fcd_step_sec=cfg.fcd_step_sec,
                         compute_fcd=cfg.compute_fcd_metrics,
@@ -238,8 +234,6 @@ def evaluate_hopf_model(
         hopf_ts,
         target_ts,
         tr=cfg.tr,
-        f_lo=cfg.f_lo,
-        f_hi=cfg.f_hi,
         fcd_win_sec=cfg.fcd_win_sec,
         fcd_step_sec=cfg.fcd_step_sec,
         compute_fcd=cfg.compute_fcd_metrics,
@@ -304,8 +298,6 @@ def train_hopf_grid_search(
         device=device,
         target_timeseries=dataset.timeseries[:n_eval, :, :n_timepoints],
         tr=cfg.tr,
-        f_lo=cfg.f_lo,
-        f_hi=cfg.f_hi,
         fcd_win_sec=cfg.fcd_win_sec,
         fcd_step_sec=cfg.fcd_step_sec,
         metric_weights=metric_weights if metric_weights else None,

@@ -174,8 +174,6 @@ def save_model_and_figures(
         sde_ts,
         target_ts,
         tr=cfg.tr,
-        f_lo=cfg.f_lo,
-        f_hi=cfg.f_hi,
         fcd_win_sec=cfg.fcd_win_sec,
         fcd_step_sec=cfg.fcd_step_sec,
         compute_fcd=cfg.compute_fcd_metrics,

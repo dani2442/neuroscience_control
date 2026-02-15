@@ -233,10 +233,9 @@ class Trainer:
     def _dynamics_kwargs_from_cfg(cfg: Optional[TrainingConfig]) -> Dict[str, float]:
         """Extract dynamics parameters forwarded to loss terms."""
         if cfg is None:
-            return {"tr": 0.72, "f_lo": 0.04, "f_hi": 0.07,
-                    "fcd_win_sec": 60.0, "fcd_step_sec": 2.0}
+            return {"tr": 0.72, "fcd_win_sec": 60.0, "fcd_step_sec": 2.0}
         return {
-            "tr": cfg.tr, "f_lo": cfg.f_lo, "f_hi": cfg.f_hi,
+            "tr": cfg.tr,
             "fcd_win_sec": cfg.fcd_win_sec, "fcd_step_sec": cfg.fcd_step_sec,
         }
 

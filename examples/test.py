@@ -160,8 +160,6 @@ def main(args: argparse.Namespace) -> None:
                     sim_run,
                     real_ts,
                     tr=args.tr,
-                    f_lo=args.f_lo,
-                    f_hi=args.f_hi,
                     fcd_win_sec=args.fcd_win_sec,
                     fcd_step_sec=args.fcd_step_sec,
                     compute_fcd=not args.no_fcd,

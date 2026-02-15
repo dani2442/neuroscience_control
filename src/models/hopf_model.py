@@ -162,15 +162,22 @@ class CoupledHopfModel(BaseNeuroscienceModel):
 
     def set_parameters(self, a=None, g=None, omega=None):
         """Set model parameters in-place."""
+        def _to_tensor(val):
+            if isinstance(val, torch.Tensor):
+                return val.to(self.device)
+            return torch.tensor(val, device=self.device, dtype=torch.float32)
+
         with torch.no_grad():
             if a is not None:
+                val = _to_tensor(a)
                 target = self.a
-                target.copy_(a.to(self.device)) if isinstance(target, nn.Parameter) else setattr(self, 'a', a.to(self.device))
+                target.copy_(val) if isinstance(target, nn.Parameter) else setattr(self, 'a', val)
             if g is not None:
-                val = torch.tensor(g, device=self.device)
+                val = _to_tensor(g)
                 target = self.g
                 target.copy_(val) if isinstance(target, nn.Parameter) else setattr(self, 'g', val)
             if omega is not None:
+                val = _to_tensor(omega)
                 target = self.omega
-                target.copy_(omega.to(self.device)) if isinstance(target, nn.Parameter) else setattr(self, 'omega', omega.to(self.device))
+                target.copy_(val) if isinstance(target, nn.Parameter) else setattr(self, 'omega', val)
     
