@@ -113,6 +113,7 @@ class HopfConfig(TrainingConfig):
     noise_sigma: float = 0.05
     learnable_a: bool = False
     learnable_g: bool = False
+    learnable_kappa: bool = False
 
     # Composite grid-search scoring weights
     weight_fc: float = 1.0

@@ -404,6 +404,7 @@ def main(argv=None):
     # Grid-search settings
     parser.add_argument("--g-values", type=float, nargs="*", default=None, help="Grid values for G")
     parser.add_argument("--a-values", type=float, nargs="*", default=None, help="Grid values for a")
+    parser.add_argument("--kappa-values", type=float, nargs="*", default=None, help="Grid values for noise sigma (kappa)")
     parser.add_argument("--n-simulations", type=int, default=10, help="Number of stochastic simulations per grid point")
     parser.add_argument("--weight-fc-correlation", dest="weight_fc", type=float, default=1.0, help="Weight for `fc_correlation` in grid-search composite score")
     parser.add_argument("--weight-fc", dest="weight_fc", type=float, help=argparse.SUPPRESS)

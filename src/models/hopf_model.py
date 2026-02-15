@@ -39,7 +39,7 @@ class HopfSDEFunc(nn.Module):
         self.structural_connectivity = structural_connectivity
 
     def f(self, t: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        """Drift: z·(a + iω − |z|²) + G·Σ_j C_ij(z_j−z_i)  (complex)."""
+        """Drift: z·(κa + iω − κ|z|²) + G·Σ_j C_ij(z_j−z_i)  (complex)."""
         z_sq = self.kappa*torch.abs(y) ** 2  # |z|², real
         omega = self.omega.unsqueeze(0)
         local = y * (self.a*self.kappa - z_sq + 1j * omega)
@@ -65,7 +65,7 @@ class CoupledHopfModel(BaseNeuroscienceModel):
         structural_connectivity: Optional[torch.Tensor] = None,
         initial_a: float = -0.02,
         initial_g: float = 0.5,
-        initial_kappa: float = 0.5,
+        initial_kappa: float = 0.1,
         omega: Optional[torch.Tensor] = None,
         noise_sigma: float = 0.5,
         device: str = "cpu",
