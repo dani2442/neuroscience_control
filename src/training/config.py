@@ -65,9 +65,6 @@ class TrainingConfig:
     n_steps: int = 100
     dt_min: Optional[float] = None  # Minimum time step for adaptive SDE solvers
     sde_method: str = "euler"  # SDE solver method ('euler', 'milstein', 'srk', etc.)
-    gradient_accumulation_steps: int = 1  # Accumulate gradients over N mini-batches
-    gradient_checkpointing: bool = True  # Use gradient checkpointing for SDE integration
-    checkpoint_segments: int = 5  # Number of segments for gradient checkpointing
     
     # Fine-tuning settings
     fine_tune: bool = False
