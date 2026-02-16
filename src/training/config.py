@@ -65,6 +65,9 @@ class TrainingConfig:
     n_steps: int = 100
     dt_min: Optional[float] = None  # Minimum time step for adaptive SDE solvers
     sde_method: str = "euler"  # SDE solver method ('euler', 'milstein', 'srk', etc.)
+    gradient_accumulation_steps: int = 1  # Accumulate gradients over N mini-batches
+    gradient_checkpointing: bool = True  # Use gradient checkpointing for SDE integration
+    checkpoint_segments: int = 5  # Number of segments for gradient checkpointing
     
     # Fine-tuning settings
     fine_tune: bool = False
@@ -75,6 +78,7 @@ class TrainingConfig:
     # Grid search settings (for Hopf)
     g_values: List[float] = field(default_factory=lambda: [-0.3, 0.3, 0.5, 0.7, 1.0, 1.5])
     a_values: List[float] = field(default_factory=lambda: [-0.02, -0.01, 0.0, 0.01, 0.05,])
+    kappa_values: List[float] = field(default_factory=lambda: [0.1])
     n_simulations: int = 5
     
     # Directories
@@ -119,6 +123,21 @@ class HopfConfig(TrainingConfig):
     weight_fc: float = 1.0
     weight_fcd: float = 0.5
     weight_meta: float = 0.5
+
+
+@dataclass
+class HybridHopfConfig(TrainingConfig):
+    """Configuration for HybridHopf model training (learnable coupling network)."""
+    experiment_name: str = "hybrid_hopf"
+    noise_sigma: float = 0.05
+    learnable_a: bool = True
+    learnable_g: bool = True
+    learnable_kappa: bool = True
+    learnable_omega: bool = False
+    
+    # Coupling network architecture
+    coupling_hidden_dim: int = 32
+    coupling_n_layers: int = 2
 
 
 @dataclass

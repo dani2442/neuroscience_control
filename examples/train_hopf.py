@@ -262,9 +262,10 @@ def train_hopf_grid_search(
     initial_states = dataset.timeseries[eval_train_idx, :, 0]
     target_ts = dataset.timeseries[eval_train_idx, :, :n_timepoints]
 
-    print(f"Grid search over {len(cfg.g_values) * len(cfg.a_values)} parameter combinations")
+    print(f"Grid search over {len(cfg.g_values) * len(cfg.a_values) * len(cfg.kappa_values)} parameter combinations")
     print(f"  - G values: {cfg.g_values}")
     print(f"  - a values: {cfg.a_values}")
+    print(f"  - kappa values: {cfg.kappa_values}")
     print(f"  - Train subjects: {len(train_idx)}, Val subjects: {len(val_idx)}")
 
     # Build composite metric weights from CLI.
@@ -284,6 +285,7 @@ def train_hopf_grid_search(
         omega=omega,
         g_values=cfg.g_values,
         a_values=cfg.a_values,
+        kappa_values=cfg.kappa_values,
         n_timepoints=n_timepoints,
         dt=cfg.tr,
         device=device,
@@ -452,6 +454,8 @@ def main(argv=None):
         cfg.g_values = args.g_values
     if args.a_values:
         cfg.a_values = args.a_values
+    if args.kappa_values:
+        cfg.kappa_values = args.kappa_values
 
     device = resolve_device(cfg.device)
     seed_all(cfg.seed)

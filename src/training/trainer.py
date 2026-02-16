@@ -103,6 +103,9 @@ class Trainer:
         self.cfg = cfg
         self.use_wandb = use_wandb
         self.metrics_sample_batches = cfg.metrics_sample_batches if cfg is not None else 1
+        self.gradient_accumulation_steps = (
+            cfg.gradient_accumulation_steps if cfg is not None else 1
+        )
 
         # Build composite loss from config weights.
         dyn_kwargs = self._dynamics_kwargs_from_cfg(cfg)
@@ -343,6 +346,9 @@ class Trainer:
                 dynamic_ncols=True
             )
 
+        if train:
+            self.optimizer.zero_grad()
+
         for batch_idx, batch in enumerate(iterable):
             windows, fc_targets, _ = batch
             windows = windows.to(self.device)
@@ -359,9 +365,6 @@ class Trainer:
             initial_state = target_window[:, :, 0]  # (batch, n_rois)
 
             if train:
-                self.optimizer.zero_grad()
-
-            if train:
                 simulated = self.model.forward(
                     initial_state=initial_state,
                     n_steps=n_sim_steps,
@@ -374,6 +377,30 @@ class Trainer:
                     simulated,
                     target_window
                 )
+                # Scale loss for gradient accumulation
+                accum_steps = self.gradient_accumulation_steps
+                scaled_loss = loss / accum_steps
+                scaled_loss.backward()
+
+                # Step optimizer only every accum_steps batches (or on last batch)
+                is_accum_step = (
+                    (batch_idx + 1) % accum_steps == 0
+                    or (batch_idx + 1) == len(loader)
+                )
+                if is_accum_step:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                    self.optimizer.step()
+                    self.optimizer.zero_grad()
+
+                # Explicitly free large intermediate tensors to reduce peak
+                # GPU memory between batches.
+                _sim_detached = simulated.detach()
+                _fc_detached = fc_pred.detach()
+                del simulated, fc_pred, scaled_loss
+                if self.device != "cpu":
+                    torch.cuda.empty_cache()
+                simulated = _sim_detached
+                fc_pred = _fc_detached
             else:
                 with torch.no_grad():
                     simulated = self.model.forward(
@@ -388,11 +415,6 @@ class Trainer:
                         simulated,
                         target_window
                     )
-
-            if train:
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-                self.optimizer.step()
 
             compute_expensive = self._should_compute_expensive(batch_idx)
             if compute_expensive:

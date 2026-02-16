@@ -83,6 +83,7 @@ class HybridHopfSDEFunc(nn.Module):
         n_rois: int,
         a,
         g,
+        kappa,
         omega,
         structural_connectivity: torch.Tensor,
         coupling_net: CouplingNetwork,
@@ -93,16 +94,17 @@ class HybridHopfSDEFunc(nn.Module):
         self.noise_sigma = noise_sigma
         self.a = a
         self.global_coupling = g
+        self.kappa = kappa
         self.omega = omega
         self.structural_connectivity = structural_connectivity
         self.coupling_net = coupling_net
 
     def f(self, t: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        """Drift: z_i·(a + iω_i − |z_i|²) + G·Σ_j ψ_θ(z_j, z_i, C_ij)."""
+        """Drift: z_i·(κa + iω_i − κ|z_i|²) + G·Σ_j ψ_θ(z_j, z_i, C_ij)."""
         # --- local Hopf term ---
         z_sq = torch.abs(y) ** 2  # (batch, n_rois), real
         omega = self.omega.unsqueeze(0)  # (1, n_rois)
-        local = y * (self.a - z_sq + 1j * omega)  # (batch, n_rois)
+        local = y * (self.kappa * self.a - self.kappa * z_sq + 1j * omega)  # (batch, n_rois)
 
         # --- learned coupling term ---
         batch, n = y.shape
@@ -134,6 +136,7 @@ class HybridHopfModel(BaseNeuroscienceModel):
         structural_connectivity: Optional[torch.Tensor] = None,
         initial_a: float = -0.02,
         initial_g: float = 0.5,
+        initial_kappa: float = 0.1,
         omega: Optional[torch.Tensor] = None,
         noise_sigma: float = 0.5,
         coupling_hidden_dim: int = 32,
@@ -141,6 +144,7 @@ class HybridHopfModel(BaseNeuroscienceModel):
         device: str = "cpu",
         learnable_a: bool = True,
         learnable_g: bool = True,
+        learnable_kappa: bool = True,
         learnable_omega: bool = False,
     ):
         super().__init__(n_rois, device)
@@ -174,6 +178,13 @@ class HybridHopfModel(BaseNeuroscienceModel):
         else:
             self.register_buffer("g", g_init)
 
+        # kappa
+        kappa_init = torch.tensor(initial_kappa, device=device)
+        if learnable_kappa:
+            self.kappa = nn.Parameter(kappa_init)
+        else:
+            self.register_buffer("kappa", kappa_init)
+
         # Intrinsic frequencies
         if omega is None:
             omega_init = torch.linspace(0.04, 0.07, n_rois, device=device) * 2 * torch.pi
@@ -194,6 +205,7 @@ class HybridHopfModel(BaseNeuroscienceModel):
             n_rois,
             self.a,
             self.g,
+            self.kappa,
             self.omega,
             self.structural_connectivity,
             self.coupling_net,
@@ -214,7 +226,7 @@ class HybridHopfModel(BaseNeuroscienceModel):
         n_steps: int = 100,
         dt: float = 0.72,
         method: str = "euler",
-        dt_min: Optional[float] = 0.05,
+        dt_min: Optional[float] = 0.1,
     ) -> torch.Tensor:
         """Simulate brain dynamics via SDE integration.
 

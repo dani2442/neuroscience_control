@@ -56,7 +56,7 @@ class HopfSDEFunc(nn.Module):
 class CoupledHopfModel(BaseNeuroscienceModel):
     """Coupled Hopf oscillator model.
 
-    dz/dt = z·(a + iω − |z|²) + G·Σ_j C_ij(z_j−z_i) + σ·dW
+    dz/dt = z·(κa + iω − κ|z|²) + G·Σ_j C_ij(z_j−z_i) + σ·dW
     """
 
     def __init__(

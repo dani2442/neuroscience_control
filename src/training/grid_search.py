@@ -228,6 +228,7 @@ def grid_search_hopf(
     omega: Optional[torch.Tensor] = None,
     g_values: Optional[List[float]] = None,
     a_values: Optional[List[float]] = None,
+    kappa_values: Optional[List[float]] = None,
     n_timepoints: int = 200,
     dt: float = 0.72,
     device: str = "cpu",
@@ -247,6 +248,7 @@ def grid_search_hopf(
         structural_connectivity: Optional SC matrix.
         omega: Optional intrinsic frequencies (rad/s).
         g_values, a_values: Search grid values.
+        kappa_values: Search grid values for kappa (default: [0.1]).
         n_timepoints: Simulation length.
         dt: Time step.
         device: Device.
@@ -266,9 +268,15 @@ def grid_search_hopf(
         g_values = [0.1, 0.3, 0.5, 0.7, 0.9, 1.1, 1.3, 1.5]
     if a_values is None:
         a_values = [-0.1, -0.05, -0.02, -0.01, 0.0, 0.01, 0.02]
+    if kappa_values is None:
+        kappa_values = [0.1]
+
+    param_grid = {'initial_g': g_values, 'initial_a': a_values}
+    if len(kappa_values) > 1:
+        param_grid['initial_kappa'] = kappa_values
 
     grid_search = GridSearch(
-        param_grid={'initial_g': g_values, 'initial_a': a_values},
+        param_grid=param_grid,
         device=device,
     )
 
@@ -279,7 +287,11 @@ def grid_search_hopf(
         'noise_sigma': noise_sigma,
         'learnable_a': False,
         'learnable_g': False,
+        'learnable_kappa': False,
     }
+    # When kappa is not in the grid, pass the single default value
+    if len(kappa_values) == 1:
+        model_kwargs['initial_kappa'] = kappa_values[0]
 
     # Build eval kwargs for dynamics metrics when target timeseries provided.
     eval_kwargs: Dict[str, Any] = {}
@@ -311,6 +323,7 @@ def grid_search_hopf(
         omega=omega,
         initial_g=best_params['initial_g'],
         initial_a=best_params['initial_a'],
+        initial_kappa=best_params.get('initial_kappa', kappa_values[0]),
         noise_sigma=noise_sigma,
         device=device,
     )
