@@ -386,7 +386,7 @@ def main(argv=None):
     # Backprop settings
     parser.add_argument("--n-epochs", type=int, default=50, help="Number of training epochs")
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
-    parser.add_argument("--batch-size", type=int, default=32, help="Batch size")
+    parser.add_argument("--batch-size", type=int, default=8, help="Batch size")
     parser.add_argument("--window-size", type=int, default=100, help="Window size for training")
     _VALID_LOSS_NAMES = sorted(set(LOSS_REGISTRY.keys()) | set(LOSS_PRESETS.keys()) | {"custom"})
     parser.add_argument(
@@ -418,15 +418,15 @@ def main(argv=None):
     )
 
     # Dynamics settings
-    parser.add_argument("--max-subjects", type=int, default=80, help="Limit number of subjects (first N)")
+    parser.add_argument("--max-subjects", type=int, default=50, help="Limit number of subjects (first N)")
     parser.add_argument("--tr", type=float, default=0.72, help="Repetition time / simulation dt (seconds)")
-    parser.add_argument("--sde-type", type=str, default="stratonovich", choices=["ito", "stratonovich"], help="SDE interpretation")
-    parser.add_argument("--sde-method", type=str, default="reversible_heun", help="SDE solver method")
-    parser.add_argument("--dt-min", type=float, default=0.04, help="SDE solver sub-step passed as torchsde `dt`")
+    parser.add_argument("--sde-type", type=str, default="ito", choices=["ito", "stratonovich"], help="SDE interpretation")
+    parser.add_argument("--sde-method", type=str, default="euler", help="SDE solver method")
+    parser.add_argument("--dt-min", type=float, default=0.1, help="SDE solver sub-step passed as torchsde `dt`")
     parser.add_argument("--use-adjoint", dest="use_adjoint", action="store_true", help="Use torchsde adjoint solver")
     parser.add_argument("--no-adjoint", dest="use_adjoint", action="store_false", help="Disable torchsde adjoint solver")
-    parser.set_defaults(use_adjoint=True)
-    parser.add_argument("--adjoint-method", type=str, default="adjoint_reversible_heun", help="Adjoint solver method")
+    # parser.set_defaults(False)
+    parser.add_argument("--adjoint-method", type=str, default="euler", help="Adjoint solver method")
     parser.add_argument("--f-lo", type=float, default=0.008, help="Bandpass low cutoff (Hz)")
     parser.add_argument("--f-hi", type=float, default=0.08, help="Bandpass high cutoff (Hz)")
     parser.add_argument("--fcd-win-sec", type=float, default=60.0, help="Sliding-window length for FCD metrics/losses (seconds)")

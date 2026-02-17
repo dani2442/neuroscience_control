@@ -15,6 +15,7 @@ are all complex.
 
 import torch
 import torch.nn as nn
+from torch.utils.checkpoint import checkpoint
 from typing import Any, Dict, Optional
 from .base_model import BaseNeuroscienceModel
 import torchsde
@@ -113,7 +114,13 @@ class HybridHopfSDEFunc(nn.Module):
         z_i = y.unsqueeze(2).expand(batch, n, n)  # target: dim 1
         sc = self.structural_connectivity.unsqueeze(0).expand(batch, n, n)  # (batch, n, n) real
 
-        psi = self.coupling_net(z_j, z_i, sc.to(y.real.dtype))  # (batch, n, n) complex
+        sc = sc.to(y.real.dtype)
+        # Checkpoint the edge MLP during training to avoid storing large
+        # per-step activations across the SDE rollout.
+        if torch.is_grad_enabled() and y.requires_grad:
+            psi = checkpoint(self.coupling_net, z_j, z_i, sc, use_reentrant=False)
+        else:
+            psi = self.coupling_net(z_j, z_i, sc)  # (batch, n, n) complex
 
         coupling = self.global_coupling * psi.sum(dim=2)  # sum over j → (batch, n)
         return local + coupling
