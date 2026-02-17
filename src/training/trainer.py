@@ -103,6 +103,14 @@ class Trainer:
         self.cfg = cfg
         self.use_wandb = use_wandb
         self.metrics_sample_batches = cfg.metrics_sample_batches if cfg is not None else 1
+        self.sde_type = cfg.sde_type if cfg is not None else "stratonovich"
+        self.sde_method = cfg.sde_method if cfg is not None else "reversible_heun"
+        self.dt_min = cfg.dt_min if cfg is not None else 0.04
+        self.use_adjoint = cfg.use_adjoint if cfg is not None else True
+        if cfg is not None and cfg.adjoint_method is not None:
+            self.adjoint_method = cfg.adjoint_method
+        else:
+            self.adjoint_method = "adjoint_reversible_heun" if self.sde_method == "reversible_heun" else self.sde_method
 
         # Build composite loss from config weights.
         dyn_kwargs = self._dynamics_kwargs_from_cfg(cfg)
@@ -366,6 +374,11 @@ class Trainer:
                     initial_state=initial_state,
                     n_steps=n_sim_steps,
                     dt=dt,
+                    sde_type=self.sde_type,
+                    method=self.sde_method,
+                    dt_min=self.dt_min,
+                    use_adjoint=self.use_adjoint,
+                    adjoint_method=self.adjoint_method,
                 )
                 fc_pred = self.model.compute_fc(simulated)
                 loss, loss_components = self._compute_loss(
@@ -380,6 +393,11 @@ class Trainer:
                         initial_state=initial_state,
                         n_steps=n_sim_steps,
                         dt=dt,
+                        sde_type=self.sde_type,
+                        method=self.sde_method,
+                        dt_min=self.dt_min,
+                        use_adjoint=self.use_adjoint,
+                        adjoint_method=self.adjoint_method,
                     )
                     fc_pred = self.model.compute_fc(simulated)
                     loss, loss_components = self._compute_loss(
@@ -388,6 +406,17 @@ class Trainer:
                         simulated,
                         target_window
                     )
+
+            if not torch.isfinite(simulated.real).all():
+                raise RuntimeError(
+                    "Non-finite simulated trajectory detected. "
+                    "Try reducing --noise-sigma and/or --dt-min, or switch solver settings."
+                )
+            if not torch.isfinite(loss):
+                raise RuntimeError(
+                    "Non-finite training loss detected. "
+                    "Try reducing --noise-sigma and/or --dt-min, or switch solver settings."
+                )
 
             if train:
                 loss.backward()
@@ -498,6 +527,11 @@ class Trainer:
             'n_epochs': n_epochs,
             'n_steps': n_steps,
             'dt': dt,
+            'sde_type': self.sde_type,
+            'sde_method': self.sde_method,
+            'dt_min': self.dt_min,
+            'use_adjoint': self.use_adjoint,
+            'adjoint_method': self.adjoint_method,
             'model_class': self.model.__class__.__name__
         })
         

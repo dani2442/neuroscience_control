@@ -62,6 +62,11 @@ def generate_fc_figure(
     target_fc: torch.Tensor,
     n_timepoints: int,
     dt: float,
+    sde_type: str = "stratonovich",
+    method: str = "reversible_heun",
+    dt_min: float | None = 0.04,
+    use_adjoint: bool = False,
+    adjoint_method: str | None = "adjoint_reversible_heun",
     *,
     title: str,
     default_name: str,
@@ -72,7 +77,16 @@ def generate_fc_figure(
     n_fc_paths = min(6, val_timeseries.shape[0])
     fc_initial_states = val_timeseries[:n_fc_paths, :, 0]
     with torch.no_grad():
-        fc_ts = model.forward(initial_state=fc_initial_states, n_steps=n_timepoints, dt=dt)
+        fc_ts = model.forward(
+            initial_state=fc_initial_states,
+            n_steps=n_timepoints,
+            dt=dt,
+            sde_type=sde_type,
+            method=method,
+            dt_min=dt_min,
+            use_adjoint=use_adjoint,
+            adjoint_method=adjoint_method,
+        )
         fc_pred = model.compute_fc(fc_ts)
         fc_mean = fc_pred.mean(dim=0)
 
@@ -98,6 +112,11 @@ def generate_multigrid_figure(
     n_timepoints: int,
     dt: float,
     n_simulations: int = 10,
+    sde_type: str = "stratonovich",
+    method: str = "reversible_heun",
+    dt_min: float | None = 0.04,
+    use_adjoint: bool = False,
+    adjoint_method: str | None = "adjoint_reversible_heun",
     *,
     n_rois: int = 12,
     n_cols: int = 4,
@@ -118,7 +137,16 @@ def generate_multigrid_figure(
     initial_states_repeated = ic.unsqueeze(0).expand(n_simulations, -1)  # (n_sim, n_rois)
 
     with torch.no_grad():
-        sim_ts = model.forward(initial_state=initial_states_repeated, n_steps=n_timepoints, dt=dt)
+        sim_ts = model.forward(
+            initial_state=initial_states_repeated,
+            n_steps=n_timepoints,
+            dt=dt,
+            sde_type=sde_type,
+            method=method,
+            dt_min=dt_min,
+            use_adjoint=use_adjoint,
+            adjoint_method=adjoint_method,
+        )
     # sim_ts: (n_simulations, n_rois, n_timepoints)
 
     fig = plot_simulation_multigrid(

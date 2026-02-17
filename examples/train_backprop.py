@@ -232,6 +232,7 @@ def save_model_and_figures(
     *,
     model_name: str,
     window_size: int,
+    skip_figures: bool = False,
 ):
     """Save checkpoint, compute final metrics, and produce figures."""
     print_section("STEP 3: Saving Model and Generating Figures")
@@ -262,25 +263,38 @@ def save_model_and_figures(
         use_wandb=cfg.use_wandb,
     )
 
-    model_titles = {"nsde": "Neural SDE", "hopf": "Coupled Hopf", "hybrid_hopf": "Hybrid Hopf"}
-    model_title = model_titles.get(model_name, model_name)
+    if not skip_figures:
+        model_titles = {"nsde": "Neural SDE", "hopf": "Coupled Hopf", "hybrid_hopf": "Hybrid Hopf"}
+        model_title = model_titles.get(model_name, model_name)
 
-    generate_fc_figure(
-        model, val_timeseries, target_fc, n_timepoints, cfg.tr,
-        title=f"{model_title} (Backprop) - FC Comparison",
-        default_name=f"{model_name}_backprop_fc_comparison",
-        use_wandb=cfg.use_wandb,
-    )
+        generate_fc_figure(
+            model, val_timeseries, target_fc, n_timepoints, cfg.tr,
+            sde_type=cfg.sde_type,
+            method=cfg.sde_method,
+            dt_min=cfg.dt_min,
+            use_adjoint=False,
+            adjoint_method=cfg.adjoint_method,
+            title=f"{model_title} (Backprop) - FC Comparison",
+            default_name=f"{model_name}_backprop_fc_comparison",
+            use_wandb=cfg.use_wandb,
+        )
 
-    generate_multigrid_figure(
-        model, val_timeseries, n_timepoints, cfg.tr,
-        n_simulations=cfg.n_simulations,
-        n_rois=12,
-        n_cols=4,
-        title=f"{model_title} (Backprop) - Real vs Simulated",
-        default_name=f"{model_name}_backprop_real_vs_sim_multigrid",
-        use_wandb=cfg.use_wandb,
-    )
+        generate_multigrid_figure(
+            model, val_timeseries, n_timepoints, cfg.tr,
+            n_simulations=cfg.n_simulations,
+            sde_type=cfg.sde_type,
+            method=cfg.sde_method,
+            dt_min=cfg.dt_min,
+            use_adjoint=False,
+            adjoint_method=cfg.adjoint_method,
+            n_rois=12,
+            n_cols=4,
+            title=f"{model_title} (Backprop) - Real vs Simulated",
+            default_name=f"{model_name}_backprop_real_vs_sim_multigrid",
+            use_wandb=cfg.use_wandb,
+        )
+    else:
+        print("Skipping figure generation (--skip-figures).")
 
     if model_name in ("hopf", "hybrid_hopf"):
         log_hopf_best_params(model, use_wandb=cfg.use_wandb)
@@ -322,6 +336,12 @@ def build_config(args: argparse.Namespace):
         denoise_f_lo=args.denoise_f_lo,
         denoise_f_hi=args.denoise_f_hi,
         n_windows_per_epoch=args.n_windows_per_epoch,
+        n_simulations=args.n_simulations,
+        sde_type=args.sde_type,
+        sde_method=args.sde_method,
+        dt_min=args.dt_min,
+        use_adjoint=args.use_adjoint,
+        adjoint_method=args.adjoint_method,
     )
 
     if args.model == "nsde":
@@ -400,10 +420,19 @@ def main(argv=None):
     # Dynamics settings
     parser.add_argument("--max-subjects", type=int, default=80, help="Limit number of subjects (first N)")
     parser.add_argument("--tr", type=float, default=0.72, help="Repetition time / simulation dt (seconds)")
+    parser.add_argument("--sde-type", type=str, default="stratonovich", choices=["ito", "stratonovich"], help="SDE interpretation")
+    parser.add_argument("--sde-method", type=str, default="reversible_heun", help="SDE solver method")
+    parser.add_argument("--dt-min", type=float, default=0.04, help="SDE solver sub-step passed as torchsde `dt`")
+    parser.add_argument("--use-adjoint", dest="use_adjoint", action="store_true", help="Use torchsde adjoint solver")
+    parser.add_argument("--no-adjoint", dest="use_adjoint", action="store_false", help="Disable torchsde adjoint solver")
+    parser.set_defaults(use_adjoint=True)
+    parser.add_argument("--adjoint-method", type=str, default="adjoint_reversible_heun", help="Adjoint solver method")
     parser.add_argument("--f-lo", type=float, default=0.008, help="Bandpass low cutoff (Hz)")
     parser.add_argument("--f-hi", type=float, default=0.08, help="Bandpass high cutoff (Hz)")
     parser.add_argument("--fcd-win-sec", type=float, default=60.0, help="Sliding-window length for FCD metrics/losses (seconds)")
     parser.add_argument("--fcd-step-sec", type=float, default=2.0, help="Sliding-window step for FCD metrics/losses (seconds)")
+    parser.add_argument("--n-simulations", type=int, default=5, help="Number of stochastic simulations for final multigrid figure")
+    parser.add_argument("--skip-figures", action="store_true", help="Skip final figure generation for faster smoke tests")
     parser.add_argument("--no-fcd-ks", dest="no_fcd", action="store_true", help="Disable `fcd_ks` metric computation")
     parser.add_argument("--no-fcd", dest="no_fcd", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
@@ -426,9 +455,9 @@ def main(argv=None):
 
     # Hopf settings
     parser.add_argument("--initial-a", type=float, default=-0.02, help="Initial Hopf bifurcation parameter")
-    parser.add_argument("--initial-g", type=float, default=0.5, help="Initial Hopf coupling")
+    parser.add_argument("--initial-g", type=float, default=0.05, help="Initial Hopf coupling")
     parser.add_argument("--initial-kappa", type=float, default=0.1, help="Initial kappa Hopf")
-    parser.add_argument("--noise-sigma", type=float, default=0.5, help="Hopf noise scale (0.0 = deterministic)")
+    parser.add_argument("--noise-sigma", type=float, default=0.05, help="Hopf noise scale (0.0 = deterministic)")
 
     # HybridHopf settings
     parser.add_argument("--coupling-hidden-dim", type=int, default=32, help="HybridHopf coupling network hidden dimension")
@@ -494,6 +523,7 @@ def main(argv=None):
             cfg=cfg,
             model_name=args.model,
             window_size=window_size,
+            skip_figures=args.skip_figures,
         )
     finally:
         if trainer is not None:

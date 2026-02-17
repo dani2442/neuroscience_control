@@ -225,8 +225,11 @@ class HybridHopfModel(BaseNeuroscienceModel):
         initial_state: torch.Tensor,
         n_steps: int = 100,
         dt: float = 0.72,
-        method: str = "euler",
-        dt_min: Optional[float] = 0.1,
+        sde_type: str = "stratonovich",
+        method: str = "reversible_heun",
+        dt_min: Optional[float] = 0.04,
+        use_adjoint: bool = False,
+        adjoint_method: Optional[str] = None,
     ) -> torch.Tensor:
         """Simulate brain dynamics via SDE integration.
 
@@ -234,8 +237,11 @@ class HybridHopfModel(BaseNeuroscienceModel):
             initial_state: Complex tensor (batch, n_rois).
             n_steps: Number of time steps.
             dt: Time step size.
+            sde_type: SDE interpretation ('ito' or 'stratonovich').
             method: SDE solver ('euler', 'milstein', ...).
             dt_min: Sub-step for SDE solver.
+            use_adjoint: Use torchsde adjoint solver.
+            adjoint_method: Adjoint SDE solver method (defaults to ``method``).
 
         Returns:
             Complex timeseries (batch, n_rois, n_steps).
@@ -245,6 +251,7 @@ class HybridHopfModel(BaseNeuroscienceModel):
         z = initial_state.to(self.device)
         if not torch.is_complex(z):
             z = torch.complex(z, torch.zeros_like(z))
+        self.sde_func.sde_type = sde_type
 
         ts = torch.linspace(0, (n_steps - 1) * dt, n_steps, device=self.device)
 
@@ -252,7 +259,17 @@ class HybridHopfModel(BaseNeuroscienceModel):
         if dt_min is not None:
             sdeint_kwargs["dt"] = dt_min
 
-        trajectory = torchsde.sdeint(self.sde_func, z, ts, **sdeint_kwargs)
+        if use_adjoint:
+            resolved_adjoint_method = adjoint_method or "adjoint_reversible_heun"
+            sdeint_kwargs["adjoint_method"] = resolved_adjoint_method
+            trajectory = torchsde.sdeint_adjoint(
+                self.sde_func,
+                z,
+                ts,
+                **sdeint_kwargs,
+            )
+        else:
+            trajectory = torchsde.sdeint(self.sde_func, z, ts, **sdeint_kwargs)
         # (n_steps, batch, n_rois), complex → (batch, n_rois, n_steps)
         return trajectory.permute(1, 2, 0)
 
