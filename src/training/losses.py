@@ -29,6 +29,49 @@ from ..metrics.fc_metrics import fc_correlation, fc_mse
 
 
 # ---------------------------------------------------------------------------
+# Dataset-level reference statistics
+# ---------------------------------------------------------------------------
+
+def compute_ref_amplitude(timeseries: torch.Tensor) -> torch.Tensor:
+    """Mean envelope amplitude per ROI across the full dataset.
+
+    Args:
+        timeseries: ``(n_subjects, n_rois, T)`` complex analytic signal.
+
+    Returns:
+        ``(n_rois,)`` — mean |z| over subjects and time.
+    """
+    ts = timeseries if timeseries.dim() == 3 else timeseries.unsqueeze(0)
+    return ts.abs().mean(dim=(0, 2))
+
+
+def compute_ref_omega(
+    timeseries: torch.Tensor,
+    tr: float = 0.72,
+    f_lo: float = 0.04,
+    f_hi: float = 0.07,
+) -> torch.Tensor:
+    """Per-ROI intrinsic angular frequency via FFT peak detection.
+
+    Delegates to :func:`~src.dataset.preprocessing.compute_omega_from_timeseries`
+    so that the loss reference matches the model's ω initialisation.
+
+    Args:
+        timeseries: ``(n_subjects, n_rois, T)`` complex analytic signal.
+        tr: Repetition time in seconds.
+        f_lo, f_hi: Frequency band of interest (Hz).
+
+    Returns:
+        ``(n_rois,)`` — angular frequencies (rad/s).
+    """
+    from ..dataset.preprocessing import compute_omega_from_timeseries
+
+    return compute_omega_from_timeseries(
+        timeseries, dt=tr, f_lo=f_lo, f_hi=f_hi, method="peak",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Individual loss terms
 # ---------------------------------------------------------------------------
 
@@ -116,49 +159,61 @@ def loss_amplitude(
     ts_pred: torch.Tensor,
     ts_target: torch.Tensor,
     tr: float = 0.72,
+    ref_amplitude: Optional[torch.Tensor] = None,
     **_kwargs,
 ) -> torch.Tensor:
     r"""
-    L² error between predicted envelope amplitude and target mean envelope
-    amplitude extracted directly from the complex analytic signal.
+    L² error between *mean* predicted amplitude and a per-ROI reference.
+
+    When *ref_amplitude* ``(n_rois,)`` is provided (precomputed from the full
+    dataset via :func:`compute_ref_amplitude`), it is used as the target.
+    Otherwise falls back to the per-window mean of *ts_target*.
 
     .. math::
         \mathcal{L}_{\mathrm{amp}} =
-            \frac{1}{BN}\sum_{b,n}\sum_t
-            \bigl(|z^{\mathrm{pred}}_{b,n}(t)|
-                  - \overline{|z^{\mathrm{target}}_{b,n}|}\bigr)^2
+            \frac{1}{N}\sum_n
+            \bigl(\overline{|z^{\mathrm{pred}}_n|}
+                  - A^{\mathrm{ref}}_n\bigr)^2
     """
     amp_pred, _ = _complex_amplitude_omega(ts_pred, tr)
-    amp_targ, _ = _complex_amplitude_omega(ts_target, tr)
-    B = min(amp_pred.shape[0], amp_targ.shape[0])
-    mean_real_amp = amp_targ[:B].mean(dim=2, keepdim=True)  # (B, N, 1)
-    sq_l2_per_series = ((amp_pred[:B] - mean_real_amp) ** 2).mean(dim=2)  # (B, N)
-    return sq_l2_per_series.mean()
+    mean_pred = amp_pred.mean(dim=(0, 2))                        # (N,)
+    if ref_amplitude is not None:
+        target = ref_amplitude.to(mean_pred.device)              # (N,)
+    else:
+        amp_targ, _ = _complex_amplitude_omega(ts_target, tr)
+        target = amp_targ.mean(dim=(0, 2))                       # (N,)
+    return ((mean_pred - target) ** 2).mean()
 
 
 def loss_omega(
     ts_pred: torch.Tensor,
     ts_target: torch.Tensor,
     tr: float = 0.72,
+    ref_omega: Optional[torch.Tensor] = None,
     **_kwargs,
 ) -> torch.Tensor:
     r"""
-    L² error between predicted instantaneous frequency and target mean
-    instantaneous frequency extracted directly from the complex analytic
-    signal.
+    L² error between *mean* predicted instantaneous frequency and a per-ROI
+    reference.
+
+    When *ref_omega* ``(n_rois,)`` is provided (precomputed from the full
+    dataset via :func:`compute_ref_omega`), it is used as the target.
+    Otherwise falls back to the per-window mean of *ts_target*.
 
     .. math::
         \mathcal{L}_{\omega} =
-            \frac{1}{BN}\sum_{b,n}\sum_t
-            \bigl(\omega^{\mathrm{pred}}_{b,n}(t)
-                  - \bar{\omega}^{\mathrm{target}}_{b,n}\bigr)^2
+            \frac{1}{N}\sum_n
+            \bigl(\bar{\omega}^{\mathrm{pred}}_n
+                  - \omega^{\mathrm{ref}}_n\bigr)^2
     """
     _, omega_pred = _complex_amplitude_omega(ts_pred, tr)
-    _, omega_targ = _complex_amplitude_omega(ts_target, tr)
-    B = min(omega_pred.shape[0], omega_targ.shape[0])
-    mean_real_omega = omega_targ[:B].mean(dim=2, keepdim=True)  # (B, N, 1)
-    sq_l2_per_series = ((omega_pred[:B] - mean_real_omega) ** 2).mean(dim=2)  # (B, N)
-    return sq_l2_per_series.mean()
+    mean_pred = omega_pred.mean(dim=(0, 2))                      # (N,)
+    if ref_omega is not None:
+        target = ref_omega.to(mean_pred.device)                  # (N,)
+    else:
+        _, omega_targ = _complex_amplitude_omega(ts_target, tr)
+        target = omega_targ.mean(dim=(0, 2))                     # (N,)
+    return ((mean_pred - target) ** 2).mean()
 
 
 def loss_fcd(

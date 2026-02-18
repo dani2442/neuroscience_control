@@ -41,6 +41,7 @@ def run_backprop_training(
     cfg: TrainingConfig,
     device: str,
     experiment_name: str | None = None,
+    extra_dyn_kwargs: dict[str, object] | None = None,
 ) -> tuple[Trainer, MetricsStore, dict[str, float]]:
     """
     Train and evaluate a model with the shared :class:`Trainer` workflow.
@@ -57,6 +58,7 @@ def run_backprop_training(
         experiment_name=experiment_name or cfg.experiment_name,
         cfg=cfg,
         use_wandb=cfg.use_wandb,
+        extra_dyn_kwargs=extra_dyn_kwargs,
     )
 
     metrics_store = trainer.train(

@@ -132,7 +132,7 @@ class HybridHopfConfig(TrainingConfig):
     noise_sigma: float = 0.05
     learnable_a: bool = True
     learnable_g: bool = True
-    learnable_kappa: bool = True
+    learnable_kappa: bool = False
     learnable_omega: bool = False
     
     # Coupling network architecture

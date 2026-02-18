@@ -31,6 +31,7 @@ from src.training import (
     run_backprop_training,
 )
 from src.training.losses import _PRESETS as LOSS_PRESETS
+from src.training.losses import compute_ref_amplitude, compute_ref_omega
 from src.utils import (
     FIGURES_DIR,
     ensure_proxy_env,
@@ -254,12 +255,15 @@ def save_model_and_figures(
         dt=cfg.tr,
         verbose=False,
     )
-    final_metric_keys = ("fc_correlation", "fc_mse", "fcd_ks", "metastability_diff")
-    final_metrics = {name: val_eval_metrics.get(name, float("nan")) for name in final_metric_keys}
+    # Log ALL final evaluation metrics (not just a fixed subset).
+    final_metrics = {
+        k: v for k, v in val_eval_metrics.items()
+        if isinstance(v, (int, float)) or (isinstance(v, torch.Tensor) and v.dim() == 0)
+    }
     print(f"Final metrics: {final_metrics}")
 
     wandb_summary_update(
-        {f"final_{k}": v for k, v in final_metrics.items()},
+        {f"final_{k}": to_float_metric(v) for k, v in final_metrics.items() if to_float_metric(v) is not None},
         use_wandb=cfg.use_wandb,
     )
 
@@ -384,9 +388,9 @@ def main(argv=None):
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
 
     # Backprop settings
-    parser.add_argument("--n-epochs", type=int, default=50, help="Number of training epochs")
+    parser.add_argument("--n-epochs", type=int, default=20, help="Number of training epochs")
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
-    parser.add_argument("--batch-size", type=int, default=8, help="Batch size")
+    parser.add_argument("--batch-size", type=int, default=64, help="Batch size")
     parser.add_argument("--window-size", type=int, default=100, help="Window size for training")
     _VALID_LOSS_NAMES = sorted(set(LOSS_REGISTRY.keys()) | set(LOSS_PRESETS.keys()) | {"custom"})
     parser.add_argument(
@@ -501,6 +505,14 @@ def main(argv=None):
         structural_connectivity=structural_connectivity,
     )
 
+    # Precompute dataset-level amplitude/omega references for losses.
+    ref_amplitude = compute_ref_amplitude(dataset.timeseries)
+    ref_omega = compute_ref_omega(
+        dataset.timeseries, tr=cfg.tr, f_lo=cfg.f_lo, f_hi=cfg.f_hi,
+    )
+    print(f"  - ref_amplitude range: [{ref_amplitude.min():.4f}, {ref_amplitude.max():.4f}]")
+    print(f"  - ref_omega range: [{ref_omega.min() / (2 * 3.14159):.4f}, {ref_omega.max() / (2 * 3.14159):.4f}] Hz")
+
     trainer = None
     try:
         trainer, metrics_store, test_metrics = run_backprop_training(
@@ -512,6 +524,10 @@ def main(argv=None):
             cfg=cfg,
             device=device,
             experiment_name=cfg.experiment_name,
+            extra_dyn_kwargs={
+                "ref_amplitude": ref_amplitude,
+                "ref_omega": ref_omega,
+            },
         )
 
         checkpoint_path, final_metrics = save_model_and_figures(

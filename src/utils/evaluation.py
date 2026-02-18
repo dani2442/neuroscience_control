@@ -192,14 +192,28 @@ def save_checkpoint(
 # ---------------------------------------------------------------------------
 
 def log_hopf_best_params(model: Any, *, use_wandb: bool = False) -> None:
-    """Log ``a`` and ``G`` for a trained Hopf model."""
+    """Log ``a``, ``G``, and ``kappa`` for a trained Hopf model."""
     if not (hasattr(model, "a") and hasattr(model, "g")):
         return
     best_a = model.a.item() if model.a.dim() == 0 else model.a.mean().item()
     best_G = model.g.item() if model.g.dim() == 0 else model.g.mean().item()
-    wandb_log({"best_params/a": best_a, "best_params/G": best_G}, use_wandb=use_wandb)
-    wandb_summary_update({"best_a": best_a, "best_G": best_G}, use_wandb=use_wandb)
-    print(f"Best Hopf params — a: {best_a:.6f}, G: {best_G:.6f}")
+    payload = {"best_params/a": best_a, "best_params/G": best_G}
+    summary = {"best_a": best_a, "best_G": best_G}
+    if hasattr(model, "kappa"):
+        import torch as _torch
+        kappa_val = model.kappa
+        if isinstance(kappa_val, _torch.Tensor):
+            best_kappa = kappa_val.item() if kappa_val.dim() == 0 else kappa_val.mean().item()
+        else:
+            best_kappa = float(kappa_val)
+        payload["best_params/kappa"] = best_kappa
+        summary["best_kappa"] = best_kappa
+    else:
+        best_kappa = None
+    wandb_log(payload, use_wandb=use_wandb)
+    wandb_summary_update(summary, use_wandb=use_wandb)
+    kappa_str = f", kappa: {best_kappa:.6f}" if best_kappa is not None else ""
+    print(f"Best Hopf params — a: {best_a:.6f}, G: {best_G:.6f}{kappa_str}")
 
 
 # ---------------------------------------------------------------------------

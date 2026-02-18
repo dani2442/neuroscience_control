@@ -80,7 +80,8 @@ class Trainer:
         checkpoint_dir: str = "checkpoints",
         experiment_name: str = "experiment",
         cfg: Optional[TrainingConfig] = None,
-        use_wandb: bool = True
+        use_wandb: bool = True,
+        extra_dyn_kwargs: Optional[Dict[str, object]] = None,
     ):
         """
         Initialize trainer.
@@ -114,6 +115,8 @@ class Trainer:
 
         # Build composite loss from config weights.
         dyn_kwargs = self._dynamics_kwargs_from_cfg(cfg)
+        if extra_dyn_kwargs:
+            dyn_kwargs.update(extra_dyn_kwargs)
         weight_overrides = self._weight_overrides_from_cfg(cfg)
         self.loss_obj = build_loss(
             name=loss_fn,
@@ -181,6 +184,7 @@ class Trainer:
         wandb.define_metric("validation/*", step_metric="epoch")
         wandb.define_metric("best/*", step_metric="epoch")
         wandb.define_metric("test/*", step_metric="epoch")
+        wandb.define_metric("params/*", step_metric="epoch")
         
         # Watch model for gradient logging
         wandb.watch(self.model, log="all", log_freq=100)
@@ -221,8 +225,30 @@ class Trainer:
             **{f"validation/{k}": v for k, v in val_metrics.items()},
             "epoch": step
         }
+        # Log Hopf learnable parameters (a, G, kappa) per epoch when available.
+        hopf_params = self._get_hopf_params()
+        if hopf_params:
+            log_dict.update({f"params/{k}": v for k, v in hopf_params.items()})
         wandb.log(log_dict)
     
+    def _get_hopf_params(self) -> Dict[str, float]:
+        """Extract current Hopf learnable parameters from the model (if any)."""
+        params: Dict[str, float] = {}
+        model = self.model
+        if hasattr(model, "a"):
+            a = model.a
+            params["a"] = float(a.item() if a.dim() == 0 else a.mean().item())
+        if hasattr(model, "g"):
+            g = model.g
+            params["G"] = float(g.item() if g.dim() == 0 else g.mean().item())
+        if hasattr(model, "kappa"):
+            kappa = model.kappa
+            if isinstance(kappa, torch.Tensor):
+                params["kappa"] = float(kappa.item() if kappa.dim() == 0 else kappa.mean().item())
+            else:
+                params["kappa"] = float(kappa)
+        return params
+
     def _log_wandb_artifact(self, filepath: str, name: str, artifact_type: str = "model"):
         """Log artifact to wandb."""
         if self.wandb_run is not None:
@@ -448,10 +474,10 @@ class Trainer:
 
         metric_names = sorted(set(ALL_METRICS) | set(accumulator.sums.keys()))
         metrics = {name: accumulator.average(name) for name in metric_names}
-        if self.metrics_sample_batches is None:
-            metrics["metrics_sampled_batches"] = len(loader)
-        else:
-            metrics["metrics_sampled_batches"] = sampled_batches
+        # if self.metrics_sample_batches is None:
+            # metrics["metrics_sampled_batches"] = len(loader)
+        # else:
+        #     metrics["metrics_sampled_batches"] = sampled_batches
 
         return metrics
 

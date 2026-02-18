@@ -33,6 +33,7 @@ from src.utils import (
     generate_fc_figure,
     generate_multigrid_figure,
     init_wandb_run,
+    log_hopf_best_params,
     prefixed_metrics,
     print_section,
     resolve_device,
@@ -179,7 +180,7 @@ def evaluate_hopf_loader_metrics(
         key: (sums[key] / counts[key]) if counts.get(key, 0) > 0 else float("nan")
         for key in metric_keys
     }
-    metrics["metrics_sampled_batches"] = len(loader) if metrics_limit is None else sampled_batches
+    # metrics["metrics_sampled_batches"] = len(loader) if metrics_limit is None else sampled_batches
     return metrics
 
 
@@ -321,6 +322,7 @@ def train_hopf_grid_search(
         "epoch": 0,
         "best_params/G": float(best_params.get("initial_g", 0.0)),
         "best_params/a": float(best_params.get("initial_a", 0.0)),
+        "best_params/kappa": float(best_params.get("initial_kappa", best_params.get("kappa", 0.0))),
         **prefixed_metrics("train", train_metrics),
         **prefixed_metrics("validation", val_metrics),
     }
@@ -473,14 +475,16 @@ def main(argv=None):
             cfg,
             n_steps=val_window_size,
         )
+        # Log ALL final evaluation metrics (not just a fixed subset).
         final_metrics = {
-            key: final_metrics_all.get(key, float("nan"))
-            for key in ("fc_correlation", "fc_mse", "fcd_ks", "metastability_diff")
+            k: v for k, v in final_metrics_all.items()
+            if isinstance(v, (int, float))
         }
         wandb_summary_update(
             {f"final_{k}": v for k, v in final_metrics.items()},
             use_wandb=cfg.use_wandb,
         )
+        log_hopf_best_params(hopf_model, use_wandb=cfg.use_wandb)
     finally:
         finish_wandb_run()
 

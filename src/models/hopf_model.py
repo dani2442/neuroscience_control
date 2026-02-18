@@ -71,7 +71,7 @@ class CoupledHopfModel(BaseNeuroscienceModel):
         device: str = "cpu",
         learnable_a: bool = True,
         learnable_g: bool = True,
-        learnable_kappa: bool = True,
+        learnable_kappa: bool = False,
         learnable_omega: bool = False,
     ):
         super().__init__(n_rois, device)
