@@ -457,7 +457,7 @@ def main(argv=None):
     parser.add_argument("--initial-a", type=float, default=-0.02, help="Initial Hopf bifurcation parameter")
     parser.add_argument("--initial-g", type=float, default=0.05, help="Initial Hopf coupling")
     parser.add_argument("--initial-kappa", type=float, default=0.1, help="Initial kappa Hopf")
-    parser.add_argument("--noise-sigma", type=float, default=0.05, help="Hopf noise scale (0.0 = deterministic)")
+    parser.add_argument("--noise-sigma", type=float, default=0.1, help="Hopf noise scale (0.0 = deterministic)")
 
     # HybridHopf settings
     parser.add_argument("--coupling-hidden-dim", type=int, default=32, help="HybridHopf coupling network hidden dimension")

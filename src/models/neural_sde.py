@@ -145,9 +145,9 @@ class NeuralSDE(BaseNeuroscienceModel):
         initial_state: torch.Tensor,
         n_steps: int = 100,
         dt: float = 0.72,
-        sde_type: str = "stratonovich",
-        method: str = "reversible_heun",
-        dt_min: Optional[float] = 0.04,
+        sde_type: str = "ito",
+        method: str = "euler",
+        dt_min: Optional[float] = 0.1,
         use_adjoint: bool = False,
         adjoint_method: Optional[str] = None,
     ) -> torch.Tensor:

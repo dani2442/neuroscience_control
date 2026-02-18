@@ -364,7 +364,7 @@ def save_model_and_figures(
 
     generate_multigrid_figure(
         hopf_model, val_timeseries, n_timepoints, cfg.tr,
-        n_simulations=1,
+        n_simulations=3,
         n_rois=3,
         n_cols=3,
         title="Coupled Hopf (Grid) - Real vs Simulated",
@@ -387,7 +387,7 @@ def main(argv=None):
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
 
     # Data / dynamics settings
-    parser.add_argument("--max-subjects", type=int, default=50, help="Limit number of subjects (first N)")
+    parser.add_argument("--max-subjects", type=int, default=90, help="Limit number of subjects (first N)")
     parser.add_argument("--tr", type=float, default=0.72, help="Repetition time in seconds")
     parser.add_argument("--f-lo", type=float, default=0.04, help="Bandpass low cutoff (Hz)")
     parser.add_argument("--f-hi", type=float, default=0.07, help="Bandpass high cutoff (Hz)")

@@ -63,11 +63,11 @@ class TrainingConfig:
     loss_weight_metastability: Optional[float] = None
     early_stopping_patience: int = 15
     n_steps: int = 100
-    dt_min: Optional[float] = 0.04  # Fixed solver sub-step (passed as torchsde `dt`)
-    sde_type: str = "stratonovich"  # SDE interpretation required by reversible_heun
-    sde_method: str = "reversible_heun"  # Stable Stratonovich solver
+    dt_min: Optional[float] = 0.01  # Fixed solver sub-step (passed as torchsde `dt`)
+    sde_type: str = "ito"  # SDE interpretation required by reversible_heun
+    sde_method: str = "euler"  # Stable Stratonovich solver
     use_adjoint: bool = False  # Use torchsde.sdeint_adjoint for backprop memory efficiency
-    adjoint_method: Optional[str] = "adjoint_reversible_heun"  # Matching adjoint for reversible_heun
+    adjoint_method: Optional[str] = "euler"  # Matching adjoint for reversible_heun
     
     # Fine-tuning settings
     fine_tune: bool = False
@@ -76,7 +76,7 @@ class TrainingConfig:
     warmup_epochs: int = 3
     
     # Grid search settings (for Hopf)
-    g_values: List[float] = field(default_factory=lambda: [-0.3, 0.3, 0.5, 0.7, 1.0, 1.5])
+    g_values: List[float] = field(default_factory=lambda: [0.3, 0.5, 0.7, 1.0, 1.5])
     a_values: List[float] = field(default_factory=lambda: [-0.02, -0.01, 0.0, 0.01, 0.05,])
     kappa_values: List[float] = field(default_factory=lambda: [0.1])
     n_simulations: int = 5
