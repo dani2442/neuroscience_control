@@ -168,9 +168,9 @@ def build_model(
             initial_kappa=initial_kappa,
             noise_sigma=cfg.noise_sigma,
             device=device,
-            learnable_a=True,
-            learnable_g=True,
-            learnable_kappa=True,
+            learnable_a=cfg.learnable_a,
+            learnable_g=cfg.learnable_g,
+            learnable_kappa=cfg.learnable_kappa,
             learnable_omega=False,
         )
 
@@ -358,6 +358,9 @@ def build_config(args: argparse.Namespace):
     if args.model == "hopf":
         return HopfConfig(
             noise_sigma=args.noise_sigma,
+            learnable_a=args.learnable_a,
+            learnable_g=args.learnable_g,
+            learnable_kappa=args.learnable_kappa,
             **common_kwargs,
         )
 
@@ -405,14 +408,14 @@ def main(argv=None):
         "--loss-weight-fc-correlation",
         dest="loss_weight_fc",
         type=float,
-        default=None,
+        default=1.0,
         help="Weight for `loss_fc_correlation` (overrides preset)",
     )
     parser.add_argument("--loss-weight-fc", dest="loss_weight_fc", type=float, help=argparse.SUPPRESS)
-    parser.add_argument("--loss-weight-fc-mse", type=float, default=None, help="Weight for `loss_fc_mse` (overrides preset)")
+    parser.add_argument("--loss-weight-fc-mse", type=float, default=1., help="Weight for `loss_fc_mse` (overrides preset)")
     parser.add_argument("--loss-weight-l2", type=float, default=None, help="Weight for L2 timeseries loss (overrides preset)")
-    parser.add_argument("--loss-weight-amplitude", type=float, default=3., help="Weight for amplitude loss (|z| envelope; overrides preset)")
-    parser.add_argument("--loss-weight-omega", type=float, default=10., help="Weight for instantaneous-frequency loss (overrides preset)")
+    parser.add_argument("--loss-weight-amplitude", type=float, default=1., help="Weight for amplitude loss (|z| envelope; overrides preset)")
+    parser.add_argument("--loss-weight-omega", type=float, default=1., help="Weight for instantaneous-frequency loss (overrides preset)")
     parser.add_argument("--loss-weight-fcd", type=float, default=None, help="Weight for `loss_fcd` (overrides preset)")
     parser.add_argument(
         "--loss-weight-metastability",

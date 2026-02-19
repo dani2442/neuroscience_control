@@ -176,12 +176,12 @@ def loss_amplitude(
                   - A^{\mathrm{ref}}_n\bigr)^2
     """
     amp_pred, _ = _complex_amplitude_omega(ts_pred, tr)
-    mean_pred = amp_pred.mean(dim=(0, 2))                        # (N,)
+    mean_pred = amp_pred.mean(dim=(2))                        # (B, N)
     if ref_amplitude is not None:
-        target = ref_amplitude.to(mean_pred.device)              # (N,)
+        target = ref_amplitude.to(mean_pred.device)              # (B, N)
     else:
         amp_targ, _ = _complex_amplitude_omega(ts_target, tr)
-        target = amp_targ.mean(dim=(0, 2))                       # (N,)
+        target = amp_targ.mean(dim=(2))                       # (B, N)
     return ((mean_pred - target) ** 2).mean()
 
 
