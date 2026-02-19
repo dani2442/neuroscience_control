@@ -382,7 +382,7 @@ def build_config(args: argparse.Namespace):
 def main(argv=None):
     """CLI entrypoint."""
     parser = argparse.ArgumentParser(description="Train NSDE or Hopf with backpropagation")
-    parser.add_argument("--model", type=str, default="nsde", choices=["nsde", "hopf", "hybrid_hopf"], help="Model to train")
+    parser.add_argument("--model", type=str, default="hopf", choices=["nsde", "hopf", "hybrid_hopf"], help="Model to train")
     parser.add_argument("--data-path", type=str, default="data/ts_young/ts_young_TR0.72.mat", help="Path to data file")
     parser.add_argument("--wandb-project", type=str, default="neuroscience-control", help="Wandb project name")
     parser.add_argument("--experiment-name", type=str, default=None, help="Experiment name")
@@ -393,8 +393,8 @@ def main(argv=None):
     # Backprop settings
     parser.add_argument("--n-epochs", type=int, default=20, help="Number of training epochs")
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
-    parser.add_argument("--batch-size", type=int, default=64, help="Batch size")
-    parser.add_argument("--window-size", type=int, default=100, help="Window size for training")
+    parser.add_argument("--batch-size", type=int, default=128, help="Batch size")
+    parser.add_argument("--window-size", type=int, default=50, help="Window size for training")
     _VALID_LOSS_NAMES = sorted(set(LOSS_REGISTRY.keys()) | set(LOSS_PRESETS.keys()) | {"custom"})
     parser.add_argument(
         "--loss-fn",
@@ -408,12 +408,12 @@ def main(argv=None):
         "--loss-weight-fc-correlation",
         dest="loss_weight_fc",
         type=float,
-        default=1.0,
+        default=0.2,
         help="Weight for `loss_fc_correlation` (overrides preset)",
     )
     parser.add_argument("--loss-weight-fc", dest="loss_weight_fc", type=float, help=argparse.SUPPRESS)
-    parser.add_argument("--loss-weight-fc-mse", type=float, default=0., help="Weight for `loss_fc_mse` (overrides preset)")
-    parser.add_argument("--loss-weight-l2", type=float, default=None, help="Weight for L2 timeseries loss (overrides preset)")
+    parser.add_argument("--loss-weight-fc-mse", type=float, default=.2, help="Weight for `loss_fc_mse` (overrides preset)")
+    parser.add_argument("--loss-weight-l2", type=float, default=0., help="Weight for L2 timeseries loss (overrides preset)")
     parser.add_argument("--loss-weight-amplitude", type=float, default=1., help="Weight for amplitude loss (|z| envelope; overrides preset)")
     parser.add_argument("--loss-weight-omega", type=float, default=1., help="Weight for instantaneous-frequency loss (overrides preset)")
     parser.add_argument("--loss-weight-fcd", type=float, default=None, help="Weight for `loss_fcd` (overrides preset)")
@@ -434,9 +434,9 @@ def main(argv=None):
     parser.add_argument("--no-adjoint", dest="use_adjoint", action="store_false", help="Disable torchsde adjoint solver")
     # parser.set_defaults(False)
     parser.add_argument("--adjoint-method", type=str, default="euler", help="Adjoint solver method")
-    parser.add_argument("--f-lo", type=float, default=0.008, help="Bandpass low cutoff (Hz)")
-    parser.add_argument("--f-hi", type=float, default=0.08, help="Bandpass high cutoff (Hz)")
-    parser.add_argument("--fcd-win-sec", type=float, default=60.0, help="Sliding-window length for FCD metrics/losses (seconds)")
+    parser.add_argument("--f-lo", type=float, default=0.04, help="Bandpass low cutoff (Hz)")
+    parser.add_argument("--f-hi", type=float, default=0.07, help="Bandpass high cutoff (Hz)")
+    parser.add_argument("--fcd-win-sec", type=float, default=30.0, help="Sliding-window length for FCD metrics/losses (seconds)")
     parser.add_argument("--fcd-step-sec", type=float, default=2.0, help="Sliding-window step for FCD metrics/losses (seconds)")
     parser.add_argument("--n-simulations", type=int, default=5, help="Number of stochastic simulations for final multigrid figure")
     parser.add_argument("--skip-figures", action="store_true", help="Skip final figure generation for faster smoke tests")
@@ -457,18 +457,18 @@ def main(argv=None):
     parser.add_argument("--n-windows-per-epoch", type=int, default=512, help="Random windows per epoch")
 
     # NSDE settings
-    parser.add_argument("--hidden-dim", type=int, default=256, help="NSDE hidden dimension")
+    parser.add_argument("--hidden-dim", type=int, default=128, help="NSDE hidden dimension")
     parser.add_argument("--n-layers", type=int, default=2, help="NSDE drift network layers")
 
     # Hopf settings
     parser.add_argument("--initial-a", type=float, default=-0.02, help="Initial Hopf bifurcation parameter")
-    parser.add_argument("--initial-g", type=float, default=0.05, help="Initial Hopf coupling")
+    parser.add_argument("--initial-g", type=float, default=1.5, help="Initial Hopf coupling")
     parser.add_argument("--initial-kappa", type=float, default=0.1, help="Initial kappa Hopf")
-    parser.add_argument("--noise-sigma", type=float, default=0.2, help="Hopf noise scale (0.0 = deterministic)")
+    parser.add_argument("--noise-sigma", type=float, default=0.1, help="Hopf noise scale (0.0 = deterministic)")
 
     # HybridHopf settings
-    parser.add_argument("--coupling-hidden-dim", type=int, default=32, help="HybridHopf coupling network hidden dimension")
-    parser.add_argument("--coupling-n-layers", type=int, default=2, help="HybridHopf coupling network layers")
+    parser.add_argument("--coupling-hidden-dim", type=int, default=16, help="HybridHopf coupling network hidden dimension")
+    parser.add_argument("--coupling-n-layers", type=int, default=1, help="HybridHopf coupling network layers")
     parser.add_argument("--learnable-a", action="store_true", default=True, help="Make bifurcation param a learnable")
     parser.add_argument("--no-learnable-a", dest="learnable_a", action="store_false", help="Freeze bifurcation param a")
     parser.add_argument("--learnable-g", action="store_true", default=True, help="Make global coupling g learnable")

@@ -4,10 +4,11 @@ Combines Hopf local oscillator dynamics with a learnable graph-coupling
 network ψ_θ.  The SDE reads:
 
     dz_i = [(a + iω_i − |z_i|²) z_i
-            + G Σ_j ψ_θ(z_j, z_i, C_ij)] dt + σ dW_i
+            + G Σ_j ψ_θ(z_j − z_i, C_ij)] dt + σ dW_i
 
-where ψ_θ : ℂ³ → ℂ is a small MLP that replaces the fixed linear
-diffusive coupling C_ij(z_j − z_i) of the classical Hopf model.
+where ψ_θ : ℂ² → ℂ is a complex-valued harmonic network that replaces
+the fixed linear diffusive coupling C_ij(z_j − z_i) of the classical
+Hopf model.  The network operates natively on complex numbers.
 
 Native complex-valued SDE: state, drift, diffusion, and Brownian motion
 are all complex.
@@ -21,50 +22,72 @@ from .base_model import BaseNeuroscienceModel
 import torchsde
 
 
-class CouplingNetwork(nn.Module):
-    r"""Learnable edge-wise coupling function ψ_θ(z_j, z_i, C_ij) → ℂ.
+class ComplexLinear(nn.Module):
+    """Fully complex linear layer: out = W z + b with W, b ∈ ℂ."""
 
-    Internally converts complex inputs to a real representation
-    (Re z_j, Im z_j, Re z_i, Im z_i, C_ij) ∈ ℝ⁵, processes through
-    a real-valued MLP, and maps the 2-d output back to ℂ.
+    def __init__(self, in_features: int, out_features: int):
+        super().__init__()
+        self.weight = nn.Parameter(
+            torch.randn(out_features, in_features, dtype=torch.cfloat) * (in_features ** -0.5)
+        )
+        self.bias = nn.Parameter(torch.zeros(out_features, dtype=torch.cfloat))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.nn.functional.linear(x, self.weight, self.bias)
+
+
+class PhasePreservingActivation(nn.Module):
+    r"""Harmonic activation:  f(z) = (z / |z|) · tanh(|z|).
+
+    Preserves phase while applying a bounded nonlinearity to the
+    magnitude, following the harmonic-network convention.
+    """
+
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        mag = z.abs().clamp(min=1e-8)
+        return z / mag * torch.tanh(mag)
+
+
+class CouplingNetwork(nn.Module):
+    r"""Learnable edge-wise coupling ψ_θ(z_j − z_i, C_ij) → ℂ.
+
+    A harmonic (complex-valued) MLP.  Each edge receives a 2-d complex
+    input vector ``[z_j − z_i,  C_ij + 0j]`` and the network maps it
+    to a scalar complex coupling value.  All weights and biases are
+    complex; the activation is phase-preserving.
     """
 
     def __init__(self, hidden_dim: int = 32, n_layers: int = 2):
         super().__init__()
-        # Input: (Re z_j, Im z_j, Re z_i, Im z_i, C_ij) → 5
-        # Output: (Re ψ, Im ψ) → 2
-        in_dim = 5
-        out_dim = 2
+        # Input: (z_j − z_i, C_ij) ∈ ℂ²  →  output ∈ ℂ¹
+        in_dim = 2
+        out_dim = 1
         layers: list[nn.Module] = []
         d = in_dim
         for _ in range(n_layers):
-            layers.extend([nn.Linear(d, hidden_dim), nn.Tanh()])
+            layers.extend([ComplexLinear(d, hidden_dim), PhasePreservingActivation()])
             d = hidden_dim
-        layers.append(nn.Linear(d, out_dim))
+        layers.append(ComplexLinear(d, out_dim))
         self.net = nn.Sequential(*layers)
 
     def forward(
         self,
-        z_j: torch.Tensor,
-        z_i: torch.Tensor,
+        z_diff: torch.Tensor,
         c_ij: torch.Tensor,
     ) -> torch.Tensor:
         """Evaluate ψ_θ for every edge in a vectorised fashion.
 
         Args:
-            z_j: Complex tensor (..., ) – source node states.
-            z_i: Complex tensor (..., ) – target node states.
-            c_ij: Real tensor (..., ) – structural connectivity weights.
+            z_diff: Complex tensor (..., ) – pairwise difference z_j − z_i.
+            c_ij:   Real tensor  (..., ) – structural connectivity weights.
 
         Returns:
             Complex tensor (..., ) – coupling contribution per edge.
         """
-        features = torch.stack(
-            [z_j.real, z_j.imag, z_i.real, z_i.imag, c_ij],
-            dim=-1,
-        )  # (..., 5)
-        out = self.net(features)  # (..., 2)
-        return torch.complex(out[..., 0], out[..., 1])
+        c_complex = torch.complex(c_ij, torch.zeros_like(c_ij))
+        features = torch.stack([z_diff, c_complex], dim=-1)  # (..., 2) complex
+        out = self.net(features)  # (..., 1) complex
+        return out.squeeze(-1)
 
 
 class HybridHopfSDEFunc(nn.Module):
@@ -72,7 +95,7 @@ class HybridHopfSDEFunc(nn.Module):
 
     .. math::
         dz_i = \bigl[(a + i\omega_i - |z_i|^2)\,z_i
-               + G\sum_j \psi_\theta(z_j, z_i, C_{ij})\bigr]\,dt
+               + G\sum_j \psi_\theta(z_j - z_i,\, C_{ij})\bigr]\,dt
                + \sigma\,dW_i
     """
 
@@ -101,7 +124,7 @@ class HybridHopfSDEFunc(nn.Module):
         self.coupling_net = coupling_net
 
     def f(self, t: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        """Drift: z_i·(κa + iω_i − κ|z_i|²) + G·Σ_j ψ_θ(z_j, z_i, C_ij)."""
+        """Drift: z_i·(κa + iω_i − κ|z_i|²) + G·Σ_j ψ_θ(z_j − z_i, C_ij)."""
         # --- local Hopf term ---
         z_sq = torch.abs(y) ** 2  # (batch, n_rois), real
         omega = self.omega.unsqueeze(0)  # (1, n_rois)
@@ -109,18 +132,19 @@ class HybridHopfSDEFunc(nn.Module):
 
         # --- learned coupling term ---
         batch, n = y.shape
-        # Expand to all (i, j) pairs: (batch, n_target, n_source)
-        z_j = y.unsqueeze(1).expand(batch, n, n)  # source: dim 2
+        # Pairwise difference z_j − z_i: (batch, n_target, n_source)
         z_i = y.unsqueeze(2).expand(batch, n, n)  # target: dim 1
+        z_j = y.unsqueeze(1).expand(batch, n, n)  # source: dim 2
+        z_diff = z_j - z_i  # (batch, n, n) complex
         sc = self.structural_connectivity.unsqueeze(0).expand(batch, n, n)  # (batch, n, n) real
-
         sc = sc.to(y.real.dtype)
+
         # Checkpoint the edge MLP during training to avoid storing large
         # per-step activations across the SDE rollout.
         if torch.is_grad_enabled() and y.requires_grad:
-            psi = checkpoint(self.coupling_net, z_j, z_i, sc, use_reentrant=False)
+            psi = checkpoint(self.coupling_net, z_diff, sc, use_reentrant=False)
         else:
-            psi = self.coupling_net(z_j, z_i, sc)  # (batch, n, n) complex
+            psi = self.coupling_net(z_diff, sc)  # (batch, n, n) complex
 
         coupling = self.global_coupling * psi.sum(dim=2)  # sum over j → (batch, n)
         return local + coupling
@@ -132,9 +156,9 @@ class HybridHopfSDEFunc(nn.Module):
 class HybridHopfModel(BaseNeuroscienceModel):
     r"""Hybrid mechanistic–neural Hopf oscillator model.
 
-    dz_i = [z_i·(a + iω_i − |z_i|²) + G·Σ_j ψ_θ(z_j, z_i, C_ij)] dt + σ dW_i
+    dz_i = [z_i·(a + iω_i − |z_i|²) + G·Σ_j ψ_θ(z_j − z_i, C_ij)] dt + σ dW_i
 
-    where ψ_θ is a learned coupling function.
+    where ψ_θ is a complex-valued harmonic network coupling function.
     """
 
     def __init__(
