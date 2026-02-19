@@ -46,8 +46,8 @@ class TrainingConfig:
     metrics_sample_batches: Optional[int] = 1  # Limit expensive metrics per epoch (None = all)
     
     # Model settings
-    hidden_dim: int = 32
-    n_layers: int = 2
+    hidden_dim: int = 16
+    n_layers: int = 1
     coupling_strength: float = 0.1
     
     # Training settings
@@ -78,7 +78,7 @@ class TrainingConfig:
     # Grid search settings (for Hopf)
     g_values: List[float] = field(default_factory=lambda: [0.3, 0.5, 0.7, 1.0, 1.5])
     a_values: List[float] = field(default_factory=lambda: [-0.02, -0.01, 0.0, 0.01, 0.05,])
-    kappa_values: List[float] = field(default_factory=lambda: [0.1])
+    kappa_values: List[float] = field(default_factory=lambda: [0.05, 0.1])
     n_simulations: int = 5
     
     # Directories

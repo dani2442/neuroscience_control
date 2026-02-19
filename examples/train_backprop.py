@@ -412,7 +412,7 @@ def main(argv=None):
         help="Weight for `loss_fc_correlation` (overrides preset)",
     )
     parser.add_argument("--loss-weight-fc", dest="loss_weight_fc", type=float, help=argparse.SUPPRESS)
-    parser.add_argument("--loss-weight-fc-mse", type=float, default=1., help="Weight for `loss_fc_mse` (overrides preset)")
+    parser.add_argument("--loss-weight-fc-mse", type=float, default=0., help="Weight for `loss_fc_mse` (overrides preset)")
     parser.add_argument("--loss-weight-l2", type=float, default=None, help="Weight for L2 timeseries loss (overrides preset)")
     parser.add_argument("--loss-weight-amplitude", type=float, default=1., help="Weight for amplitude loss (|z| envelope; overrides preset)")
     parser.add_argument("--loss-weight-omega", type=float, default=1., help="Weight for instantaneous-frequency loss (overrides preset)")
@@ -464,7 +464,7 @@ def main(argv=None):
     parser.add_argument("--initial-a", type=float, default=-0.02, help="Initial Hopf bifurcation parameter")
     parser.add_argument("--initial-g", type=float, default=0.05, help="Initial Hopf coupling")
     parser.add_argument("--initial-kappa", type=float, default=0.1, help="Initial kappa Hopf")
-    parser.add_argument("--noise-sigma", type=float, default=0.1, help="Hopf noise scale (0.0 = deterministic)")
+    parser.add_argument("--noise-sigma", type=float, default=0.2, help="Hopf noise scale (0.0 = deterministic)")
 
     # HybridHopf settings
     parser.add_argument("--coupling-hidden-dim", type=int, default=32, help="HybridHopf coupling network hidden dimension")
@@ -473,7 +473,7 @@ def main(argv=None):
     parser.add_argument("--no-learnable-a", dest="learnable_a", action="store_false", help="Freeze bifurcation param a")
     parser.add_argument("--learnable-g", action="store_true", default=True, help="Make global coupling g learnable")
     parser.add_argument("--no-learnable-g", dest="learnable_g", action="store_false", help="Freeze global coupling g")
-    parser.add_argument("--learnable-kappa", action="store_true", default=True, help="Make kappa learnable")
+    parser.add_argument("--learnable-kappa", action="store_true", default=False, help="Make kappa learnable")
     parser.add_argument("--no-learnable-kappa", dest="learnable_kappa", action="store_false", help="Freeze kappa")
     parser.add_argument("--learnable-omega", action="store_true", default=False, help="Make frequencies omega learnable")
 

@@ -263,6 +263,48 @@ For Hopf grid search (`examples/train_hopf.py`), model selection uses the compos
 | [`examples/train_nsde_finetune.py`](examples/train_nsde_finetune.py) | Fine-tuning via `Trainer` composite loss | Test/summary include FC + timeseries + dynamics metrics; final: `fc_correlation`, `fc_mse`, `fcd_ks`, `metastability_diff` |
 | [`examples/test.py`](examples/test.py) | No training (checkpoint evaluation) | Loader-based metrics + per-run real-vs-sim: FC + timeseries + dynamics metrics |
 
+### Complete Metrics Reference
+
+The table below lists every metric and loss term in the framework, grouped by category.
+
+#### Evaluation Metrics
+
+These are used for reporting model quality. They are **not** directly optimized during training.
+
+| Name | Module | Input | Formula | Range | Direction |
+|------|--------|-------|---------|-------|-----------|
+| `fc_correlation` | `src.metrics.fc_metrics` | FC matrices `(B, N, N)` | Pearson correlation between upper-triangle vectors of predicted and target FC | $[-1, 1]$ | Higher = better |
+| `fc_mse` | `src.metrics.fc_metrics` | FC matrices `(B, N, N)` | MSE between upper-triangle entries of predicted and target FC | $[0, \infty)$ | Lower = better |
+| `power_spectrum_distance` | `src.metrics.timeseries_metrics` | Time series `(B, N, T)` | MSE between normalised power spectra (via FFT), averaged over batch and ROIs | $[0, \infty)$ | Lower = better |
+| `temporal_correlation` | `src.metrics.timeseries_metrics` | Time series `(B, N, T)` | Mean per-ROI Pearson correlation over time between predicted and target, averaged over batch | $[-1, 1]$ | Higher = better |
+| `autocorr_distance` | `src.metrics.timeseries_metrics` | Time series `(B, N, T)` | MSE between autocorrelation functions (up to `max_lag` lags), averaged over batch, ROIs, and lags | $[0, \infty)$ | Lower = better |
+| `fcd_ks` | `src.metrics.dynamics_metrics` | Time series `(B, N, T)` | Two-sample Kolmogorov-Smirnov distance between FCD value distributions of predicted and target | $[0, 1]$ | Lower = better |
+| `metastability_diff` | `src.metrics.dynamics_metrics` | Time series `(B, N, T)` | $\lvert\text{Meta}(\text{pred}) - \text{Meta}(\text{target})\rvert$ where Meta = $\text{std}_t(R(t))$ (Kuramoto order parameter) | $[0, \infty)$ | Lower = better |
+
+#### Training Loss Terms
+
+These are differentiable loss functions used during gradient-based optimization. All are oriented so that **lower = better** and can be combined via `CompositeLoss`.
+
+| Name | Registry key | Module | Input | Formula | Notes |
+|------|-------------|--------|-------|---------|-------|
+| `loss_fc_correlation` | `fc_correlation` | `src.training.losses` | FC matrices `(B, N, N)` | $1 - \text{fc\_correlation}$ | Converts similarity into a minimizable loss |
+| `loss_fc_mse` | `fc_mse` | `src.training.losses` | FC matrices `(B, N, N)` | Same as `fc_mse` (thin wrapper) | Identical to the evaluation metric |
+| `loss_l2_timeseries` | `l2` | `src.training.losses` | Time series `(B, N, T)` | $\frac{1}{BNT}\sum\lvert z^{\text{pred}} - z^{\text{target}}\rvert^2$ (squared modulus for complex) | Supports both real and complex tensors |
+| `loss_amplitude` | `amplitude` | `src.training.losses` | Time series `(B, N, T)` | $\frac{1}{N}\sum_n(\overline{\lvert z_n^{\text{pred}}\rvert} - A_n^{\text{ref}})^2$ | L² error of mean envelope amplitude per ROI; can use dataset-level `ref_amplitude` |
+| `loss_omega` | `omega` | `src.training.losses` | Time series `(B, N, T)` | $\frac{1}{N}\sum_n(\bar{\omega}_n^{\text{pred}} - \omega_n^{\text{ref}})^2$ | L² error of mean instantaneous frequency per ROI; can use dataset-level `ref_omega` |
+| `loss_fcd` | `fcd` | `src.training.losses` | Time series `(B, N, T)` | MSE between FCD matrices (differentiable surrogate) | Proxy for the non-differentiable KS distance (`fcd_ks`) |
+| `loss_metastability` | `metastability` | `src.training.losses` | Time series `(B, N, T)` | $\lvert\text{Meta}(\text{pred}) - \text{Meta}(\text{target})\rvert$ | L1 difference of Kuramoto metastability |
+
+#### Loss Presets
+
+| Preset name | Included loss terms (default weights) |
+|-------------|--------------------------------------|
+| `mse` | `fc_mse: 1.0` |
+| `correlation` | `fc_correlation: 1.0` |
+| `combined` | `fc_mse: 1.0`, `fc_correlation: 0.5` |
+| `fc_fcd_meta` | `fc_correlation: 1.0`, `fcd: 1.0`, `metastability: 1.0` |
+| `full` | `fc_correlation: 1.0`, `l2: 1.0`, `amplitude: 1.0`, `omega: 1.0`, `fcd: 1.0`, `metastability: 1.0` |
+
 ---
 
 ## Training
