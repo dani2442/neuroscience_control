@@ -48,7 +48,8 @@ def build_model(
     )
 
     if model_name == "hopf":
-        assert isinstance(cfg, (HopfConfig, HybridHopfConfig))
+        if not isinstance(cfg, (HopfConfig, HybridHopfConfig)):
+            raise ValueError(f"Expected HopfConfig or HybridHopfConfig for 'hopf', got {type(cfg).__name__}")
         model = CoupledHopfModel(
             n_rois=dataset.n_rois,
             structural_connectivity=structural_connectivity,
@@ -68,7 +69,8 @@ def build_model(
         return model
 
     if model_name == "hybrid_hopf":
-        assert isinstance(cfg, HybridHopfConfig)
+        if not isinstance(cfg, HybridHopfConfig):
+            raise ValueError(f"Expected HybridHopfConfig for 'hybrid_hopf', got {type(cfg).__name__}")
         model = HybridHopfModel(
             n_rois=dataset.n_rois,
             structural_connectivity=structural_connectivity,

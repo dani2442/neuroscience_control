@@ -5,7 +5,6 @@ description = "Brain dynamics simulation and control using Coupled Hopf and Neur
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "dotenv>=0.9.9",
     "ipykernel>=7.1.0",
     "matplotlib>=3.10.8",
     "numpy>=2.4.2",

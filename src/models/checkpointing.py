@@ -18,12 +18,6 @@ MODEL_REGISTRY = {
     "HybridHopfModel": HybridHopfModel,
     "NeuralSDE": NeuralSDE,
 }
-REQUIRED_CHECKPOINT_KEYS = (
-    "checkpoint_version",
-    "model_class",
-    "model_config",
-    "model_state_dict",
-)
 
 
 def _read_checkpoint(checkpoint_path: Path | str, device: str) -> dict[str, Any]:
@@ -35,7 +29,7 @@ def _read_checkpoint(checkpoint_path: Path | str, device: str) -> dict[str, Any]
     if not isinstance(checkpoint, dict):
         raise ValueError(f"Checkpoint must be a dict: {checkpoint_path}")
 
-    missing = [key for key in REQUIRED_CHECKPOINT_KEYS if key not in checkpoint]
+    missing = [key for key in BaseNeuroscienceModel.REQUIRED_CHECKPOINT_KEYS if key not in checkpoint]
     if missing:
         missing_str = ", ".join(missing)
         raise ValueError(

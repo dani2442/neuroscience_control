@@ -24,7 +24,7 @@ from .dynamics_metrics import (
     phfcd_distribution,
     phfcd_mse_loss,
 )
-from .metrics_store import MetricsStore, compare_experiments
+from .metrics_store import MetricsStore
 
 __all__ = [
     "compute_static_fc",
@@ -46,5 +46,4 @@ __all__ = [
     "phfcd_distribution",
     "phfcd_mse_loss",
     "MetricsStore",
-    "compare_experiments",
 ]

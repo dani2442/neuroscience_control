@@ -103,20 +103,6 @@ print(f"Simulated timeseries shape: {timeseries.shape}")
 print(f"FC matrix shape: {fc_matrix.shape}")
 ```
 
-### Generate BOLD Signal
-
-```python
-# Generate realistic BOLD signal with TR=0.72s
-bold_signal = model.generate_bold(
-    n_timepoints=400,      # Number of BOLD volumes
-    tr=0.72,               # Repetition time in seconds
-    dt=0.001,              # Integration time step
-    batch_size=5,
-    initial_transient=1000 # Discard initial transient
-)
-# Shape: (5, 68, 400)
-```
-
 ---
 
 ## Models

@@ -116,9 +116,3 @@ class NeuroscienceDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         return self.timeseries[idx], self.fc_matrices[idx]
-
-    def get_all_timeseries(self) -> torch.Tensor:
-        return self.timeseries
-
-    def get_fc_mean(self) -> torch.Tensor:
-        return self.fc_mean

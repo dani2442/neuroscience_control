@@ -25,7 +25,6 @@ from .runtime import (
     wandb_log_artifact,
     finish_wandb_run,
     managed_wandb_run,
-    log_train_validation_metrics,
 )
 from .evaluation import (
     to_float_metric,
@@ -63,7 +62,6 @@ __all__ = [
     "wandb_log_artifact",
     "finish_wandb_run",
     "managed_wandb_run",
-    "log_train_validation_metrics",
     "to_float_metric",
     "prefixed_metrics",
     "generate_fc_figure",

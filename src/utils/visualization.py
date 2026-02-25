@@ -12,7 +12,6 @@ from ..metrics.metrics_store import MetricsStore
 
 # Default figures directory for paper
 FIGURES_DIR = Path("paper/images")
-FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _get_save_path(save_path: Optional[str], default_name: str, use_pdf: bool = True) -> Optional[Path]:

@@ -687,13 +687,4 @@ class Trainer:
             }
         )
     
-    def load_checkpoint(self, filename: str):
-        """Load model checkpoint."""
-        filepath = self.checkpoint_dir / filename
-        metadata = self.model.load(str(filepath))
-        
-        if 'optimizer_state_dict' in metadata:
-            self.optimizer.load_state_dict(metadata['optimizer_state_dict'])
-        
-        self.best_val_loss = metadata.get('best_val_loss', float('inf'))
-        self.best_epoch = metadata.get('best_epoch', 0)
+

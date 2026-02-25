@@ -8,11 +8,11 @@ from pathlib import Path
 import json
 from tqdm import tqdm
 
-from src.models.hopf_model import CoupledHopfModel
-from src.models.base_model import BaseNeuroscienceModel
-from src.metrics import fc_correlation, fc_mse, fcd_mse_loss, metastability_l1_loss
-from src.dataset import NeuroscienceDataset
-from src.dataset.preprocessing import compute_omega_from_timeseries
+from ..models.hopf_model import CoupledHopfModel
+from ..models.base_model import BaseNeuroscienceModel
+from ..metrics import fc_correlation, fc_mse, fcd_mse_loss, metastability_l1_loss
+from ..dataset import NeuroscienceDataset
+from ..dataset.preprocessing import compute_omega_from_timeseries
 
 
 # Metrics where a *higher* value is better; all others are lower-is-better.
@@ -215,9 +215,6 @@ class GridSearch:
         with open(filepath, 'w') as f:
             json.dump(results_data, f, indent=2, default=str)
         print(f"Grid search results saved to {filepath}")
-
-    def get_results_dataframe(self):
-        return [{**r['params'], **r['metrics']} for r in self.results]
 
 
 def grid_search_hopf(
