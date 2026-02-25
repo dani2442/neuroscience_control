@@ -1,4 +1,4 @@
-"""Training configuration dataclass."""
+"""Training configuration dataclasses."""
 
 import dataclasses
 from dataclasses import dataclass, field
@@ -23,10 +23,10 @@ class TrainingConfig:
     
     # Data settings
     data_path: str = "data/ts_young/ts_young_TR0.72.mat"
-    max_subjects: Optional[int] = 5
-    window_size: int = 100
-    n_windows_per_epoch: int = 256
-    batch_size: int = 16
+    max_subjects: Optional[int] = 50
+    window_size: int = 50
+    n_windows_per_epoch: int = 512
+    batch_size: int = 128
     train_ratio: float = 0.7
     val_ratio: float = 0.15
 
@@ -51,20 +51,20 @@ class TrainingConfig:
     coupling_strength: float = 0.1
     
     # Training settings
-    n_epochs: int = 50
+    n_epochs: int = 20
     lr: float = 1e-3
     loss_fn: str = "combined"
-    loss_weight_fc: Optional[float] = None
-    loss_weight_fc_mse: Optional[float] = None
-    loss_weight_l2: Optional[float] = None
-    loss_weight_amplitude: Optional[float] = None
-    loss_weight_omega: Optional[float] = None
+    loss_weight_fc: Optional[float] = 0.2
+    loss_weight_fc_mse: Optional[float] = 0.2
+    loss_weight_l2: Optional[float] = 0.0
+    loss_weight_amplitude: Optional[float] = 1.0
+    loss_weight_omega: Optional[float] = 1.0
     loss_weight_fcd: Optional[float] = None
     loss_weight_phfcd: Optional[float] = None
     loss_weight_metastability: Optional[float] = None
     early_stopping_patience: int = 15
     n_steps: int = 100
-    dt_min: Optional[float] = 0.01  # Fixed solver sub-step (passed as torchsde `dt`)
+    dt_min: Optional[float] = 0.1  # Fixed solver sub-step (passed as torchsde `dt`)
     sde_type: str = "ito"  # SDE interpretation required by reversible_heun
     sde_method: str = "euler"  # Stable Stratonovich solver
     use_adjoint: bool = False  # Use torchsde.sdeint_adjoint for backprop memory efficiency
@@ -104,7 +104,7 @@ class TrainingConfig:
     def to_dict(self) -> dict:
         """Convert config to dictionary."""
         return dataclasses.asdict(self)
-    
+
     @classmethod
     def from_dict(cls, d: dict) -> "TrainingConfig":
         """Create config from dictionary."""
@@ -115,10 +115,14 @@ class TrainingConfig:
 class HopfConfig(TrainingConfig):
     """Configuration for Hopf model training."""
     experiment_name: str = "hopf"
-    noise_sigma: float = 0.05
-    learnable_a: bool = False
-    learnable_g: bool = False
+    noise_sigma: float = 0.1
+    initial_a: float = -0.02
+    initial_g: float = 1.5
+    initial_kappa: float = 0.1
+    learnable_a: bool = True
+    learnable_g: bool = True
     learnable_kappa: bool = False
+    learnable_omega: bool = False
 
     # Composite grid-search scoring weights
     weight_fc: float = 1.0
@@ -130,19 +134,24 @@ class HopfConfig(TrainingConfig):
 class HybridHopfConfig(TrainingConfig):
     """Configuration for HybridHopf model training (learnable coupling network)."""
     experiment_name: str = "hybrid_hopf"
-    noise_sigma: float = 0.05
+    noise_sigma: float = 0.1
+    initial_a: float = -0.02
+    initial_g: float = 1.5
+    initial_kappa: float = 0.1
     learnable_a: bool = True
     learnable_g: bool = True
     learnable_kappa: bool = False
     learnable_omega: bool = False
     
     # Coupling network architecture
-    coupling_hidden_dim: int = 32
-    coupling_n_layers: int = 2
+    coupling_hidden_dim: int = 16
+    coupling_n_layers: int = 1
 
 
 @dataclass
 class NeuralSDEConfig(TrainingConfig):
     """Configuration for Neural SDE training."""
     experiment_name: str = "neural_sde"
+    hidden_dim: int = 128
+    n_layers: int = 2
     use_structural_connectivity: bool = False

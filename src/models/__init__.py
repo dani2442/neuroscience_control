@@ -5,6 +5,7 @@ from .hybrid_hopf_model import HybridHopfModel
 from .neural_sde import NeuralSDE
 from .base_model import BaseNeuroscienceModel
 from .checkpointing import load_model_from_checkpoint
+from .factory import build_model
 
 __all__ = [
     "CoupledHopfModel",
@@ -12,4 +13,5 @@ __all__ = [
     "NeuralSDE",
     "BaseNeuroscienceModel",
     "load_model_from_checkpoint",
+    "build_model",
 ]

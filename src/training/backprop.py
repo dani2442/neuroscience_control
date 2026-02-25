@@ -2,13 +2,42 @@
 
 from __future__ import annotations
 
+import math
+
+import torch
 from torch.utils.data import DataLoader
 
 from ..dataset import NeuroscienceDataset, create_data_loaders
+from ..metrics import compute_all_fc_metrics, compute_dynamics_fit_metrics
 from ..metrics.metrics_store import MetricsStore
 from ..models import BaseNeuroscienceModel
 from .config import TrainingConfig
 from .trainer import Trainer
+
+
+# ---------------------------------------------------------------------------
+# Dataset loading (shared across all training scripts)
+# ---------------------------------------------------------------------------
+
+def load_dataset(
+    cfg: TrainingConfig,
+    device: str,
+) -> NeuroscienceDataset:
+    """Load dataset according to *cfg* and print a summary."""
+    dataset = NeuroscienceDataset(
+        filepath=cfg.data_path,
+        normalize=True,
+        device=device,
+        max_subjects=cfg.max_subjects,
+        dt=cfg.tr,
+        fourier_denoise=cfg.fourier_denoise,
+        denoise_f_lo=cfg.denoise_f_lo,
+        denoise_f_hi=cfg.denoise_f_hi,
+    )
+    print("Loaded dataset:")
+    print(f"  - subjects={dataset.n_subjects}  ROIs={dataset.n_rois}  T={dataset.n_timepoints}")
+    print(f"  - FC shape={dataset.fc_mean.shape}  dtype={dataset.timeseries.dtype}  dt={dataset.dt}s")
+    return dataset
 
 
 def create_windowed_loaders(

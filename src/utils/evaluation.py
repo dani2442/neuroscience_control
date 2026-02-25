@@ -6,6 +6,7 @@ training scripts (train_hopf, train_backprop, train_nsde_finetune).
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any
 
@@ -242,3 +243,127 @@ def extract_val_data(
     target_fc = val_fc_matrices.mean(dim=0)
     n_timepoints = min(val_timeseries.shape[2], max_timepoints)
     return val_timeseries, val_fc_matrices, target_fc, n_timepoints
+
+
+# ---------------------------------------------------------------------------
+# Hopf evaluation helpers (moved from train_hopf.py)
+# ---------------------------------------------------------------------------
+
+def split_subject_indices(cfg, n_subjects: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """Deterministic train/validation subject split."""
+    generator = torch.Generator().manual_seed(cfg.seed)
+    indices = torch.randperm(n_subjects, generator=generator)
+    n_train = max(1, int(cfg.train_ratio * n_subjects))
+    n_val = max(1, int(cfg.val_ratio * n_subjects))
+    train_idx = indices[:n_train]
+    val_idx = indices[n_train : n_train + n_val]
+    if val_idx.numel() == 0:
+        val_idx = train_idx[:1]
+    return train_idx, val_idx
+
+
+def evaluate_hopf_model(
+    hopf_model,
+    dataset,
+    cfg,
+    n_paths: int = 10,
+    subject_indices: torch.Tensor | None = None,
+) -> dict[str, float]:
+    """Evaluate FC/FCD/metastability for a trained Hopf model."""
+    from ..metrics import compute_all_fc_metrics, compute_dynamics_fit_metrics
+
+    if subject_indices is None:
+        subject_indices = torch.arange(dataset.n_subjects, device=dataset.timeseries.device)
+    else:
+        subject_indices = torch.as_tensor(subject_indices, device=dataset.timeseries.device, dtype=torch.long)
+
+    if subject_indices.numel() == 0:
+        raise ValueError("subject_indices must contain at least one subject.")
+
+    target_fc = dataset.fc_matrices[subject_indices].mean(dim=0)
+    n_timepoints = min(dataset.n_timepoints, 200)
+    n_paths = min(n_paths, subject_indices.numel())
+    eval_indices = subject_indices[:n_paths]
+    initial_states = dataset.timeseries[eval_indices, :, 0]
+
+    with torch.no_grad():
+        hopf_ts = hopf_model.forward(initial_state=initial_states, n_steps=n_timepoints, dt=cfg.tr)
+        hopf_fc = hopf_model.compute_fc(hopf_ts)
+        hopf_fc_mean = hopf_fc.mean(dim=0)
+
+    metrics = compute_all_fc_metrics(hopf_fc_mean.unsqueeze(0), target_fc.unsqueeze(0))
+    target_ts = dataset.timeseries[eval_indices[: hopf_ts.shape[0]], :, :n_timepoints]
+    dyn_metrics = compute_dynamics_fit_metrics(
+        hopf_ts,
+        target_ts,
+        tr=cfg.tr,
+        fcd_win_sec=cfg.fcd_win_sec,
+        fcd_step_sec=cfg.fcd_step_sec,
+        compute_fcd=cfg.compute_fcd_metrics,
+        compute_metastability=cfg.compute_metastability_metrics,
+    )
+    metrics.update(dyn_metrics)
+    return metrics
+
+
+def evaluate_hopf_loader_metrics(
+    hopf_model,
+    loader,
+    cfg,
+    *,
+    n_steps: int | None = None,
+) -> dict[str, float]:
+    """Evaluate FC/FCD/metastability with loader-based batch aggregation."""
+    from ..metrics import compute_all_fc_metrics, compute_dynamics_fit_metrics
+
+    sums: dict[str, float] = {}
+    counts: dict[str, int] = {}
+    sampled_batches = 0
+    metrics_limit = cfg.metrics_sample_batches
+
+    for batch_idx, batch in enumerate(loader):
+        windows, fc_targets, _ = batch
+        windows = windows.to(hopf_model.device)
+        fc_targets = fc_targets.to(hopf_model.device)
+
+        batch_steps = windows.shape[2]
+        n_sim_steps = min(batch_steps, n_steps) if n_steps is not None else batch_steps
+        target_window = windows[:, :, :n_sim_steps]
+        initial_state = target_window[:, :, 0]
+
+        compute_expensive = (
+            metrics_limit is None
+            or (metrics_limit > 0 and batch_idx < metrics_limit)
+        )
+        if compute_expensive:
+            sampled_batches += 1
+
+        with torch.no_grad():
+            simulated = hopf_model.forward(initial_state=initial_state, n_steps=n_sim_steps, dt=cfg.tr)
+            fc_pred = hopf_model.compute_fc(simulated)
+            batch_metrics = compute_all_fc_metrics(fc_pred, fc_targets)
+            if compute_expensive:
+                batch_metrics.update(
+                    compute_dynamics_fit_metrics(
+                        simulated,
+                        target_window,
+                        tr=cfg.tr,
+                        fcd_win_sec=cfg.fcd_win_sec,
+                        fcd_step_sec=cfg.fcd_step_sec,
+                        compute_fcd=cfg.compute_fcd_metrics,
+                        compute_metastability=cfg.compute_metastability_metrics,
+                    )
+                )
+
+        for key, value in batch_metrics.items():
+            numeric = to_float_metric(value)
+            if numeric is None or math.isnan(numeric):
+                continue
+            sums[key] = sums.get(key, 0.0) + numeric
+            counts[key] = counts.get(key, 0) + 1
+
+    metric_keys = ("fc_correlation", "fc_mse", "fcd_ks", "phfcd_ks", "metastability_diff")
+    return {
+        key: (sums[key] / counts[key]) if counts.get(key, 0) > 0 else float("nan")
+        for key in metric_keys
+    }

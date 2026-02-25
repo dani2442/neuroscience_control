@@ -25,6 +25,7 @@ from .runtime import (
     wandb_log_artifact,
     finish_wandb_run,
     managed_wandb_run,
+    log_train_validation_metrics,
 )
 from .evaluation import (
     to_float_metric,
@@ -34,6 +35,9 @@ from .evaluation import (
     save_checkpoint,
     log_hopf_best_params,
     extract_val_data,
+    split_subject_indices,
+    evaluate_hopf_model,
+    evaluate_hopf_loader_metrics,
 )
 
 __all__ = [
@@ -59,6 +63,7 @@ __all__ = [
     "wandb_log_artifact",
     "finish_wandb_run",
     "managed_wandb_run",
+    "log_train_validation_metrics",
     "to_float_metric",
     "prefixed_metrics",
     "generate_fc_figure",
@@ -66,4 +71,7 @@ __all__ = [
     "save_checkpoint",
     "log_hopf_best_params",
     "extract_val_data",
+    "split_subject_indices",
+    "evaluate_hopf_model",
+    "evaluate_hopf_loader_metrics",
 ]

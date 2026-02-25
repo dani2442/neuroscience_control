@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import math
 import os
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -126,3 +127,37 @@ def managed_wandb_run(**init_kwargs):
         yield
     finally:
         finish_wandb_run()
+
+
+def log_train_validation_metrics(metrics_store, *, use_wandb: bool) -> None:
+    """Replay every train/validation metric from *metrics_store* to wandb."""
+    if not use_wandb or wandb.run is None:
+        return
+
+    from .evaluation import to_float_metric  # avoid circular at module level
+
+    wandb.define_metric("epoch")
+    wandb.define_metric("train/*", step_metric="epoch")
+    wandb.define_metric("validation/*", step_metric="epoch")
+    n_epochs = max(len(metrics_store.train_metrics), len(metrics_store.val_metrics))
+    for idx in range(n_epochs):
+        train_entry = metrics_store.train_metrics[idx] if idx < len(metrics_store.train_metrics) else {}
+        val_entry = metrics_store.val_metrics[idx] if idx < len(metrics_store.val_metrics) else {}
+        epoch = int(train_entry.get("epoch", val_entry.get("epoch", idx)))
+        log_data: dict[str, Any] = {"epoch": epoch}
+
+        for key, value in train_entry.items():
+            if key == "epoch":
+                continue
+            numeric = to_float_metric(value)
+            if numeric is not None:
+                log_data[f"train/{key}"] = numeric
+
+        for key, value in val_entry.items():
+            if key == "epoch":
+                continue
+            numeric = to_float_metric(value)
+            if numeric is not None:
+                log_data[f"validation/{key}"] = numeric
+
+        wandb.log(log_data)
