@@ -58,7 +58,9 @@ class TestHopfSetParameters(unittest.TestCase):
 
         y = torch.ones(2, 3, dtype=torch.complex64)
         drift = model.sde_func.f(torch.tensor(0.0), y)
-        expected_local = -torch.ones_like(y)
+        # local = y*(κa − κ|y|²) = 1*(0 − 0.1*1) = −0.1; coupling = 0 for uniform state
+        kappa = model.kappa.item()
+        expected_local = -kappa * torch.ones_like(y)
         self.assertTrue(torch.allclose(drift, expected_local, atol=1e-6))
 
 
