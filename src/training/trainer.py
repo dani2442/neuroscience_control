@@ -2,7 +2,6 @@
 
 import dataclasses
 import math
-import os
 import time
 from pathlib import Path
 from typing import Dict, Optional
@@ -475,11 +474,6 @@ class Trainer:
 
         metric_names = sorted(set(ALL_METRICS) | set(accumulator.sums.keys()))
         metrics = {name: accumulator.average(name) for name in metric_names}
-        # if self.metrics_sample_batches is None:
-            # metrics["metrics_sampled_batches"] = len(loader)
-        # else:
-        #     metrics["metrics_sampled_batches"] = sampled_batches
-
         return metrics
 
     def train_epoch(
@@ -489,7 +483,7 @@ class Trainer:
         dt: float = 0.72,
         verbose: bool = False
     ) -> Dict[str, float]:
-        """Train a single epoch (compatibility helper for fine-tuning)."""
+        """Train a single epoch."""
         return self._run_epoch(
             loader=train_loader,
             n_steps=n_steps,
@@ -664,19 +658,7 @@ class Trainer:
         Returns:
             Test metrics
         """
-        # Keep test independent from validate() to avoid API compatibility issues.
-        if hasattr(self, "validate") and callable(getattr(self, "validate")):
-            metrics = self.validate(test_loader, n_steps, dt)
-        else:
-            metrics = self._run_epoch(
-                loader=test_loader,
-                n_steps=n_steps,
-                dt=dt,
-                epoch=0,
-                n_epochs=1,
-                train=False,
-                verbose=False
-            )
+        metrics = self.validate(test_loader, n_steps, dt)
         self.metrics_store.log_test(metrics)
         
         # Log test metrics to wandb

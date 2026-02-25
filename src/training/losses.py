@@ -156,7 +156,6 @@ def _complex_amplitude_omega(
     return amplitude, omega
 
 
-
 def loss_amplitude(
     ts_pred: torch.Tensor,
     ts_target: torch.Tensor,
@@ -216,71 +215,6 @@ def loss_omega(
         _, omega_targ = _complex_amplitude_omega(ts_target, tr)
         target = omega_targ.mean(dim=(0, 2))                     # (N,)
     return ((mean_pred - target) ** 2).mean()
-
-
-
-# def loss_amplitude(
-#     ts_pred: torch.Tensor,
-#     ts_target: torch.Tensor,
-#     tr: float = 0.72,
-#     ref_amplitude: Optional[torch.Tensor] = None,
-#     **_kwargs,
-# ) -> torch.Tensor:
-#     r"""
-#     Time-integrated L1 error between predicted amplitude and a per-ROI
-#     reference, averaged over batch and ROI.
-
-#     When *ref_amplitude* ``(n_rois,)`` is provided (precomputed from the full
-#     dataset via :func:`compute_ref_amplitude`), it is broadcast to every time
-#     step.  Otherwise the per-timepoint amplitude of *ts_target* is used.
-
-#     .. math::
-#         \mathcal{L}_{\mathrm{amp}} =
-#             \frac{1}{B\,N}\sum_{b,n}
-#             \frac{1}{T}\sum_t
-#             \bigl\lvert |z^{\mathrm{pred}}_{b,n}(t)|
-#                   - A^{\mathrm{ref}}_n\bigr\rvert
-#     """
-#     amp_pred, _ = _complex_amplitude_omega(ts_pred, tr)  # (B, N, T)
-#     if ref_amplitude is not None:
-#         # (n_rois,) → (1, N, 1) for broadcasting over batch & time
-#         target = ref_amplitude.to(amp_pred.device).unsqueeze(0).unsqueeze(-1)
-#     else:
-#         amp_targ, _ = _complex_amplitude_omega(ts_target, tr)
-#         target = amp_targ                                    # (B, N, T)
-#     return (amp_pred - target).abs().mean()
-
-
-# def loss_omega(
-#     ts_pred: torch.Tensor,
-#     ts_target: torch.Tensor,
-#     tr: float = 0.72,
-#     ref_omega: Optional[torch.Tensor] = None,
-#     **_kwargs,
-# ) -> torch.Tensor:
-#     r"""
-#     Time-integrated L1 error between predicted instantaneous frequency and
-#     a per-ROI reference, averaged over batch and ROI.
-
-#     When *ref_omega* ``(n_rois,)`` is provided (precomputed from the full
-#     dataset via :func:`compute_ref_omega`), it is broadcast to every time
-#     step.  Otherwise the per-timepoint frequency of *ts_target* is used.
-
-#     .. math::
-#         \mathcal{L}_{\omega} =
-#             \frac{1}{B\,N}\sum_{b,n}
-#             \frac{1}{T}\sum_t
-#             \bigl\lvert \omega^{\mathrm{pred}}_{b,n}(t)
-#                   - \omega^{\mathrm{ref}}_n\bigr\rvert
-#     """
-#     _, omega_pred = _complex_amplitude_omega(ts_pred, tr)  # (B, N, T-1)
-#     if ref_omega is not None:
-#         # (n_rois,) → (1, N, 1) for broadcasting over batch & time
-#         target = ref_omega.to(omega_pred.device).unsqueeze(0).unsqueeze(-1)
-#     else:
-#         _, omega_targ = _complex_amplitude_omega(ts_target, tr)
-#         target = omega_targ                                  # (B, N, T-1)
-#     return (omega_pred - target).abs().mean()
 
 
 def loss_fcd(
@@ -430,7 +364,7 @@ class CompositeLoss:
 
 
 # ---------------------------------------------------------------------------
-# Preset factory (backward-compatible short-hand names)
+# Preset factory
 # ---------------------------------------------------------------------------
 
 _PRESETS: Dict[str, Dict[str, float]] = {

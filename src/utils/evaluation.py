@@ -200,9 +200,8 @@ def log_hopf_best_params(model: Any, *, use_wandb: bool = False) -> None:
     payload = {"best_params/a": best_a, "best_params/G": best_G}
     summary = {"best_a": best_a, "best_G": best_G}
     if hasattr(model, "kappa"):
-        import torch as _torch
         kappa_val = model.kappa
-        if isinstance(kappa_val, _torch.Tensor):
+        if isinstance(kappa_val, torch.Tensor):
             best_kappa = kappa_val.item() if kappa_val.dim() == 0 else kappa_val.mean().item()
         else:
             best_kappa = float(kappa_val)
