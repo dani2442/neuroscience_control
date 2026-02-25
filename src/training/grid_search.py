@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 from ..models.hopf_model import CoupledHopfModel
 from ..models.base_model import BaseNeuroscienceModel
-from ..metrics import fc_correlation, fc_mse, fcd_mse_loss, metastability_l1_loss
+from ..metrics import fc_correlation, fc_mse, fcd_mse_loss, metastability_l1_loss, phfcd_mse_loss
 from ..dataset import NeuroscienceDataset
 from ..dataset.preprocessing import compute_omega_from_timeseries
 
@@ -124,6 +124,11 @@ class GridSearch:
                 timeseries, target_ts,
             ).item()
             metrics["metastability_diff"] = meta_val
+
+            phfcd_val = phfcd_mse_loss(
+                timeseries, target_ts,
+            ).item()
+            metrics["phfcd_mse"] = phfcd_val
 
         return metrics
 

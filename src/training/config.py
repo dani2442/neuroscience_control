@@ -25,7 +25,7 @@ class TrainingConfig:
     data_path: str = "data/ts_young/ts_young_TR0.72.mat"
     max_subjects: Optional[int] = 50
     window_size: int = 50
-    n_windows_per_epoch: int = 512
+    n_windows_per_epoch: int = 1024
     batch_size: int = 128
     train_ratio: float = 0.7
     val_ratio: float = 0.15
@@ -39,28 +39,26 @@ class TrainingConfig:
     tr: float = 0.72
     f_lo: float = 0.04
     f_hi: float = 0.07
-    fcd_win_sec: float = 60.0
+    fcd_win_sec: float = 30.0
     fcd_step_sec: float = 2.0
     compute_fcd_metrics: bool = True
     compute_metastability_metrics: bool = True
     metrics_sample_batches: Optional[int] = 1  # Limit expensive metrics per epoch (None = all)
     
     # Model settings
-    hidden_dim: int = 16
-    n_layers: int = 1
     coupling_strength: float = 0.1
     
     # Training settings
     n_epochs: int = 20
     lr: float = 1e-3
     loss_fn: str = "combined"
-    loss_weight_fc: Optional[float] = 0.2
-    loss_weight_fc_mse: Optional[float] = 0.2
+    loss_weight_fc: Optional[float] = None
+    loss_weight_fc_mse: Optional[float] = None
     loss_weight_l2: Optional[float] = 0.0
     loss_weight_amplitude: Optional[float] = 1.0
     loss_weight_omega: Optional[float] = 1.0
     loss_weight_fcd: Optional[float] = None
-    loss_weight_phfcd: Optional[float] = None
+    loss_weight_phfcd: Optional[float] = 1.0
     loss_weight_metastability: Optional[float] = None
     early_stopping_patience: int = 15
     n_steps: int = 100
@@ -78,8 +76,8 @@ class TrainingConfig:
     
     # Grid search settings (for Hopf)
     g_values: List[float] = field(default_factory=lambda: [0.3, 0.5, 0.7, 1.0, 1.5])
-    a_values: List[float] = field(default_factory=lambda: [-0.02, -0.01, 0.0, 0.01, 0.05,])
-    kappa_values: List[float] = field(default_factory=lambda: [0.05, 0.1])
+    a_values: List[float] = field(default_factory=lambda: [-0.02, -0.01, 0.0, 0.01])
+    kappa_values: List[float] = field(default_factory=lambda: [0.1, 1.0])
     n_simulations: int = 5
     
     # Directories
@@ -117,17 +115,19 @@ class HopfConfig(TrainingConfig):
     experiment_name: str = "hopf"
     noise_sigma: float = 0.1
     initial_a: float = -0.02
-    initial_g: float = 1.5
-    initial_kappa: float = 0.1
+    initial_g: float = 1.0
+    initial_kappa: float = 1.0
     learnable_a: bool = True
     learnable_g: bool = True
     learnable_kappa: bool = False
     learnable_omega: bool = False
+    learnable_fc: bool = False  # Learnable functional connectivity matrix
 
     # Composite grid-search scoring weights
     weight_fc: float = 1.0
-    weight_fcd: float = 0.5
-    weight_meta: float = 0.5
+    weight_fcd: float = 0.0
+    weight_phfcd: float = 1.0
+    weight_meta: float = 1.0
 
 
 @dataclass
@@ -136,12 +136,13 @@ class HybridHopfConfig(TrainingConfig):
     experiment_name: str = "hybrid_hopf"
     noise_sigma: float = 0.1
     initial_a: float = -0.02
-    initial_g: float = 1.5
-    initial_kappa: float = 0.1
+    initial_g: float = 0.5
+    initial_kappa: float = 1.0
     learnable_a: bool = True
     learnable_g: bool = True
     learnable_kappa: bool = False
     learnable_omega: bool = False
+    learnable_fc: bool = False  # Learnable functional connectivity matrix
     
     # Coupling network architecture
     coupling_hidden_dim: int = 16

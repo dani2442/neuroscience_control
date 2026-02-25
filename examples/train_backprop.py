@@ -64,10 +64,11 @@ _MODEL_TITLES = {
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Train NSDE or Hopf with backpropagation")
-    parser.add_argument("--model", type=str, default="hopf", choices=list(_CONFIG_CLS), help="Model to train")
+    parser.add_argument("--model", type=str, default="nsde", choices=list(_CONFIG_CLS), help="Model to train")
     parser.add_argument("--no-wandb", action="store_true", help="Disable wandb logging")
     parser.add_argument("--device", type=str, default=None, help="Device (auto, cuda, cpu)")
     parser.add_argument("--skip-figures", action="store_true", help="Skip final figure generation")
+    parser.add_argument("--n-epochs", type=int, default=None, help="Override number of training epochs")
     args = parser.parse_args(argv)
 
     # ── Build config ────────────────────────────────────────────────────
@@ -77,6 +78,8 @@ def main(argv=None):
         cfg.use_wandb = False
     if args.device is not None:
         cfg.device = args.device
+    if args.n_epochs is not None:
+        cfg.n_epochs = args.n_epochs
 
     print_section(f"{args.model.upper()} BACKPROP TRAINING")
     ensure_proxy_env()
@@ -149,9 +152,8 @@ def main(argv=None):
             )
             generate_multigrid_figure(
                 model, val_timeseries, n_timepoints, cfg.tr,
-                n_simulations=cfg.n_simulations,
+                n_simulations=3, n_rois=3, n_cols=3,
                 sde_type=cfg.sde_type, method=cfg.sde_method, dt_min=cfg.dt_min,
-                n_rois=12, n_cols=4,
                 title=f"{title} (Backprop) - Real vs Simulated",
                 default_name=f"{args.model}_backprop_real_vs_sim_multigrid",
                 use_wandb=cfg.use_wandb,

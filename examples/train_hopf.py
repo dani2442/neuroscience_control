@@ -139,6 +139,8 @@ def main(argv=None):
         metric_weights["fcd_mse"] = cfg.weight_fcd
     if cfg.weight_meta:
         metric_weights["metastability_diff"] = cfg.weight_meta
+    if cfg.weight_phfcd:
+        metric_weights["phfcd_mse"] = cfg.weight_phfcd
 
     best_params, hopf_model = grid_search_hopf(
         target_fc=train_fc,

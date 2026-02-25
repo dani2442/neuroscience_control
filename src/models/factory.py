@@ -62,7 +62,8 @@ def build_model(
             learnable_a=cfg.learnable_a,
             learnable_g=cfg.learnable_g,
             learnable_kappa=cfg.learnable_kappa,
-            learnable_omega=getattr(cfg, "learnable_omega", False),
+            learnable_omega=cfg.learnable_omega,
+            learnable_fc=cfg.learnable_fc,
         )
         n_learn = sum(p.numel() for p in model.parameters() if p.requires_grad)
         print(f"\nCoupled Hopf model — learnable params: {n_learn}")
@@ -86,6 +87,7 @@ def build_model(
             learnable_g=cfg.learnable_g,
             learnable_kappa=cfg.learnable_kappa,
             learnable_omega=cfg.learnable_omega,
+            learnable_fc=cfg.learnable_fc,
         )
         n_learn = sum(p.numel() for p in model.parameters() if p.requires_grad)
         print(

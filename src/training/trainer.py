@@ -185,8 +185,17 @@ class Trainer:
         wandb.define_metric("test/*", step_metric="epoch")
         wandb.define_metric("params/*", step_metric="epoch")
         
-        # Watch model for gradient logging
-        wandb.watch(self.model, log="all", log_freq=100)
+        # Watch model for gradient / parameter histogram logging.
+        # wandb.watch does not support complex-valued parameters — it casts
+        # tensors to FloatTensor, silently discarding imaginary parts and
+        # emitting a noisy UserWarning.  Skip watching when the model
+        # contains complex parameters; scalar metrics are still logged
+        # normally via _log_wandb.
+        has_complex = any(p.is_complex() for p in self.model.parameters())
+        if has_complex:
+            print("  (skipping wandb.watch – model has complex parameters)")
+        else:
+            wandb.watch(self.model, log="all", log_freq=100)
         
         print(f"Wandb initialized: {cfg.wandb_project}/{run_name}")
     
