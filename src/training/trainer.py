@@ -24,7 +24,7 @@ from .losses import CompositeLoss, build_loss
 
 FC_METRICS = ("loss", "fc_correlation", "fc_mse")
 TS_METRICS = ("power_spectrum_distance", "temporal_correlation", "autocorr_distance")
-DYN_METRICS = ("fcd_ks", "metastability_diff")
+DYN_METRICS = ("fcd_ks", "phfcd_ks", "metastability_diff")
 LOSS_COMPONENT_METRICS = (
     "loss_fc_mse", "loss_fc_correlation",
     "loss_l2",
@@ -286,6 +286,7 @@ class Trainer:
             "loss_weight_amplitude": "amplitude",
             "loss_weight_omega": "omega",
             "loss_weight_fcd": "fcd",
+            "loss_weight_phfcd": "phfcd",
             "loss_weight_metastability": "metastability",
         }
         for attr, term in _MAP.items():

@@ -30,7 +30,7 @@ Both models operate entirely in **complex-valued** space: state, drift, diffusio
 
 - 🧠 **Biologically-grounded modeling** with structural connectivity integration
 - 🔢 **Native complex-valued SDEs** — state, drift, diffusion, and Brownian motion are complex tensors (`torch.complex64` / `complex128`)
-- 📈 **Multiple evaluation metrics**: Functional Connectivity (FC), FC Dynamics (FCD), and Metastability
+- 📈 **Multiple evaluation metrics**: Functional Connectivity (FC), FC Dynamics (FCD), Phase FCD (phFCD), and Metastability
 - 🔬 **Stochastic simulation** via [`torchsde`](https://github.com/dani2442/torchsde) with complex Brownian motion support
 - 📊 **Weights & Biases** integration for experiment tracking
 - ⚡ **GPU-accelerated** training and simulation
@@ -222,7 +222,31 @@ Captures how FC evolves over time using sliding windows on the **real part** of 
 
 `fcd_ks` can be `NaN` when FCD windowing is not feasible for the current `--tr`, `--fcd-win-sec`, `--fcd-step-sec`, and time-series length (for example, short trajectories).
 
-### 3. Metastability
+### 3. Phase Functional Connectivity Dynamics (phFCD)
+
+The paper's **main model-fitting metric**. Instead of sliding-window Pearson FC, phFCD uses instantaneous phase coherence to capture time-varying functional connectivity:
+
+1. Extract instantaneous phase from the complex analytic signal: $\phi_n(t) = \arg(z_n(t))$
+2. Compute phase coherence: $P_{nm}(t) = \cos(\phi_n(t) - \phi_m(t))$
+3. Vectorise upper-triangular entries of $P(t)$ at each time point
+4. Build phFCD similarity matrix via cosine similarity between time points:
+
+$$
+\mathrm{phFCD}_{ij} = \frac{\mathbf{p}(t_i)^\top \mathbf{p}(t_j)}{\|\mathbf{p}(t_i)\|_2 \, \|\mathbf{p}(t_j)\|_2}
+$$
+
+5. Extract upper-triangular phFCD values as the tv-FC summary distribution
+6. Compare empirical vs simulated distributions with Kolmogorov-Smirnov distance
+
+**Training term**:
+- `loss_phfcd`: differentiable surrogate using MSE between phFCD matrices (`phfcd_mse_loss`).
+
+**Evaluation metric**:
+- `phfcd_ks`: Kolmogorov-Smirnov distance between empirical and simulated phFCD distributions. This is the paper's decisive goodness-of-fit metric; **lower = better**.
+
+Unlike `fcd_ks`, `phfcd_ks` has **no windowing dependency** — it works at full temporal resolution.
+
+### 4. Metastability
 
 Temporal variability of global synchronization using the Kuramoto order parameter.
 Phases are extracted directly from the complex analytic signal via $\phi_i(t) = \arg(z_i(t))$ — no Hilbert transform or bandpass is needed at metric time:
@@ -252,15 +276,20 @@ For backpropagation, `--loss-fn fc_fcd_meta` uses:
 - `loss_fcd` (MSE surrogate, not KS)
 - `loss_metastability`
 
+Alternatively, `--loss-fn fc_phfcd_meta` uses the **phase-based** phFCD instead of windowed FCD:
+- `loss_fc_correlation` (FC term)
+- `loss_phfcd` (MSE between phFCD matrices)
+- `loss_metastability`
+
 For Hopf grid search (`examples/train_hopf.py`), model selection uses the composite score `w_FC·fc_correlation − w_FCD·fcd_mse − w_Meta·metastability_diff` (weights configurable via `--weight-fc-correlation`, `--weight-fcd-mse`, `--weight-metastability-diff`; defaults 1.0, 0.5, 0.5). FCD/Metastability are also reported as evaluation metrics.
 
 ### Metric Usage by Script
 
 | Script | Training / selection objective | Reported metrics |
 |--------|--------------------------------|------------------|
-| [`examples/train_hopf.py`](examples/train_hopf.py) | Grid search by composite `w_FC·fc_correlation - w_FCD·fcd_mse - w_Meta·metastability_diff` | `fc_correlation`, `fc_mse`, `fcd_ks`, `metastability_diff` |
-| [`examples/train_backprop.py`](examples/train_backprop.py) | `--loss-fn` composite (`loss_*` terms) | Epoch/test: FC + timeseries + dynamics metrics; final: `fc_correlation`, `fc_mse`, `fcd_ks`, `metastability_diff` |
-| [`examples/train_nsde_finetune.py`](examples/train_nsde_finetune.py) | Fine-tuning via `Trainer` composite loss | Test/summary include FC + timeseries + dynamics metrics; final: `fc_correlation`, `fc_mse`, `fcd_ks`, `metastability_diff` |
+| [`examples/train_hopf.py`](examples/train_hopf.py) | Grid search by composite `w_FC·fc_correlation - w_FCD·fcd_mse - w_Meta·metastability_diff` | `fc_correlation`, `fc_mse`, `fcd_ks`, `phfcd_ks`, `metastability_diff` |
+| [`examples/train_backprop.py`](examples/train_backprop.py) | `--loss-fn` composite (`loss_*` terms) | Epoch/test: FC + timeseries + dynamics metrics; final: `fc_correlation`, `fc_mse`, `fcd_ks`, `phfcd_ks`, `metastability_diff` |
+| [`examples/train_nsde_finetune.py`](examples/train_nsde_finetune.py) | Fine-tuning via `Trainer` composite loss | Test/summary include FC + timeseries + dynamics metrics; final: `fc_correlation`, `fc_mse`, `fcd_ks`, `phfcd_ks`, `metastability_diff` |
 | [`examples/test.py`](examples/test.py) | No training (checkpoint evaluation) | Loader-based metrics + per-run real-vs-sim: FC + timeseries + dynamics metrics |
 
 ### Complete Metrics Reference
@@ -279,6 +308,7 @@ These are used for reporting model quality. They are **not** directly optimized 
 | `temporal_correlation` | `src.metrics.timeseries_metrics` | Time series `(B, N, T)` | Mean per-ROI Pearson correlation over time between predicted and target, averaged over batch | $[-1, 1]$ | Higher = better |
 | `autocorr_distance` | `src.metrics.timeseries_metrics` | Time series `(B, N, T)` | MSE between autocorrelation functions (up to `max_lag` lags), averaged over batch, ROIs, and lags | $[0, \infty)$ | Lower = better |
 | `fcd_ks` | `src.metrics.dynamics_metrics` | Time series `(B, N, T)` | Two-sample Kolmogorov-Smirnov distance between FCD value distributions of predicted and target | $[0, 1]$ | Lower = better |
+| `phfcd_ks` | `src.metrics.dynamics_metrics` | Time series `(B, N, T)` complex | KS distance between phase-based FCD (phFCD) distributions of predicted and target — the paper's main fitting metric | $[0, 1]$ | Lower = better |
 | `metastability_diff` | `src.metrics.dynamics_metrics` | Time series `(B, N, T)` | $\lvert\text{Meta}(\text{pred}) - \text{Meta}(\text{target})\rvert$ where Meta = $\text{std}_t(R(t))$ (Kuramoto order parameter) | $[0, \infty)$ | Lower = better |
 
 #### Training Loss Terms
@@ -293,6 +323,7 @@ These are differentiable loss functions used during gradient-based optimization.
 | `loss_amplitude` | `amplitude` | `src.training.losses` | Time series `(B, N, T)` | $\frac{1}{N}\sum_n(\overline{\lvert z_n^{\text{pred}}\rvert} - A_n^{\text{ref}})^2$ | L² error of mean envelope amplitude per ROI; can use dataset-level `ref_amplitude` |
 | `loss_omega` | `omega` | `src.training.losses` | Time series `(B, N, T)` | $\frac{1}{N}\sum_n(\bar{\omega}_n^{\text{pred}} - \omega_n^{\text{ref}})^2$ | L² error of mean instantaneous frequency per ROI; can use dataset-level `ref_omega` |
 | `loss_fcd` | `fcd` | `src.training.losses` | Time series `(B, N, T)` | MSE between FCD matrices (differentiable surrogate) | Proxy for the non-differentiable KS distance (`fcd_ks`) |
+| `loss_phfcd` | `phfcd` | `src.training.losses` | Time series `(B, N, T)` complex | MSE between phFCD matrices (differentiable surrogate) | Proxy for the non-differentiable KS distance (`phfcd_ks`); no windowing needed |
 | `loss_metastability` | `metastability` | `src.training.losses` | Time series `(B, N, T)` | $\lvert\text{Meta}(\text{pred}) - \text{Meta}(\text{target})\rvert$ | L1 difference of Kuramoto metastability |
 
 #### Loss Presets
@@ -303,7 +334,8 @@ These are differentiable loss functions used during gradient-based optimization.
 | `correlation` | `fc_correlation: 1.0` |
 | `combined` | `fc_mse: 1.0`, `fc_correlation: 0.5` |
 | `fc_fcd_meta` | `fc_correlation: 1.0`, `fcd: 1.0`, `metastability: 1.0` |
-| `full` | `fc_correlation: 1.0`, `l2: 1.0`, `amplitude: 1.0`, `omega: 1.0`, `fcd: 1.0`, `metastability: 1.0` |
+| `fc_phfcd_meta` | `fc_correlation: 1.0`, `phfcd: 1.0`, `metastability: 1.0` |
+| `full` | `fc_correlation: 1.0`, `l2: 1.0`, `amplitude: 1.0`, `omega: 1.0`, `fcd: 1.0`, `phfcd: 1.0`, `metastability: 1.0` |
 
 ---
 
@@ -374,6 +406,7 @@ python examples/train_nsde_finetune.py \
 | `--loss-fn` | Loss preset (`mse`, `correlation`, `combined`, `fc_fcd_meta`, `full`, `custom`) or individual term | `combined` |
 | `--loss-weight-fc-correlation` | `loss_fc_correlation` weight override (backprop) | preset default |
 | `--loss-weight-fcd` | `loss_fcd` weight override (backprop) | preset default |
+| `--loss-weight-phfcd` | `loss_phfcd` weight override (backprop) | preset default |
 | `--loss-weight-metastability` | `loss_metastability` weight override (backprop) | preset default |
 
 ---
@@ -422,8 +455,8 @@ neuroscience_control/
 │   │   └── base_model.py  # Base class for models
 │   ├── metrics/           # Evaluation metrics
 │   │   ├── _utils.py      # Shared helpers (to_real, ensure_batch, zscore, …)
-│   │   ├── fc_metrics.py  # FC correlation, MSE
-│   │   ├── dynamics_metrics.py # FCD, metastability
+│   │   ├── fc_metrics.py  # FC correlation, MSE, compute_static_fc
+│   │   ├── dynamics_metrics.py # FCD, phFCD, phase coherence, metastability
 │   │   └── timeseries_metrics.py # Power spectrum, autocorrelation
 │   ├── training/          # Training utilities
 │   │   ├── trainer.py     # Backpropagation trainer

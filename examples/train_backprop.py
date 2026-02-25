@@ -325,6 +325,7 @@ def build_config(args: argparse.Namespace):
         loss_weight_amplitude=args.loss_weight_amplitude,
         loss_weight_omega=args.loss_weight_omega,
         loss_weight_fcd=args.loss_weight_fcd,
+        loss_weight_phfcd=args.loss_weight_phfcd,
         loss_weight_metastability=args.loss_weight_metastability,
         batch_size=args.batch_size,
         window_size=args.window_size,
@@ -417,6 +418,7 @@ def main(argv=None):
     parser.add_argument("--loss-weight-amplitude", type=float, default=1., help="Weight for amplitude loss (|z| envelope; overrides preset)")
     parser.add_argument("--loss-weight-omega", type=float, default=1., help="Weight for instantaneous-frequency loss (overrides preset)")
     parser.add_argument("--loss-weight-fcd", type=float, default=None, help="Weight for `loss_fcd` (overrides preset)")
+    parser.add_argument("--loss-weight-phfcd", type=float, default=None, help="Weight for `loss_phfcd` (phase-based FCD; overrides preset)")
     parser.add_argument(
         "--loss-weight-metastability",
         type=float,

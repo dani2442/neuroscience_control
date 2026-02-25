@@ -28,10 +28,14 @@ class TestDynamicsMetrics(unittest.TestCase):
         )
 
         self.assertIn("fcd_ks", metrics)
+        self.assertIn("phfcd_ks", metrics)
         self.assertIn("metastability_diff", metrics)
         self.assertFalse(math.isnan(metrics["fcd_ks"]))
         self.assertGreaterEqual(metrics["fcd_ks"], 0.0)
         self.assertLessEqual(metrics["fcd_ks"], 1.0)
+        self.assertFalse(math.isnan(metrics["phfcd_ks"]))
+        self.assertGreaterEqual(metrics["phfcd_ks"], 0.0)
+        self.assertLessEqual(metrics["phfcd_ks"], 1.0)
         self.assertFalse(math.isnan(metrics["metastability_diff"]))
 
     def test_fcd_ks_is_nan_when_windowing_not_feasible(self) -> None:
@@ -49,6 +53,8 @@ class TestDynamicsMetrics(unittest.TestCase):
         )
 
         self.assertTrue(math.isnan(metrics["fcd_ks"]))
+        # phfcd_ks should still be valid (no window dependency)
+        self.assertFalse(math.isnan(metrics["phfcd_ks"]))
         self.assertFalse(math.isnan(metrics["metastability_diff"]))
 
 

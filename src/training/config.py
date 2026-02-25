@@ -60,6 +60,7 @@ class TrainingConfig:
     loss_weight_amplitude: Optional[float] = None
     loss_weight_omega: Optional[float] = None
     loss_weight_fcd: Optional[float] = None
+    loss_weight_phfcd: Optional[float] = None
     loss_weight_metastability: Optional[float] = None
     early_stopping_patience: int = 15
     n_steps: int = 100

@@ -98,6 +98,86 @@ def fcd_distribution(
 
 
 # ---------------------------------------------------------------------------
+# Phase coherence & phase-based FCD (phFCD)
+# ---------------------------------------------------------------------------
+
+def phase_coherence_matrix(phases: torch.Tensor) -> torch.Tensor:
+    r"""Phase coherence matrices across all time points.
+
+    For each pair of regions :math:`(n, m)` at time :math:`t`:
+
+    .. math::
+
+        P_{nm}(t) = \cos\!\bigl(\phi_n(t) - \phi_m(t)\bigr)
+
+    Args:
+        phases: ``(T, N)`` phase angles in radians.
+
+    Returns:
+        ``(T, N, N)`` phase coherence matrices.
+    """
+    # (T, N, 1) - (T, 1, N) -> (T, N, N)
+    diff = phases.unsqueeze(2) - phases.unsqueeze(1)
+    return torch.cos(diff)
+
+
+def phfcd_matrix(phases: torch.Tensor) -> Optional[torch.Tensor]:
+    r"""Phase FCD (phFCD) similarity matrix.
+
+    Implements the time-varying FC assessment described in Deco et al. (2019):
+
+    1. Compute phase coherence :math:`P_{nm}(t)` for every time point.
+    2. Vectorise the upper-triangular entries :
+       :math:`\mathbf{p}(t) = \operatorname{vec}_{\triangle}(P(t)) \in \mathbb{R}^M`.
+    3. Build a cosine-similarity matrix across time:
+
+       .. math::
+
+           \mathrm{phFCD}_{ij}
+           = \frac{\mathbf{p}(t_i)^\top \mathbf{p}(t_j)}
+                  {\|\mathbf{p}(t_i)\|_2\,\|\mathbf{p}(t_j)\|_2}
+
+    Args:
+        phases: ``(T, N)`` phase angles in radians.
+
+    Returns:
+        ``(T, T)`` phFCD matrix, or ``None`` if fewer than 2 ROIs.
+    """
+    T, N = phases.shape
+    if N < 2:
+        return None
+
+    # Phase coherence at each time: (T, N, N)
+    P = phase_coherence_matrix(phases)
+
+    # Upper-triangle of each P(t): (T, M)  where M = N*(N-1)/2
+    idx = torch.triu_indices(N, N, offset=1, device=phases.device)
+    vecs = P[:, idx[0], idx[1]]  # (T, M)
+
+    # Cosine similarity
+    norms = torch.linalg.norm(vecs, dim=1, keepdim=True).clamp(min=1e-12)
+    vecs_normed = vecs / norms
+    return vecs_normed @ vecs_normed.T
+
+
+def phfcd_distribution(phases: torch.Tensor) -> torch.Tensor:
+    """Upper-triangular distribution of the phFCD matrix.
+
+    This is the tv-FC summary distribution used by the paper.
+
+    Args:
+        phases: ``(T, N)`` phase angles in radians.
+
+    Returns:
+        1-D tensor of phFCD similarity values.
+    """
+    fcd = phfcd_matrix(phases)
+    if fcd is None:
+        return torch.empty(0, device=phases.device, dtype=phases.dtype)
+    return upper_tri_vec(fcd, k=1)
+
+
+# ---------------------------------------------------------------------------
 # KS distance
 # ---------------------------------------------------------------------------
 
@@ -215,6 +295,46 @@ def fcd_mse_loss(
     return torch.stack(losses).mean()
 
 
+def phfcd_mse_loss(
+    ts_pred: torch.Tensor,
+    ts_target: torch.Tensor,
+) -> torch.Tensor:
+    """Differentiable phFCD surrogate: MSE between phFCD matrices.
+
+    Uses the **complex** analytic signal to extract instantaneous phases
+    via ``torch.angle(z)``, then computes the phFCD matrix for each batch
+    element and returns the mean MSE.
+
+    Returns ``0`` when the input is real-valued or has fewer than 2 ROIs.
+    """
+    pred = ensure_batch(ts_pred)
+    target = ensure_batch(ts_target)
+    B = min(pred.shape[0], target.shape[0])
+    T = min(pred.shape[2], target.shape[2])
+    pred = pred[:B, :, :T]
+    target = target[:B, :, :T]
+
+    if not torch.is_complex(pred) or not torch.is_complex(target):
+        return torch.zeros((), device=pred.device, dtype=pred.real.dtype)
+
+    losses: list[torch.Tensor] = []
+    for b in range(B):
+        pred_phases = torch.angle(pred[b]).T   # (T, N)
+        targ_phases = torch.angle(target[b]).T  # (T, N)
+        pred_phfcd = phfcd_matrix(pred_phases)
+        targ_phfcd = phfcd_matrix(targ_phases)
+        if pred_phfcd is None or targ_phfcd is None:
+            continue
+        n = min(pred_phfcd.shape[0], targ_phfcd.shape[0])
+        if n <= 1:
+            continue
+        losses.append(((pred_phfcd[:n, :n] - targ_phfcd[:n, :n]) ** 2).mean())
+
+    if not losses:
+        return torch.zeros((), device=pred.device, dtype=pred.real.dtype)
+    return torch.stack(losses).mean()
+
+
 # ---------------------------------------------------------------------------
 # Evaluation metrics
 # ---------------------------------------------------------------------------
@@ -263,7 +383,7 @@ def compute_dynamics_fit_metrics(
     win_len = int(round(fcd_win_sec / tr))
     win_step = int(round(fcd_step_sec / tr))
 
-    # ---- FCD KS ----
+    # ---- FCD KS (windowed-correlation based) ----
     fcd_ks = float("nan")
     if compute_fcd and win_len >= 10 and (T - win_len) > 10 and win_step > 0:
         pred_dists: List[torch.Tensor] = []
@@ -284,6 +404,29 @@ def compute_dynamics_fit_metrics(
                 ).item()
             )
 
+    # ---- phFCD KS (phase-based FCD, the paper's main fitting metric) ----
+    phfcd_ks_val = float("nan")
+    if compute_fcd and torch.is_complex(ts_pred) and torch.is_complex(ts_target):
+        pred_ph_dists: List[torch.Tensor] = []
+        targ_ph_dists: List[torch.Tensor] = []
+        for b in range(B):
+            pred_phases = torch.angle(ts_pred[b]).T   # (T, N)
+            targ_phases = torch.angle(ts_target[b]).T  # (T, N)
+            pd_ph = phfcd_distribution(pred_phases)
+            td_ph = phfcd_distribution(targ_phases)
+            if pd_ph.numel() == 0 or td_ph.numel() == 0:
+                pred_ph_dists.clear()
+                targ_ph_dists.clear()
+                break
+            pred_ph_dists.append(pd_ph)
+            targ_ph_dists.append(td_ph)
+        if pred_ph_dists and targ_ph_dists:
+            phfcd_ks_val = float(
+                ks_distance_2samp(
+                    torch.cat(pred_ph_dists), torch.cat(targ_ph_dists),
+                ).item()
+            )
+
     # ---- Metastability ----
     meta_diff = float("nan")
     if compute_metastability:
@@ -291,7 +434,11 @@ def compute_dynamics_fit_metrics(
         meta_targ = metastability_value(ts_target)
         meta_diff = float(torch.abs(meta_pred - meta_targ).item())
 
-    return {"fcd_ks": fcd_ks, "metastability_diff": meta_diff}
+    return {
+        "fcd_ks": fcd_ks,
+        "phfcd_ks": phfcd_ks_val,
+        "metastability_diff": meta_diff,
+    }
 
 
 # ---------------------------------------------------------------------------

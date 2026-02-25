@@ -175,7 +175,7 @@ def evaluate_hopf_loader_metrics(
             sums[key] = sums.get(key, 0.0) + numeric
             counts[key] = counts.get(key, 0) + 1
 
-    metric_keys = ("fc_correlation", "fc_mse", "fcd_ks", "metastability_diff")
+    metric_keys = ("fc_correlation", "fc_mse", "fcd_ks", "phfcd_ks", "metastability_diff")
     metrics = {
         key: (sums[key] / counts[key]) if counts.get(key, 0) > 0 else float("nan")
         for key in metric_keys

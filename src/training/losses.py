@@ -24,6 +24,7 @@ from ..metrics._utils import ensure_batch
 from ..metrics.dynamics_metrics import (
     fcd_mse_loss as _fcd_mse_loss,
     metastability_l1_loss as _metastability_l1_loss,
+    phfcd_mse_loss as _phfcd_mse_loss,
 )
 from ..metrics.fc_metrics import fc_correlation, fc_mse
 
@@ -304,6 +305,21 @@ def loss_fcd(
     )
 
 
+def loss_phfcd(
+    ts_pred: torch.Tensor,
+    ts_target: torch.Tensor,
+    **_kwargs,
+) -> torch.Tensor:
+    """Differentiable phFCD loss: MSE between phFCD matrices.
+
+    .. note::
+        This is a differentiable *surrogate* for the Kolmogorov-Smirnov
+        distance reported by the evaluation metric ``phfcd_ks``.  MSE between
+        phFCD matrices is used because the KS statistic is non-differentiable.
+    """
+    return _phfcd_mse_loss(ts_pred, ts_target)
+
+
 def loss_metastability(
     ts_pred: torch.Tensor,
     ts_target: torch.Tensor,
@@ -332,6 +348,7 @@ LOSS_REGISTRY: Dict[str, LossFn] = {
     "amplitude":    lambda ts_pred, ts_target, **kw: loss_amplitude(ts_pred, ts_target, **kw),
     "omega":        lambda ts_pred, ts_target, **kw: loss_omega(ts_pred, ts_target, **kw),
     "fcd":          lambda ts_pred, ts_target, **kw: loss_fcd(ts_pred, ts_target, **kw),
+    "phfcd":        lambda ts_pred, ts_target, **kw: loss_phfcd(ts_pred, ts_target, **kw),
     "metastability": lambda ts_pred, ts_target, **kw: loss_metastability(ts_pred, ts_target, **kw),
 }
 
@@ -354,7 +371,7 @@ class CompositeLoss:
     """
 
     # Which terms need timeseries (ts) vs functional connectivity (fc) inputs
-    _TS_TERMS = {"l2", "amplitude", "omega", "fcd", "metastability"}
+    _TS_TERMS = {"l2", "amplitude", "omega", "fcd", "phfcd", "metastability"}
     _FC_TERMS = {"fc_mse", "fc_correlation"}
 
     def __init__(
@@ -421,12 +438,14 @@ _PRESETS: Dict[str, Dict[str, float]] = {
     "correlation": {"fc_correlation": 1.0},
     "combined":    {"fc_mse": 1.0, "fc_correlation": 0.5},
     "fc_fcd_meta": {"fc_correlation": 1.0, "fcd": 1.0, "metastability": 1.0},
+    "fc_phfcd_meta": {"fc_correlation": 1.0, "phfcd": 1.0, "metastability": 1.0},
     "full":        {
         "fc_correlation": 1.0,
         "l2": 1.0,
         "amplitude": 1.0,
         "omega": 1.0,
         "fcd": 1.0,
+        "phfcd": 1.0,
         "metastability": 1.0,
     },
 }

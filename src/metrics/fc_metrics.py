@@ -8,7 +8,33 @@ from typing import Dict
 
 import torch
 
-from ._utils import to_real, upper_tri_vec
+from ._utils import ensure_batch, to_real, upper_tri_vec
+
+
+def compute_static_fc(ts: torch.Tensor) -> torch.Tensor:
+    r"""Compute static FC (Pearson correlation) from timeseries.
+
+    .. math::
+
+        FC_{nm} = \mathrm{corr}(s_n, s_m)
+        = \frac{\sum_t (s_n(t)-\bar s_n)(s_m(t)-\bar s_m)}
+               {\sqrt{\sum_t (s_n(t)-\bar s_n)^2}\,
+                \sqrt{\sum_t (s_m(t)-\bar s_m)^2}}
+
+    Uses the real part of the signal if the input is complex.
+
+    Args:
+        ts: ``(batch, n_rois, T)`` or ``(n_rois, T)`` complex or real tensor.
+
+    Returns:
+        ``(batch, n_rois, n_rois)`` FC matrices.
+    """
+    ts = to_real(ensure_batch(ts))
+    # z-score each ROI over time
+    ts_c = ts - ts.mean(dim=2, keepdim=True)
+    ts_n = ts_c / (ts_c.std(dim=2, keepdim=True) + 1e-8)
+    T = ts.shape[2]
+    return torch.bmm(ts_n, ts_n.transpose(1, 2)) / max(T - 1, 1)
 
 
 def _extract_upper_tri(
@@ -90,3 +116,25 @@ def compute_all_fc_metrics(
         "fc_correlation": fc_correlation(fc_pred, fc_target).item(),
         "fc_mse": fc_mse(fc_pred, fc_target).item(),
     }
+
+
+def compute_fc_from_timeseries_and_compare(
+    ts_pred: torch.Tensor,
+    ts_target: torch.Tensor,
+) -> Dict[str, float]:
+    """Compute static FC from timeseries and return all FC metrics.
+
+    A convenience wrapper that combines :func:`compute_static_fc` with
+    :func:`compute_all_fc_metrics`.  Mean FC is computed across the batch
+    before comparison.
+
+    Args:
+        ts_pred: ``(batch, n_rois, T)`` complex or real.
+        ts_target: ``(batch, n_rois, T)`` complex or real.
+
+    Returns:
+        ``{"fc_correlation": float, "fc_mse": float}``
+    """
+    fc_pred = compute_static_fc(ts_pred).mean(dim=0, keepdim=True)
+    fc_target = compute_static_fc(ts_target).mean(dim=0, keepdim=True)
+    return compute_all_fc_metrics(fc_pred, fc_target)
