@@ -62,7 +62,7 @@ class TrainingConfig:
     loss_weight_metastability: Optional[float] = None
     early_stopping_patience: int = 15
     n_steps: int = 100
-    dt_min: Optional[float] = 0.1  # Fixed solver sub-step (passed as torchsde `dt`)
+    dt_min: Optional[float] = 0.05  # Fixed solver sub-step (passed as torchsde `dt`)
     sde_type: str = "ito"  # SDE interpretation required by reversible_heun
     sde_method: str = "euler"  # Stable Stratonovich solver
     use_adjoint: bool = False  # Use torchsde.sdeint_adjoint for backprop memory efficiency
@@ -115,7 +115,7 @@ class HopfConfig(TrainingConfig):
     experiment_name: str = "hopf"
     noise_sigma: float = 0.1
     initial_a: float = -0.02
-    initial_g: float = 1.0
+    initial_g: float = 0.5
     initial_kappa: float = 1.0
     learnable_a: bool = True
     learnable_g: bool = True

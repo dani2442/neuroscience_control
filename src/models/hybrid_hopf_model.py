@@ -70,6 +70,12 @@ class CouplingNetwork(nn.Module):
         layers.append(ComplexLinear(d, out_dim))
         self.net = nn.Sequential(*layers)
 
+        # Near-zero init for the output layer so the model starts in the
+        # pure-Hopf regime and gradually learns the neural coupling.
+        with torch.no_grad():
+            self.net[-1].weight.mul_(0.01)
+            self.net[-1].bias.zero_()
+
     def forward(
         self,
         z_diff: torch.Tensor,
@@ -125,6 +131,11 @@ class HybridHopfSDEFunc(nn.Module):
 
     def f(self, t: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         """Drift: z_i·(κa + iω_i − κ|z_i|²) + G·Σ_j ψ_θ(z_j − z_i, C_ij)."""
+        # Soft-clamp state magnitude to prevent runaway growth
+        mag = y.abs().clamp(min=1e-8)
+        scale = torch.where(mag > 10.0, 10.0 / mag, torch.ones_like(mag))
+        y = y * scale
+
         # --- local Hopf term ---
         z_sq = torch.abs(y) ** 2  # (batch, n_rois), real
         omega = self.omega.unsqueeze(0)  # (1, n_rois)
