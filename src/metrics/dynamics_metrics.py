@@ -509,8 +509,6 @@ def compute_dynamics_fit_metrics(
     tr: float = 0.72,
     fcd_win_sec: float = 60.0,
     fcd_step_sec: float = 2.0,
-    compute_fcd: bool = True,
-    compute_metastability: bool = True,
 ) -> Dict[str, float]:
     """Compute FCD-KS and metastability-diff evaluation metrics.
 
@@ -524,11 +522,8 @@ def compute_dynamics_fit_metrics(
         tr: Repetition time (seconds), used only for FCD window sizing.
         fcd_win_sec: FCD window length in seconds.
         fcd_step_sec: FCD window step in seconds.
-        compute_fcd: Whether to compute ``fcd_ks``.
-        compute_metastability: Whether to compute ``metastability_diff``.
-
     Returns:
-        ``{"fcd_ks": float, "metastability_diff": float}``
+        ``{"fcd_ks": float, "phfcd_ks": float, "phase_fc_corr": float, "metastability_diff": float}``
 
     Notes:
         ``fcd_ks`` is reported as ``NaN`` when FCD windowing is not feasible.
@@ -549,7 +544,7 @@ def compute_dynamics_fit_metrics(
 
     # ---- FCD KS (windowed-correlation based) ----
     fcd_ks = float("nan")
-    if compute_fcd and win_len >= 10 and (T - win_len) > 10 and win_step > 0:
+    if win_len >= 10 and (T - win_len) > 10 and win_step > 0:
         pred_dists: List[torch.Tensor] = []
         targ_dists: List[torch.Tensor] = []
         for b in range(B):
@@ -570,7 +565,7 @@ def compute_dynamics_fit_metrics(
 
     # ---- phFCD KS (phase-based FCD, the paper's main fitting metric) ----
     phfcd_ks_val = float("nan")
-    if compute_fcd and torch.is_complex(ts_pred) and torch.is_complex(ts_target):
+    if torch.is_complex(ts_pred) and torch.is_complex(ts_target):
         pred_ph_dists: List[torch.Tensor] = []
         targ_ph_dists: List[torch.Tensor] = []
         for b in range(B):
@@ -597,11 +592,9 @@ def compute_dynamics_fit_metrics(
         phase_fc_corr = phase_coherence_fc_correlation(ts_pred, ts_target)
 
     # ---- Metastability ----
-    meta_diff = float("nan")
-    if compute_metastability:
-        meta_pred = metastability_value(ts_pred)
-        meta_targ = metastability_value(ts_target)
-        meta_diff = float(torch.abs(meta_pred - meta_targ).item())
+    meta_pred = metastability_value(ts_pred)
+    meta_targ = metastability_value(ts_target)
+    meta_diff = float(torch.abs(meta_pred - meta_targ).item())
 
     return {
         "fcd_ks": fcd_ks,

@@ -41,9 +41,6 @@ class TrainingConfig:
     f_hi: float = 0.07
     fcd_win_sec: float = 30.0
     fcd_step_sec: float = 2.0
-    compute_fcd_metrics: bool = True
-    compute_metastability_metrics: bool = True
-    metrics_sample_batches: Optional[int] = 1  # Limit expensive metrics per epoch (None = all)
     
     # Model settings
     coupling_strength: float = 0.1

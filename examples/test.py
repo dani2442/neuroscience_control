@@ -110,9 +110,6 @@ def main(args: argparse.Namespace) -> None:
         f_hi=args.f_hi,
         fcd_win_sec=args.fcd_win_sec,
         fcd_step_sec=args.fcd_step_sec,
-        compute_fcd_metrics=not args.no_fcd,
-        compute_metastability_metrics=not args.no_metastability,
-        metrics_sample_batches=None,
     )
     trainer = Trainer(
         model=model,
@@ -162,8 +159,6 @@ def main(args: argparse.Namespace) -> None:
                     tr=args.tr,
                     fcd_win_sec=args.fcd_win_sec,
                     fcd_step_sec=args.fcd_step_sec,
-                    compute_fcd=not args.no_fcd,
-                    compute_metastability=not args.no_metastability,
                 ),
             }
         )
@@ -234,16 +229,6 @@ if __name__ == "__main__":
     parser.add_argument("--f-hi", type=float, default=0.07, help="Bandpass high cutoff (Hz)")
     parser.add_argument("--fcd-win-sec", type=float, default=60.0, help="Sliding-window length for FCD metrics/losses (seconds)")
     parser.add_argument("--fcd-step-sec", type=float, default=2.0, help="Sliding-window step for FCD metrics/losses (seconds)")
-    parser.add_argument("--no-fcd-ks", dest="no_fcd", action="store_true", help="Disable `fcd_ks` metric computation")
-    parser.add_argument("--no-fcd", dest="no_fcd", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument(
-        "--no-metastability-diff",
-        dest="no_metastability",
-        action="store_true",
-        help="Disable `metastability_diff` metric computation",
-    )
-    parser.add_argument("--no-metastability", dest="no_metastability", action="store_true", help=argparse.SUPPRESS)
-
     # Preprocessing
     parser.add_argument("--fourier-denoise", action="store_true", help="Apply FFT bandpass denoising")
     parser.add_argument("--denoise-f-lo", type=float, default=0.01, help="Denoising low cutoff (Hz)")

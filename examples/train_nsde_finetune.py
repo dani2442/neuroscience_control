@@ -138,7 +138,6 @@ def main(argv=None):
         final_metrics.update(compute_dynamics_fit_metrics(
             sde_ts, target_ts, tr=cfg.tr,
             fcd_win_sec=cfg.fcd_win_sec, fcd_step_sec=cfg.fcd_step_sec,
-            compute_fcd=cfg.compute_fcd_metrics, compute_metastability=cfg.compute_metastability_metrics,
         ))
         print(f"Final metrics: {final_metrics}")
         wandb_summary_update({f"final_{k}": v for k, v in final_metrics.items()}, use_wandb=cfg.use_wandb)

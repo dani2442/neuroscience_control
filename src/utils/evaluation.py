@@ -270,7 +270,11 @@ def evaluate_hopf_model(
     subject_indices: torch.Tensor | None = None,
 ) -> dict[str, float]:
     """Evaluate FC/FCD/metastability for a trained Hopf model."""
-    from ..metrics import compute_all_fc_metrics, compute_dynamics_fit_metrics
+    from ..metrics import (
+        compute_all_fc_metrics,
+        compute_all_timeseries_metrics,
+        compute_dynamics_fit_metrics,
+    )
 
     if subject_indices is None:
         subject_indices = torch.arange(dataset.n_subjects, device=dataset.timeseries.device)
@@ -299,11 +303,98 @@ def evaluate_hopf_model(
         tr=cfg.tr,
         fcd_win_sec=cfg.fcd_win_sec,
         fcd_step_sec=cfg.fcd_step_sec,
-        compute_fcd=cfg.compute_fcd_metrics,
-        compute_metastability=cfg.compute_metastability_metrics,
     )
+    ts_metrics = compute_all_timeseries_metrics(hopf_ts, target_ts)
+    metrics.update(ts_metrics)
     metrics.update(dyn_metrics)
     return metrics
+
+
+def _forward_for_metrics(
+    model,
+    initial_state: torch.Tensor,
+    n_steps: int,
+    cfg,
+) -> torch.Tensor:
+    """Forward helper used to keep metric simulation settings identical."""
+    return model.forward(
+        initial_state=initial_state,
+        n_steps=n_steps,
+        dt=cfg.tr,
+        sde_type=getattr(cfg, "sde_type", "ito"),
+        method=getattr(cfg, "sde_method", "euler"),
+        dt_min=getattr(cfg, "dt_min", 0.1),
+        use_adjoint=getattr(cfg, "use_adjoint", False),
+        adjoint_method=getattr(cfg, "adjoint_method", None),
+    )
+
+
+PAPER_METRIC_KEYS = (
+    "fc_correlation",
+    "fc_mse",
+    "temporal_correlation",
+    "power_spectrum_distance",
+    "autocorr_distance",
+    "fcd_ks",
+    "phfcd_ks",
+    "phase_fc_corr",
+    "metastability_diff",
+)
+
+
+def evaluate_model_loader_metrics(
+    model,
+    loader,
+    cfg,
+    *,
+    n_steps: int | None = None,
+) -> dict[str, float]:
+    """Evaluate all paper metrics with loader-based batch aggregation."""
+    from ..metrics import (
+        compute_all_fc_metrics,
+        compute_all_timeseries_metrics,
+        compute_dynamics_fit_metrics,
+    )
+
+    sums: dict[str, float] = {}
+    counts: dict[str, int] = {}
+
+    for batch in loader:
+        windows, fc_targets, _ = batch
+        windows = windows.to(model.device)
+        fc_targets = fc_targets.to(model.device)
+
+        batch_steps = windows.shape[2]
+        n_sim_steps = min(batch_steps, n_steps) if n_steps is not None else batch_steps
+        target_window = windows[:, :, :n_sim_steps]
+        initial_state = target_window[:, :, 0]
+
+        with torch.no_grad():
+            simulated = _forward_for_metrics(model, initial_state, n_sim_steps, cfg)
+            fc_pred = model.compute_fc(simulated)
+            batch_metrics = compute_all_fc_metrics(fc_pred, fc_targets)
+            batch_metrics.update(compute_all_timeseries_metrics(simulated, target_window))
+            batch_metrics.update(
+                compute_dynamics_fit_metrics(
+                    simulated,
+                    target_window,
+                    tr=cfg.tr,
+                    fcd_win_sec=cfg.fcd_win_sec,
+                    fcd_step_sec=cfg.fcd_step_sec,
+                )
+            )
+
+        for key, value in batch_metrics.items():
+            numeric = to_float_metric(value)
+            if numeric is None or math.isnan(numeric):
+                continue
+            sums[key] = sums.get(key, 0.0) + numeric
+            counts[key] = counts.get(key, 0) + 1
+
+    return {
+        key: (sums[key] / counts[key]) if counts.get(key, 0) > 0 else float("nan")
+        for key in PAPER_METRIC_KEYS
+    }
 
 
 def evaluate_hopf_loader_metrics(
@@ -313,57 +404,10 @@ def evaluate_hopf_loader_metrics(
     *,
     n_steps: int | None = None,
 ) -> dict[str, float]:
-    """Evaluate FC/FCD/metastability with loader-based batch aggregation."""
-    from ..metrics import compute_all_fc_metrics, compute_dynamics_fit_metrics
-
-    sums: dict[str, float] = {}
-    counts: dict[str, int] = {}
-    sampled_batches = 0
-    metrics_limit = cfg.metrics_sample_batches
-
-    for batch_idx, batch in enumerate(loader):
-        windows, fc_targets, _ = batch
-        windows = windows.to(hopf_model.device)
-        fc_targets = fc_targets.to(hopf_model.device)
-
-        batch_steps = windows.shape[2]
-        n_sim_steps = min(batch_steps, n_steps) if n_steps is not None else batch_steps
-        target_window = windows[:, :, :n_sim_steps]
-        initial_state = target_window[:, :, 0]
-
-        compute_expensive = (
-            metrics_limit is None
-            or (metrics_limit > 0 and batch_idx < metrics_limit)
-        )
-        if compute_expensive:
-            sampled_batches += 1
-
-        with torch.no_grad():
-            simulated = hopf_model.forward(initial_state=initial_state, n_steps=n_sim_steps, dt=cfg.tr)
-            fc_pred = hopf_model.compute_fc(simulated)
-            batch_metrics = compute_all_fc_metrics(fc_pred, fc_targets)
-            if compute_expensive:
-                batch_metrics.update(
-                    compute_dynamics_fit_metrics(
-                        simulated,
-                        target_window,
-                        tr=cfg.tr,
-                        fcd_win_sec=cfg.fcd_win_sec,
-                        fcd_step_sec=cfg.fcd_step_sec,
-                        compute_fcd=cfg.compute_fcd_metrics,
-                        compute_metastability=cfg.compute_metastability_metrics,
-                    )
-                )
-
-        for key, value in batch_metrics.items():
-            numeric = to_float_metric(value)
-            if numeric is None or math.isnan(numeric):
-                continue
-            sums[key] = sums.get(key, 0.0) + numeric
-            counts[key] = counts.get(key, 0) + 1
-
-    metric_keys = ("fc_correlation", "fc_mse", "fcd_ks", "phfcd_ks", "metastability_diff")
-    return {
-        key: (sums[key] / counts[key]) if counts.get(key, 0) > 0 else float("nan")
-        for key in metric_keys
-    }
+    """Backwards-compatible wrapper around :func:`evaluate_model_loader_metrics`."""
+    return evaluate_model_loader_metrics(
+        model=hopf_model,
+        loader=loader,
+        cfg=cfg,
+        n_steps=n_steps,
+    )

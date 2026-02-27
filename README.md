@@ -343,44 +343,23 @@ These are differentiable loss functions used during gradient-based optimization.
 
 ## Training
 
-### Hopf Model: Grid Search
+### Unified Training Entrypoint
 
-The Coupled Hopf model supports grid search over $(G, a)$:
+`examples/train_models.py` now handles Hopf grid-search, backprop training, and paper-style comparison reporting:
 
 ```bash
-python examples/train_hopf.py \
-    --data-path data/ts_young/ts_young_TR0.72.mat \
-    --experiment-name hopf_experiment \
-    --wandb-project neuroscience-control
+python examples/train_models.py hopf-grid
+python examples/train_models.py backprop --model nsde --n-epochs 50
+python examples/train_models.py backprop --model hopf --n-epochs 50
+python examples/train_models.py backprop --model hybrid_hopf --n-epochs 50
+python examples/train_models.py paper --output-json results/paper_metrics.json
 ```
 
-Backpropagation (Hopf or NSDE) is handled by:
+Compatibility wrappers remain available:
 
 ```bash
-python examples/train_backprop.py --model hopf --n-epochs 50 --loss-fn fc_fcd_meta
-```
-
-### Neural SDE: Backpropagation
-
-The Neural SDE model is trained end-to-end via backpropagation using `train_backprop.py`:
-
-```bash
-python examples/train_backprop.py --model nsde \
-    --data-path data/ts_young/ts_young_TR0.72.mat \
-    --n-epochs 50 \
-    --lr 1e-3 \
-    --hidden-dim 32 \
-    --loss-fn fc_fcd_meta \
-    --experiment-name nsde_experiment
-```
-
-### Unified Backpropagation (NSDE + Hopf)
-
-Use one script for both models:
-
-```bash
-python examples/train_backprop.py --model nsde --n-epochs 50 --loss-fn fc_fcd_meta
-python examples/train_backprop.py --model hopf --n-epochs 50 --initial-a -0.02 --initial-g 0.5
+python examples/train_hopf.py              # same as: train_models.py hopf-grid
+python examples/train_backprop.py --model nsde   # same as: train_models.py backprop --model nsde
 ```
 
 ### Neural SDE: Fine-tuning
@@ -403,8 +382,6 @@ python examples/train_nsde_finetune.py \
 | `--f-hi` | Bandpass high cutoff (Hz) — used only for Hopf intrinsic frequency estimation | 0.07 |
 | `--fcd-win-sec` | FCD window length (seconds) | 60.0 |
 | `--fcd-step-sec` | FCD window step (seconds) | 2.0 |
-| `--no-fcd-ks` | Disable `fcd_ks` metric computation | False |
-| `--no-metastability-diff` | Disable `metastability_diff` metric computation | False |
 | `--loss-fn` | Loss preset (`mse`, `correlation`, `combined`, `fc_fcd_meta`, `full`, `custom`) or individual term | `combined` |
 | `--loss-weight-fc-correlation` | `loss_fc_correlation` weight override (backprop) | preset default |
 | `--loss-weight-fcd` | `loss_fcd` weight override (backprop) | preset default |
@@ -419,8 +396,9 @@ python examples/train_nsde_finetune.py \
 
 | Script | Description |
 |--------|-------------|
-| [`examples/train_hopf.py`](examples/train_hopf.py) | Train Coupled Hopf via grid search |
-| [`examples/train_backprop.py`](examples/train_backprop.py) | Unified backprop training entrypoint for NSDE or Hopf |
+| [`examples/train_models.py`](examples/train_models.py) | Unified entrypoint: Hopf grid-search, backprop models, and paper report |
+| [`examples/train_hopf.py`](examples/train_hopf.py) | Compatibility wrapper for `train_models.py hopf-grid` |
+| [`examples/train_backprop.py`](examples/train_backprop.py) | Compatibility wrapper for `train_models.py backprop` |
 | [`examples/train_nsde_finetune.py`](examples/train_nsde_finetune.py) | Fine-tune a pretrained Neural SDE checkpoint |
 | [`examples/compare_models.py`](examples/compare_models.py) | Compare trained models |
 | [`examples/test.py`](examples/test.py) | Evaluate a checkpoint and visualize trajectories |

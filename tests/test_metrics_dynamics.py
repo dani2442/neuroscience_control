@@ -23,8 +23,6 @@ class TestDynamicsMetrics(unittest.TestCase):
             tr=0.72,
             fcd_win_sec=60.0,
             fcd_step_sec=2.0,
-            compute_fcd=True,
-            compute_metastability=True,
         )
 
         self.assertIn("fcd_ks", metrics)
@@ -48,8 +46,6 @@ class TestDynamicsMetrics(unittest.TestCase):
             tr=0.72,
             fcd_win_sec=60.0,  # win_len ~83 > 80 -> FCD unavailable
             fcd_step_sec=2.0,
-            compute_fcd=True,
-            compute_metastability=True,
         )
 
         self.assertTrue(math.isnan(metrics["fcd_ks"]))

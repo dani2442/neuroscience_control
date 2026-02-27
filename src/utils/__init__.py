@@ -29,6 +29,7 @@ from .runtime import (
 from .evaluation import (
     to_float_metric,
     prefixed_metrics,
+    PAPER_METRIC_KEYS,
     generate_fc_figure,
     generate_multigrid_figure,
     save_checkpoint,
@@ -36,6 +37,7 @@ from .evaluation import (
     extract_val_data,
     split_subject_indices,
     evaluate_hopf_model,
+    evaluate_model_loader_metrics,
     evaluate_hopf_loader_metrics,
 )
 
@@ -64,6 +66,7 @@ __all__ = [
     "managed_wandb_run",
     "to_float_metric",
     "prefixed_metrics",
+    "PAPER_METRIC_KEYS",
     "generate_fc_figure",
     "generate_multigrid_figure",
     "save_checkpoint",
@@ -71,5 +74,6 @@ __all__ = [
     "extract_val_data",
     "split_subject_indices",
     "evaluate_hopf_model",
+    "evaluate_model_loader_metrics",
     "evaluate_hopf_loader_metrics",
 ]

@@ -38,8 +38,6 @@ class TestScriptMetricSmoke(unittest.TestCase):
                 tr=0.72,
                 fcd_win_sec=60.0,
                 fcd_step_sec=2.0,
-                compute_fcd=True,
-                compute_metastability=True,
             )
         )
         return metrics
@@ -74,8 +72,6 @@ class TestScriptMetricSmoke(unittest.TestCase):
                 tr=0.72,
                 fcd_win_sec=60.0,
                 fcd_step_sec=2.0,
-                compute_fcd=True,
-                compute_metastability=True,
             ),
         }
 

@@ -31,7 +31,7 @@ LOSS_COMPONENT_METRICS = (
     "loss_fcd", "loss_metastability",
 )
 ALL_METRICS = FC_METRICS + TS_METRICS + DYN_METRICS + LOSS_COMPONENT_METRICS
-WANDB_EPOCH_METRICS = ALL_METRICS + ("metrics_sampled_batches",)
+WANDB_EPOCH_METRICS = ALL_METRICS
 
 
 class _MetricAccumulator:
@@ -102,7 +102,6 @@ class Trainer:
         self.loss_fn_name = loss_fn
         self.cfg = cfg
         self.use_wandb = use_wandb
-        self.metrics_sample_batches = cfg.metrics_sample_batches if cfg is not None else 1
         self.sde_type = cfg.sde_type if cfg is not None else "stratonovich"
         self.sde_method = cfg.sde_method if cfg is not None else "reversible_heun"
         self.dt_min = cfg.dt_min if cfg is not None else 0.04
@@ -305,14 +304,7 @@ class Trainer:
 
     def _dynamics_kwargs(self) -> Dict[str, float]:
         """Convenience accessor used by metrics computation."""
-        kw = self._dynamics_kwargs_from_cfg(self.cfg)
-        if self.cfg is not None:
-            kw["compute_fcd"] = self.cfg.compute_fcd_metrics
-            kw["compute_metastability"] = self.cfg.compute_metastability_metrics
-        else:
-            kw["compute_fcd"] = True
-            kw["compute_metastability"] = True
-        return kw
+        return self._dynamics_kwargs_from_cfg(self.cfg)
 
     def _compute_loss(
         self,
@@ -324,14 +316,6 @@ class Trainer:
         """Delegate to the :class:`CompositeLoss` object."""
         return self.loss_obj(fc_pred, fc_targets, ts_pred, ts_target)
 
-    def _should_compute_expensive(self, batch_idx: int) -> bool:
-        limit = self.metrics_sample_batches
-        if limit is None:
-            return True
-        if limit <= 0:
-            return False
-        return batch_idx < limit
-
     def _compute_batch_metrics(
         self,
         fc_pred: torch.Tensor,
@@ -340,21 +324,19 @@ class Trainer:
         ts_target: torch.Tensor,
         loss: torch.Tensor,
         loss_components: Dict[str, torch.Tensor],
-        compute_expensive: bool,
     ) -> Dict[str, float]:
         metrics = compute_all_fc_metrics(fc_pred, fc_targets)
         metrics["loss"] = float(loss.item())
         for name, value in loss_components.items():
             metrics[name] = float(value.item())
 
-        if compute_expensive:
-            metrics.update(compute_all_timeseries_metrics(ts_pred, ts_target))
-            dyn_metrics = compute_dynamics_fit_metrics(
-                ts_pred,
-                ts_target,
-                **self._dynamics_kwargs()
-            )
-            metrics.update(dyn_metrics)
+        metrics.update(compute_all_timeseries_metrics(ts_pred, ts_target))
+        dyn_metrics = compute_dynamics_fit_metrics(
+            ts_pred,
+            ts_target,
+            **self._dynamics_kwargs()
+        )
+        metrics.update(dyn_metrics)
 
         return metrics
 
@@ -374,8 +356,6 @@ class Trainer:
             self.model.eval()
 
         accumulator = _MetricAccumulator()
-        sampled_batches = 0
-
         iterable = loader
         if verbose:
             phase = "train" if train else "val"
@@ -386,12 +366,11 @@ class Trainer:
                 dynamic_ncols=True
             )
 
-        for batch_idx, batch in enumerate(iterable):
+        for batch in iterable:
             windows, fc_targets, _ = batch
             windows = windows.to(self.device)
             fc_targets = fc_targets.to(self.device)
 
-            batch_size = windows.shape[0]
             n_timepoints = windows.shape[2]
             n_sim_steps = min(n_steps, n_timepoints)
             if n_sim_steps <= 0:
@@ -458,10 +437,6 @@ class Trainer:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
                 self.optimizer.step()
 
-            compute_expensive = self._should_compute_expensive(batch_idx)
-            if compute_expensive:
-                sampled_batches += 1
-
             with torch.no_grad():
                 metrics = self._compute_batch_metrics(
                     fc_pred.detach(),
@@ -470,7 +445,6 @@ class Trainer:
                     target_window,
                     loss,
                     loss_components,
-                    compute_expensive,
                 )
             accumulator.update(metrics)
 
@@ -696,4 +670,3 @@ class Trainer:
             }
         )
     
-
