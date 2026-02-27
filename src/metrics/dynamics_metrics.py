@@ -98,6 +98,79 @@ def fcd_distribution(
 
 
 # ---------------------------------------------------------------------------
+# Grand-average phase-coherence FC (Eq. 11 in Deco et al. 2019)
+# ---------------------------------------------------------------------------
+
+def phase_coherence_fc(ts: torch.Tensor) -> torch.Tensor:
+    r"""Grand-average phase-coherence FC matrix.
+
+    Implements Eq. 11 of Deco et al. (2019):
+
+    .. math::
+
+        \mathrm{FC}_{ij} = \left\langle
+            \cos\!\bigl(\phi_j(t) - \phi_i(t)\bigr)
+        \right\rangle_t
+
+    where :math:`\phi_i(t)` is the instantaneous phase extracted via
+    ``torch.angle(z)`` from the complex analytic signal.
+
+    The result is the **time-averaged** instantaneous phase-coherence
+    matrix and is used in the EC optimisation delta-rule.
+
+    Args:
+        ts: ``(batch, n_rois, T)`` **complex** analytic-signal tensor.
+            If ``(n_rois, T)`` it is auto-batched.
+
+    Returns:
+        ``(batch, n_rois, n_rois)`` phase-coherence FC matrices.  Each
+        entry is in :math:`[-1, 1]` with diagonal identically 1.
+    """
+    ts = ensure_batch(ts)
+    if not torch.is_complex(ts):
+        raise TypeError(
+            "phase_coherence_fc expects complex input; "
+            "got real tensor.  Ensure data/model output is complex."
+        )
+    # phases: (B, N, T)
+    phases = torch.angle(ts)
+    # (B, N, 1, T) - (B, 1, N, T) -> (B, N, N, T)
+    diff = phases.unsqueeze(2) - phases.unsqueeze(1)
+    # cos of phase differences, averaged over time
+    return torch.cos(diff).mean(dim=-1)  # (B, N, N)
+
+
+def phase_coherence_fc_correlation(
+    ts_pred: torch.Tensor,
+    ts_target: torch.Tensor,
+) -> float:
+    r"""Pearson correlation between predicted and target phase-coherence FC.
+
+    Computes grand-average phase-coherence FC for both tensors (mean over
+    batch), then returns the Pearson correlation of their upper-triangular
+    entries — the same comparison strategy used for static (Pearson) FC.
+
+    Args:
+        ts_pred: ``(batch, n_rois, T)`` complex tensor.
+        ts_target: ``(batch, n_rois, T)`` complex tensor.
+
+    Returns:
+        Scalar Pearson correlation (float).
+    """
+    fc_pred = phase_coherence_fc(ts_pred).mean(dim=0)    # (N, N)
+    fc_target = phase_coherence_fc(ts_target).mean(dim=0)  # (N, N)
+    v_pred = upper_tri_vec(fc_pred, k=1)
+    v_target = upper_tri_vec(fc_target, k=1)
+    if v_pred.numel() < 2:
+        return float("nan")
+    p = v_pred - v_pred.mean()
+    t = v_target - v_target.mean()
+    num = (p * t).sum()
+    den = torch.sqrt((p ** 2).sum() * (t ** 2).sum()) + 1e-8
+    return float((num / den).item())
+
+
+# ---------------------------------------------------------------------------
 # Phase coherence & phase-based FCD (phFCD)
 # ---------------------------------------------------------------------------
 
@@ -192,6 +265,97 @@ def ks_distance_2samp(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     cdf_x = torch.searchsorted(x, z, right=True).to(z.dtype) / n
     cdf_y = torch.searchsorted(y, z, right=True).to(z.dtype) / m
     return torch.max(torch.abs(cdf_x - cdf_y))
+
+
+# ---------------------------------------------------------------------------
+# Symmetrized KL divergence (Eq. 6 in Deco et al. 2019)
+# ---------------------------------------------------------------------------
+
+def symmetric_kl_divergence(
+    p: torch.Tensor,
+    q: torch.Tensor,
+    eps: float = 1e-12,
+) -> torch.Tensor:
+    r"""Symmetrized Kullback-Leibler divergence between two distributions.
+
+    .. math::
+
+        D_{\mathrm{KL}}^{\mathrm{sym}}(P, Q)
+        = \frac{1}{2}\sum_i P(i)\ln\frac{P(i)}{Q(i)}
+        + \frac{1}{2}\sum_i Q(i)\ln\frac{Q(i)}{P(i)}
+
+    Used for PMS probability mismatch in the paper.
+
+    Args:
+        p: 1-D probability distribution (sums to 1).
+        q: 1-D probability distribution (same length as *p*).
+        eps: Small constant to avoid log(0).
+
+    Returns:
+        Scalar tensor — symmetric KL divergence.
+    """
+    p = p.clamp(min=eps)
+    q = q.clamp(min=eps)
+    kl_pq = (p * torch.log(p / q)).sum()
+    kl_qp = (q * torch.log(q / p)).sum()
+    return 0.5 * (kl_pq + kl_qp)
+
+
+# ---------------------------------------------------------------------------
+# Markov entropy rate (Eqs. 8-9 in Deco et al. 2019)
+# ---------------------------------------------------------------------------
+
+def markov_entropy_rate(T_mat: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
+    r"""Entropy rate of a discrete-time Markov chain.
+
+    Given a transition probability matrix :math:`\mathbf{T}` with stationary
+    distribution :math:`\pi` (left eigenvector for eigenvalue 1):
+
+    .. math::
+
+        S(\mathbf{T})
+        = -\sum_i \pi(i)\sum_j T_{ij}\log T_{ij}
+
+    Args:
+        T_mat: ``(k, k)`` row-stochastic transition probability matrix.
+        eps: Small constant for numerical stability.
+
+    Returns:
+        Scalar tensor — entropy rate in nats.
+    """
+    T_mat = T_mat.clamp(min=eps)
+    # Stationary distribution via eigendecomposition of T^T
+    eigenvalues, eigenvectors = torch.linalg.eig(T_mat.T.to(torch.float64))
+    # Find eigenvector closest to eigenvalue 1
+    idx = torch.argmin(torch.abs(eigenvalues - 1.0))
+    pi = eigenvectors[:, idx].real
+    pi = pi.abs()  # ensure positive
+    pi = pi / pi.sum()  # normalise
+    pi = pi.to(T_mat.dtype)
+    # Entropy rate: -sum_i pi(i) sum_j T_ij log T_ij
+    row_entropies = -(T_mat * torch.log(T_mat)).sum(dim=1)  # (k,)
+    return (pi * row_entropies).sum()
+
+
+def tpm_entropy_distance(
+    tpm_pred: torch.Tensor,
+    tpm_target: torch.Tensor,
+) -> torch.Tensor:
+    r"""Absolute difference in Markov entropy rates between two TPMs.
+
+    .. math::
+
+        D_{\mathrm{ME}} = \bigl|S(\mathbf{T}_{\text{pred}})
+                          - S(\mathbf{T}_{\text{target}})\bigr|
+
+    Args:
+        tpm_pred: ``(k, k)`` row-stochastic TPM.
+        tpm_target: ``(k, k)`` row-stochastic TPM.
+
+    Returns:
+        Scalar tensor — absolute entropy-rate difference.
+    """
+    return torch.abs(markov_entropy_rate(tpm_pred) - markov_entropy_rate(tpm_target))
 
 
 # ---------------------------------------------------------------------------
@@ -427,6 +591,11 @@ def compute_dynamics_fit_metrics(
                 ).item()
             )
 
+    # ---- Phase-coherence FC correlation ----
+    phase_fc_corr = float("nan")
+    if torch.is_complex(ts_pred) and torch.is_complex(ts_target):
+        phase_fc_corr = phase_coherence_fc_correlation(ts_pred, ts_target)
+
     # ---- Metastability ----
     meta_diff = float("nan")
     if compute_metastability:
@@ -437,6 +606,7 @@ def compute_dynamics_fit_metrics(
     return {
         "fcd_ks": fcd_ks,
         "phfcd_ks": phfcd_ks_val,
+        "phase_fc_corr": phase_fc_corr,
         "metastability_diff": meta_diff,
     }
 

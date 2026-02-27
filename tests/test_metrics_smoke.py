@@ -48,14 +48,14 @@ class TestScriptMetricSmoke(unittest.TestCase):
         metrics = self._final_metrics_like_train_scripts(n_paths=6)
         self.assertEqual(
             set(metrics.keys()),
-            {"fc_correlation", "fc_mse", "fcd_ks", "phfcd_ks", "metastability_diff"},
+            {"fc_correlation", "fc_mse", "fcd_ks", "phfcd_ks", "phase_fc_corr", "metastability_diff"},
         )
 
     def test_train_nsde_finetune_final_metric_keys(self) -> None:
         metrics = self._final_metrics_like_train_scripts(n_paths=5)
         self.assertEqual(
             set(metrics.keys()),
-            {"fc_correlation", "fc_mse", "fcd_ks", "phfcd_ks", "metastability_diff"},
+            {"fc_correlation", "fc_mse", "fcd_ks", "phfcd_ks", "phase_fc_corr", "metastability_diff"},
         )
 
     def test_checkpoint_eval_per_run_metric_keys(self) -> None:
@@ -89,6 +89,7 @@ class TestScriptMetricSmoke(unittest.TestCase):
                 "autocorr_distance",
                 "fcd_ks",
                 "phfcd_ks",
+                "phase_fc_corr",
                 "metastability_diff",
             },
         )
