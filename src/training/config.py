@@ -24,7 +24,7 @@ class TrainingConfig:
     # Data settings
     data_path: str = "data/ts_young/ts_young_TR0.72.mat"
     max_subjects: Optional[int] = 50
-    window_size: int = 50
+    window_size: int = 100
     n_windows_per_epoch: int = 1024
     batch_size: int = 128
     train_ratio: float = 0.7
