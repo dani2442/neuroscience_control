@@ -329,7 +329,7 @@ def _forward_for_metrics(
     )
 
 
-PAPER_METRIC_KEYS = (
+EVAL_METRIC_KEYS = (
     "fc_correlation",
     "fc_mse",
     "temporal_correlation",
@@ -337,7 +337,7 @@ PAPER_METRIC_KEYS = (
     "autocorr_distance",
     "fcd_ks",
     "phfcd_ks",
-    "phase_fc_corr",
+    "phase_fc_correlation",
     "metastability_diff",
 )
 
@@ -391,9 +391,11 @@ def evaluate_model_loader_metrics(
             sums[key] = sums.get(key, 0.0) + numeric
             counts[key] = counts.get(key, 0) + 1
 
+    # Return all computed metrics (use EVAL_METRIC_KEYS for formatted reports).
+    all_keys = sorted(set(EVAL_METRIC_KEYS) | set(sums.keys()))
     return {
         key: (sums[key] / counts[key]) if counts.get(key, 0) > 0 else float("nan")
-        for key in PAPER_METRIC_KEYS
+        for key in all_keys
     }
 
 

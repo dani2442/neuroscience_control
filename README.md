@@ -54,11 +54,6 @@ cd neuroscience-control
 uv sync
 ```
 
-### Install with pip
-
-```bash
-pip install -e .
-```
 
 ### Dependencies
 
@@ -112,10 +107,10 @@ print(f"FC matrix shape: {fc_matrix.shape}")
 The **Coupled Hopf Model** represents each brain region as a nonlinear oscillator governed by a supercritical Hopf bifurcation. The dynamics are described by the complex-valued stochastic differential equation:
 
 $$
-dz_i = \left[ \left( a + i\omega_i - |z_i|^2 \right) z_i + G \sum_{j=1}^{N} C_{ij} (z_j - z_i) \right] dt + \sigma \, dW_i
+dz_i = \left[ \left( a + i\omega_i - |z_i|^2 \right) z_i + G \sum_{j=1}^{N} C_{ij} (z_j - z_i) \right] dt + \sigma  dW_i
 $$
 
-where $W_i = W_{1,i} + i\,W_{2,i}$ is a **complex Brownian motion** constructed from two independent standard real Brownian motions.
+where $W_i = W_{1,i} + i W_{2,i}$ is a **complex Brownian motion** constructed from two independent standard real Brownian motions.
 
 | Symbol | Description |
 |--------|-------------|
@@ -151,10 +146,10 @@ model = CoupledHopfModel(
 The **Neural SDE Model** uses neural networks to parameterize the drift and diffusion terms of a **complex-valued** SDE:
 
 $$
-dZ_t = f_\theta(Z_t) \, dt + g_\phi(Z_t) \, dW_t
+dz_t = f_\theta(z_t)   dt + g_\phi(z_t)   dW_t
 $$
 
-where $Z_t \in \mathbb{C}^N$, $f_\theta, g_\phi$ are learnable neural networks that accept and return complex tensors, and $W_t$ is complex Brownian motion.  Internally each network converts the complex state to a real representation via `torch.view_as_real`, processes it through a standard real-valued MLP, and converts back to complex via `torch.view_as_complex`.  This provides maximum flexibility for learning complex brain dynamics directly from data.
+where $z_t \in \mathbb{C}^N$, $f_\theta, g_\phi$ are learnable neural networks that accept and return complex tensors, and $W_t$ is complex Brownian motion.  Internally each network converts the complex state to a real representation via `torch.view_as_real`, processes it through a standard real-valued MLP, and converts back to complex via `torch.view_as_complex`.  This provides maximum flexibility for learning complex brain dynamics directly from data.
 
 ```python
 from src.models import NeuralSDE
@@ -172,97 +167,119 @@ model = NeuralSDE(
 
 ## Metrics
 
-The framework evaluates model fit using three complementary metrics aligned with the neuroscience literature.
+The framework evaluates model fit using complementary metrics aligned with the neuroscience literature. All metrics are computed and reported by every training script and evaluation entry point — they are defined in `EVAL_METRIC_KEYS` in `src/utils/evaluation.py`.
 
 All time-domain metrics use the discrete time-average $\frac{1}{T}\sum_{t=1}^T f(t)$ as the uniform-$\Delta t$ approximation to $\frac{1}{T}\int_0^T f(t)\,dt$, then averaged over the batch and ROIs.  Since both data and model outputs are **complex analytic signals** (bandpass-filtered and Hilbert-transformed at dataset-load time), no additional signal preprocessing is applied inside the metrics.
 
 ### 1. Functional Connectivity (FC)
 
-Static correlation between regional time series:
+Static Pearson correlation between regional time series.  Given the real part of the complex analytic signal $s_n(t) = \Re(z_n(t))$:
 
 $$
-\text{FC}_{ij} = \frac{\text{Cov}_{ij}}{\text{SD}_i \cdot \text{SD}_j}
+\text{FC}_{nm} = \frac{\text{Cov}(s_n, s_m)}{\text{SD}(s_n) \cdot \text{SD}(s_m)}
+= \frac{\sum_{t=1}^T (s_n(t) - \bar{s}_n)(s_m(t) - \bar{s}_m)}
+       {\sqrt{\sum_{t=1}^T (s_n(t) - \bar{s}_n)^2} \;\sqrt{\sum_{t=1}^T (s_m(t) - \bar{s}_m)^2}}
 $$
 
-**Training terms**:
-- `loss_fc_correlation = 1 - corr(v(FC_pred), v(FC_target))`
-- `loss_fc_mse = MSE(v(FC_pred), v(FC_target))`
+where $\bar{s}_n = \frac{1}{T}\sum_t s_n(t)$ is the temporal mean of region $n$, $\text{Cov}(s_n, s_m)$ is the sample covariance between regions $n$ and $m$, and $\text{SD}(s_n)$ is the sample standard deviation of region $n$.
 
-**Evaluation metrics**:
-- `fc_correlation`
-- `fc_mse`
+The resulting FC matrix is symmetric with diagonal entries equal to 1 and off-diagonal entries in $[-1, 1]$.
+
+**Training terms:**
+- `loss_fc_correlation`: $1 - \text{corr}\!\bigl(\text{vec}(\text{FC}_{\text{pred}}),\; \text{vec}(\text{FC}_{\text{target}})\bigr)$ — Pearson correlation between the upper-triangular vectors of predicted and target FC, converted to a minimizable loss.
+- `loss_fc_mse`: $\text{MSE}\!\bigl(\text{vec}(\text{FC}_{\text{pred}}),\; \text{vec}(\text{FC}_{\text{target}})\bigr)$ — Mean squared error between upper-triangular entries.
+
+**Evaluation metrics:**
+- `fc_correlation`: Pearson correlation between predicted and target FC (upper triangle), averaged over the batch. Range $[-1, 1]$; **higher = better**.
+- `fc_mse`: MSE between predicted and target FC (upper triangle). Range $[0, \infty)$; **lower = better**.
 
 ### 2. Functional Connectivity Dynamics (FCD)
 
 Captures how FC evolves over time using sliding windows on the **real part** of the complex analytic signal (no additional preprocessing):
 
-1. Compute windowed FC at each time window
-2. Build FCD matrix: correlation between windowed FC patterns
-3. Extract distribution of FCD values
+1. For each sliding window of length $W$ (in samples), compute the windowed FC matrix and extract its upper-triangular vector.
+2. Z-score each window vector across features.
+3. Build the FCD matrix: Pearson correlation between all pairs of windowed FC vectors.
+4. Extract the upper-triangular distribution of FCD values.
 
-**Training term**:
-- `loss_fcd`: differentiable surrogate using MSE between FCD matrices (`fcd_mse_loss`).
+**Training term:**
+- `loss_fcd`: MSE between the FCD matrices of predicted and target time series (differentiable surrogate for the non-differentiable KS statistic).
 
-**Evaluation metric**:
-- `fcd_ks`: Kolmogorov-Smirnov distance between empirical and simulated FCD value distributions.
-
-`fcd_ks` can be `NaN` when FCD windowing is not feasible for the current `--tr`, `--fcd-win-sec`, `--fcd-step-sec`, and time-series length (for example, short trajectories).
+**Evaluation metric:**
+- `fcd_ks`: Two-sample Kolmogorov-Smirnov distance between the FCD distributions of predicted and target. Range $[0, 1]$; **lower = better**. Reports `NaN` when FCD windowing is not feasible (e.g., short trajectories).
 
 ### 3. Phase Functional Connectivity Dynamics (phFCD)
 
 The paper's **main model-fitting metric**. Instead of sliding-window Pearson FC, phFCD uses instantaneous phase coherence to capture time-varying functional connectivity:
 
 1. Extract instantaneous phase from the complex analytic signal: $\phi_n(t) = \arg(z_n(t))$
-2. Compute phase coherence: $P_{nm}(t) = \cos(\phi_n(t) - \phi_m(t))$
-3. Vectorise upper-triangular entries of $P(t)$ at each time point
+2. Compute phase coherence at each time point: $P_{nm}(t) = \cos\!\bigl(\phi_n(t) - \phi_m(t)\bigr)$
+3. Vectorise upper-triangular entries: $\mathbf{p}(t) = \text{vec}_{\triangle}(P(t)) \in \mathbb{R}^M$
 4. Build phFCD similarity matrix via cosine similarity between time points:
 
 $$
-\mathrm{phFCD}_{ij} = \frac{\mathbf{p}(t_i)^\top \mathbf{p}(t_j)}{\|\mathbf{p}(t_i)\|_2 \, \|\mathbf{p}(t_j)\|_2}
+\mathrm{phFCD}_{ij} = \frac{\mathbf{p}(t_i)^\top \mathbf{p}(t_j)}{\|\mathbf{p}(t_i)\|_2 \;\|\mathbf{p}(t_j)\|_2}
 $$
 
-5. Extract upper-triangular phFCD values as the tv-FC summary distribution
-6. Compare empirical vs simulated distributions with Kolmogorov-Smirnov distance
+5. Extract upper-triangular phFCD values as the tv-FC summary distribution.
+6. Compare empirical vs simulated distributions with Kolmogorov-Smirnov distance.
 
-**Training term**:
-- `loss_phfcd`: differentiable surrogate using MSE between phFCD matrices (`phfcd_mse_loss`).
+**Training term:**
+- `loss_phfcd`: MSE between phFCD matrices of predicted and target (differentiable surrogate).
 
-**Evaluation metric**:
-- `phfcd_ks`: Kolmogorov-Smirnov distance between empirical and simulated phFCD distributions. This is the paper's decisive goodness-of-fit metric; **lower = better**.
+**Evaluation metric:**
+- `phfcd_ks`: KS distance between phFCD distributions. Range $[0, 1]$; **lower = better**. Unlike `fcd_ks`, this has **no windowing dependency** — it works at full temporal resolution.
 
-Unlike `fcd_ks`, `phfcd_ks` has **no windowing dependency** — it works at full temporal resolution.
+### 4. Phase-Coherence FC
 
-### 4. Grand-Average Phase-Coherence FC
-
-The time-averaged instantaneous phase-coherence matrix (Eq. 11 in Deco et al. 2019), used in the effective connectivity (EC) optimisation delta-rule:
+The time-averaged instantaneous phase-coherence matrix (Eq. 11 in Deco et al. 2019):
 
 $$
-\mathrm{FC}^{\phi}_{ij} = \left\langle \cos\!\bigl(\phi_i(t) - \phi_j(t)\bigr) \right\rangle_t
+\mathrm{FC}^{\phi}_{nm} = \left\langle \cos\!\bigl(\phi_n(t) - \phi_m(t)\bigr) \right\rangle_t
+= \frac{1}{T}\sum_{t=1}^{T} \cos\!\bigl(\phi_n(t) - \phi_m(t)\bigr)
 $$
 
-where $\phi_i(t) = \arg(z_i(t))$.  Each entry is the mean phase coherence between two ROIs over time, producing a symmetric matrix with diagonal identically 1 and entries in $[-1, 1]$.
+where $\phi_n(t) = \arg(z_n(t))$ is the instantaneous phase of region $n$.  Each entry is the mean phase coherence between two ROIs over time, producing a symmetric matrix with diagonal identically 1 and entries in $[-1, 1]$.
 
-**Evaluation metric**:
-- `phase_fc_corr`: Pearson correlation between upper-triangular entries of predicted and target phase-coherence FC (analogous to `fc_correlation` for Pearson FC).
+**Training term:**
+- `loss_phase_fc_correlation`: $1 - \text{corr}\!\bigl(\text{vec}(\text{FC}^{\phi}_{\text{pred}}),\; \text{vec}(\text{FC}^{\phi}_{\text{target}})\bigr)$ — analogous to `loss_fc_correlation` but operating on phase-coherence FC.
+
+**Evaluation metric:**
+- `phase_fc_correlation`: Pearson correlation between upper-triangular entries of predicted and target grand-average phase-coherence FC. Range $[-1, 1]$; **higher = better**.
 
 ### 5. Metastability
 
-Temporal variability of global synchronization using the Kuramoto order parameter.
-Phases are extracted directly from the complex analytic signal via $\phi_i(t) = \arg(z_i(t))$ — no Hilbert transform or bandpass is needed at metric time:
+Temporal variability of global synchronization using the Kuramoto order parameter.  Phases are extracted directly from the complex analytic signal via $\phi_n(t) = \arg(z_n(t))$:
 
 $$
-R(t) = \left| \frac{1}{N} \sum_{i=1}^{N} e^{i\phi_i(t)} \right|
+R(t) = \left| \frac{1}{N} \sum_{n=1}^{N} e^{i\phi_n(t)} \right|
 $$
 
 $$
-\text{Metastability} = \text{std}_t(R(t))
+\text{Metastability} = \text{std}_t\!\bigl(R(t)\bigr)
 $$
 
-**Training term**:
-- `loss_metastability = |Meta(pred) - Meta(target)|`
+**Training term:**
+- `loss_metastability`: $|\text{Meta}(\text{pred}) - \text{Meta}(\text{target})|$ — L1 difference.
 
-**Evaluation metric**:
-- `metastability_diff`
+**Evaluation metric:**
+- `metastability_diff`: Absolute difference in metastability between predicted and target. Range $[0, \infty)$; **lower = better**.
+
+### 6. Timeseries Metrics
+
+Direct comparison of predicted and target time series (real part):
+
+- **`temporal_correlation`**: Mean per-ROI Pearson correlation over time between predicted and target, averaged over the batch. Range $[-1, 1]$; **higher = better**.
+- **`power_spectrum_distance`**: MSE between normalised power spectra (via FFT), averaged over batch and ROIs. Range $[0, \infty)$; **lower = better**.
+- **`autocorr_distance`**: MSE between autocorrelation functions (up to `max_lag` lags), averaged over batch, ROIs, and lags. Range $[0, \infty)$; **lower = better**.
+
+### 7. Additional Training Losses
+
+These loss terms do not have a direct evaluation metric counterpart but can be included in composite objectives:
+
+- **`loss_l2_timeseries`** (registry key: `l2`): $\frac{1}{BNT}\sum |z^{\text{pred}} - z^{\text{target}}|^2$ — squared modulus L² error over the full complex timeseries.
+- **`loss_amplitude`** (registry key: `amplitude`): $\frac{1}{N}\sum_n (\overline{|z_n^{\text{pred}}|} - A_n^{\text{ref}})^2$ — L² error of mean envelope amplitude per ROI.
+- **`loss_omega`** (registry key: `omega`): $\frac{1}{N}\sum_n (\bar{\omega}_n^{\text{pred}} - \omega_n^{\text{ref}})^2$ — L² error of mean instantaneous frequency per ROI.
 
 ### Total Objective
 
@@ -280,53 +297,54 @@ Alternatively, `--loss-fn fc_phfcd_meta` uses the **phase-based** phFCD instead 
 - `loss_phfcd` (MSE between phFCD matrices)
 - `loss_metastability`
 
-For Hopf grid search (`examples/train_hopf.py`), model selection uses the composite score `w_FC·fc_correlation − w_FCD·fcd_mse − w_Meta·metastability_diff` (weights configurable via `--weight-fc-correlation`, `--weight-fcd-mse`, `--weight-metastability-diff`; defaults 1.0, 0.5, 0.5). FCD/Metastability are also reported as evaluation metrics.
+For Hopf grid search (`examples/train_hopf.py`), model selection uses the composite score `w_FC·fc_correlation − w_FCD·fcd_mse − w_Meta·metastability_diff` (weights configurable via `--weight-fc-correlation`, `--weight-fcd-mse`, `--weight-metastability-diff`; defaults 1.0, 0.5, 0.5).
 
 ### Metric Usage by Script
 
-| Script | Training / selection objective | Reported metrics |
-|--------|--------------------------------|------------------|
-| [`examples/train_hopf.py`](examples/train_hopf.py) | Grid search by composite `w_FC·fc_correlation - w_FCD·fcd_mse - w_Meta·metastability_diff` | `fc_correlation`, `fc_mse`, `fcd_ks`, `phfcd_ks`, `phase_fc_corr`, `metastability_diff` |
-| [`examples/train_backprop.py`](examples/train_backprop.py) | `--loss-fn` composite (`loss_*` terms) | Epoch/test: FC + timeseries + dynamics metrics; final: `fc_correlation`, `fc_mse`, `fcd_ks`, `phfcd_ks`, `phase_fc_corr`, `metastability_diff` |
-| [`examples/train_nsde_finetune.py`](examples/train_nsde_finetune.py) | Fine-tuning via `Trainer` composite loss | Test/summary include FC + timeseries + dynamics metrics; final: `fc_correlation`, `fc_mse`, `fcd_ks`, `phfcd_ks`, `phase_fc_corr`, `metastability_diff` |
-| [`examples/test.py`](examples/test.py) | No training (checkpoint evaluation) | Loader-based metrics + per-run real-vs-sim: FC + timeseries + dynamics metrics |
+All scripts report the full set of evaluation metrics defined in `EVAL_METRIC_KEYS`:
+
+`fc_correlation`, `fc_mse`, `temporal_correlation`, `power_spectrum_distance`, `autocorr_distance`, `fcd_ks`, `phfcd_ks`, `phase_fc_correlation`, `metastability_diff`
+
+| Script | Training / selection objective |
+|--------|-------------------------------|
+| [`examples/train_models.py hopf-grid`](examples/train_models.py) | Grid search by composite `w_FC·fc_correlation − w_FCD·fcd_mse − w_Meta·metastability_diff` |
+| [`examples/train_models.py backprop`](examples/train_models.py) | `--loss-fn` composite (`loss_*` terms) |
+| [`examples/train_nsde_finetune.py`](examples/train_nsde_finetune.py) | Fine-tuning via `Trainer` composite loss |
+| [`examples/test.py`](examples/test.py) | No training (checkpoint evaluation) |
 
 ### Complete Metrics Reference
 
-The table below lists every metric and loss term in the framework, grouped by category.
-
 #### Evaluation Metrics
 
-These are used for reporting model quality. They are **not** directly optimized during training.
-
-| Name | Module | Input | Formula | Range | Direction |
-|------|--------|-------|---------|-------|-----------|
-| `fc_correlation` | `src.metrics.fc_metrics` | FC matrices `(B, N, N)` | Pearson correlation between upper-triangle vectors of predicted and target FC | $[-1, 1]$ | Higher = better |
-| `fc_mse` | `src.metrics.fc_metrics` | FC matrices `(B, N, N)` | MSE between upper-triangle entries of predicted and target FC | $[0, \infty)$ | Lower = better |
-| `power_spectrum_distance` | `src.metrics.timeseries_metrics` | Time series `(B, N, T)` | MSE between normalised power spectra (via FFT), averaged over batch and ROIs | $[0, \infty)$ | Lower = better |
-| `temporal_correlation` | `src.metrics.timeseries_metrics` | Time series `(B, N, T)` | Mean per-ROI Pearson correlation over time between predicted and target, averaged over batch | $[-1, 1]$ | Higher = better |
-| `autocorr_distance` | `src.metrics.timeseries_metrics` | Time series `(B, N, T)` | MSE between autocorrelation functions (up to `max_lag` lags), averaged over batch, ROIs, and lags | $[0, \infty)$ | Lower = better |
-| `fcd_ks` | `src.metrics.dynamics_metrics` | Time series `(B, N, T)` | Two-sample Kolmogorov-Smirnov distance between FCD value distributions of predicted and target | $[0, 1]$ | Lower = better |
-| `phfcd_ks` | `src.metrics.dynamics_metrics` | Time series `(B, N, T)` complex | KS distance between phase-based FCD (phFCD) distributions of predicted and target — the paper's main fitting metric | $[0, 1]$ | Lower = better |
-| `phase_fc_corr` | `src.metrics.dynamics_metrics` | Time series `(B, N, T)` complex | Pearson correlation between upper-triangular entries of predicted and target grand-average phase-coherence FC | $[-1, 1]$ | Higher = better |
-| `metastability_diff` | `src.metrics.dynamics_metrics` | Time series `(B, N, T)` | $\lvert\text{Meta}(\text{pred}) - \text{Meta}(\text{target})\rvert$ where Meta = $\text{std}_t(R(t))$ (Kuramoto order parameter) | $[0, \infty)$ | Lower = better |
-| `symmetric_kl_divergence` | `src.metrics.dynamics_metrics` | Probability vectors `(k,)` | $\frac{1}{2}\text{KL}(P\|Q) + \frac{1}{2}\text{KL}(Q\|P)$ — symmetrized KL divergence for PMS probability mismatch | $[0, \infty)$ | Lower = better |
-| `tpm_entropy_distance` | `src.metrics.dynamics_metrics` | TPMs `(k, k)` | $\lvert S(\mathbf{T}_{\text{pred}}) - S(\mathbf{T}_{\text{target}})\rvert$ — absolute Markov entropy-rate difference between TPMs | $[0, \infty)$ | Lower = better |
+| Name | Module | Input | Range | Direction |
+|------|--------|-------|-------|-----------|
+| `fc_correlation` | `fc_metrics` | FC matrices `(B, N, N)` | $[-1, 1]$ | Higher = better |
+| `fc_mse` | `fc_metrics` | FC matrices `(B, N, N)` | $[0, \infty)$ | Lower = better |
+| `temporal_correlation` | `timeseries_metrics` | Time series `(B, N, T)` | $[-1, 1]$ | Higher = better |
+| `power_spectrum_distance` | `timeseries_metrics` | Time series `(B, N, T)` | $[0, \infty)$ | Lower = better |
+| `autocorr_distance` | `timeseries_metrics` | Time series `(B, N, T)` | $[0, \infty)$ | Lower = better |
+| `fcd_ks` | `dynamics_metrics` | Time series `(B, N, T)` | $[0, 1]$ | Lower = better |
+| `phfcd_ks` | `dynamics_metrics` | Time series `(B, N, T)` complex | $[0, 1]$ | Lower = better |
+| `phase_fc_correlation` | `dynamics_metrics` | Time series `(B, N, T)` complex | $[-1, 1]$ | Higher = better |
+| `metastability_diff` | `dynamics_metrics` | Time series `(B, N, T)` | $[0, \infty)$ | Lower = better |
+| `symmetric_kl_divergence` | `dynamics_metrics` | Probability vectors `(k,)` | $[0, \infty)$ | Lower = better |
+| `tpm_entropy_distance` | `dynamics_metrics` | TPMs `(k, k)` | $[0, \infty)$ | Lower = better |
 
 #### Training Loss Terms
 
-These are differentiable loss functions used during gradient-based optimization. All are oriented so that **lower = better** and can be combined via `CompositeLoss`.
+All losses are oriented **lower = better** and composable via `CompositeLoss`.
 
-| Name | Registry key | Module | Input | Formula | Notes |
-|------|-------------|--------|-------|---------|-------|
-| `loss_fc_correlation` | `fc_correlation` | `src.training.losses` | FC matrices `(B, N, N)` | $1 - \text{fc\_correlation}$ | Converts similarity into a minimizable loss |
-| `loss_fc_mse` | `fc_mse` | `src.training.losses` | FC matrices `(B, N, N)` | Same as `fc_mse` (thin wrapper) | Identical to the evaluation metric |
-| `loss_l2_timeseries` | `l2` | `src.training.losses` | Time series `(B, N, T)` | $\frac{1}{BNT}\sum\lvert z^{\text{pred}} - z^{\text{target}}\rvert^2$ (squared modulus for complex) | Supports both real and complex tensors |
-| `loss_amplitude` | `amplitude` | `src.training.losses` | Time series `(B, N, T)` | $\frac{1}{N}\sum_n(\overline{\lvert z_n^{\text{pred}}\rvert} - A_n^{\text{ref}})^2$ | L² error of mean envelope amplitude per ROI; can use dataset-level `ref_amplitude` |
-| `loss_omega` | `omega` | `src.training.losses` | Time series `(B, N, T)` | $\frac{1}{N}\sum_n(\bar{\omega}_n^{\text{pred}} - \omega_n^{\text{ref}})^2$ | L² error of mean instantaneous frequency per ROI; can use dataset-level `ref_omega` |
-| `loss_fcd` | `fcd` | `src.training.losses` | Time series `(B, N, T)` | MSE between FCD matrices (differentiable surrogate) | Proxy for the non-differentiable KS distance (`fcd_ks`) |
-| `loss_phfcd` | `phfcd` | `src.training.losses` | Time series `(B, N, T)` complex | MSE between phFCD matrices (differentiable surrogate) | Proxy for the non-differentiable KS distance (`phfcd_ks`); no windowing needed |
-| `loss_metastability` | `metastability` | `src.training.losses` | Time series `(B, N, T)` | $\lvert\text{Meta}(\text{pred}) - \text{Meta}(\text{target})\rvert$ | L1 difference of Kuramoto metastability |
+| Name | Registry key | Input | Notes |
+|------|-------------|-------|-------|
+| `loss_fc_correlation` | `fc_correlation` | FC matrices | $1 - \text{fc\_correlation}$ |
+| `loss_fc_mse` | `fc_mse` | FC matrices | Same as evaluation metric |
+| `loss_l2_timeseries` | `l2` | Time series | Complex squared modulus L² |
+| `loss_amplitude` | `amplitude` | Time series | Per-ROI mean amplitude error |
+| `loss_omega` | `omega` | Time series | Per-ROI mean frequency error |
+| `loss_fcd` | `fcd` | Time series | MSE surrogate for `fcd_ks` |
+| `loss_phfcd` | `phfcd` | Time series (complex) | MSE surrogate for `phfcd_ks` |
+| `loss_phase_fc_correlation` | `phase_fc_correlation` | Time series (complex) | $1 - \text{phase\_fc\_correlation}$ |
+| `loss_metastability` | `metastability` | Time series | L1 metastability difference |
 
 #### Loss Presets
 

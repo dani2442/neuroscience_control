@@ -523,7 +523,7 @@ def compute_dynamics_fit_metrics(
         fcd_win_sec: FCD window length in seconds.
         fcd_step_sec: FCD window step in seconds.
     Returns:
-        ``{"fcd_ks": float, "phfcd_ks": float, "phase_fc_corr": float, "metastability_diff": float}``
+        ``{"fcd_ks": float, "phfcd_ks": float, "phase_fc_correlation": float, "metastability_diff": float}``
 
     Notes:
         ``fcd_ks`` is reported as ``NaN`` when FCD windowing is not feasible.
@@ -587,9 +587,9 @@ def compute_dynamics_fit_metrics(
             )
 
     # ---- Phase-coherence FC correlation ----
-    phase_fc_corr = float("nan")
+    phase_fc_correlation_val = float("nan")
     if torch.is_complex(ts_pred) and torch.is_complex(ts_target):
-        phase_fc_corr = phase_coherence_fc_correlation(ts_pred, ts_target)
+        phase_fc_correlation_val = phase_coherence_fc_correlation(ts_pred, ts_target)
 
     # ---- Metastability ----
     meta_pred = metastability_value(ts_pred)
@@ -599,7 +599,7 @@ def compute_dynamics_fit_metrics(
     return {
         "fcd_ks": fcd_ks,
         "phfcd_ks": phfcd_ks_val,
-        "phase_fc_corr": phase_fc_corr,
+        "phase_fc_correlation": phase_fc_correlation_val,
         "metastability_diff": meta_diff,
     }
 

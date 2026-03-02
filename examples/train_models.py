@@ -43,7 +43,7 @@ from src.training import (
 from src.training.losses import compute_ref_amplitude, compute_ref_omega
 from src.utils import (
     FIGURES_DIR,
-    PAPER_METRIC_KEYS,
+    EVAL_METRIC_KEYS,
     ensure_proxy_env,
     evaluate_hopf_model,
     evaluate_model_loader_metrics,
@@ -380,7 +380,7 @@ def _format_metric(value: float) -> str:
 
 
 def _print_paper_report(report: dict[str, dict[str, float]]) -> None:
-    metric_keys = list(PAPER_METRIC_KEYS)
+    metric_keys = list(EVAL_METRIC_KEYS)
     header = ["model"] + metric_keys
     col_widths = [max(len(key), 12) for key in header]
 

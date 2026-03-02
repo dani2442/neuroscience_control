@@ -107,11 +107,11 @@ class TestPhaseCoherenceFCCorrelation(unittest.TestCase):
         self.assertIsInstance(corr, float)
 
     def test_in_dynamics_fit_metrics(self) -> None:
-        """compute_dynamics_fit_metrics should include phase_fc_corr."""
+        """compute_dynamics_fit_metrics should include phase_fc_correlation."""
         ts = torch.randn(2, 8, 200, dtype=torch.complex64)
         metrics = compute_dynamics_fit_metrics(ts, ts, tr=0.72)
-        self.assertIn("phase_fc_corr", metrics)
-        self.assertFalse(math.isnan(metrics["phase_fc_corr"]))
+        self.assertIn("phase_fc_correlation", metrics)
+        self.assertFalse(math.isnan(metrics["phase_fc_correlation"]))
 
 
 # ---------------------------------------------------------------------------

@@ -24,6 +24,7 @@ from ..metrics._utils import ensure_batch
 from ..metrics.dynamics_metrics import (
     fcd_mse_loss as _fcd_mse_loss,
     metastability_l1_loss as _metastability_l1_loss,
+    phase_coherence_fc_correlation as _phase_coherence_fc_correlation,
     phfcd_mse_loss as _phfcd_mse_loss,
 )
 from ..metrics.fc_metrics import fc_correlation, fc_mse
@@ -263,6 +264,21 @@ def loss_metastability(
     return _metastability_l1_loss(ts_pred, ts_target)
 
 
+def loss_phase_fc_correlation(
+    ts_pred: torch.Tensor,
+    ts_target: torch.Tensor,
+    **_kwargs,
+) -> torch.Tensor:
+    r"""1 − Pearson correlation between phase-coherence FC matrices.
+
+    The phase-coherence FC is the time-averaged instantaneous phase-coherence
+    matrix (Eq. 11 in Deco et al. 2019).  This loss converts the similarity
+    metric into a minimizable objective analogous to :func:`loss_fc_correlation`.
+    """
+    corr = _phase_coherence_fc_correlation(ts_pred, ts_target)
+    return 1.0 - torch.tensor(corr, device=ts_pred.device, dtype=ts_pred.real.dtype)
+
+
 # ---------------------------------------------------------------------------
 # Registry of named loss terms
 # ---------------------------------------------------------------------------
@@ -283,6 +299,7 @@ LOSS_REGISTRY: Dict[str, LossFn] = {
     "omega":        lambda ts_pred, ts_target, **kw: loss_omega(ts_pred, ts_target, **kw),
     "fcd":          lambda ts_pred, ts_target, **kw: loss_fcd(ts_pred, ts_target, **kw),
     "phfcd":        lambda ts_pred, ts_target, **kw: loss_phfcd(ts_pred, ts_target, **kw),
+    "phase_fc_correlation": lambda ts_pred, ts_target, **kw: loss_phase_fc_correlation(ts_pred, ts_target, **kw),
     "metastability": lambda ts_pred, ts_target, **kw: loss_metastability(ts_pred, ts_target, **kw),
 }
 
@@ -305,7 +322,7 @@ class CompositeLoss:
     """
 
     # Which terms need timeseries (ts) vs functional connectivity (fc) inputs
-    _TS_TERMS = {"l2", "amplitude", "omega", "fcd", "phfcd", "metastability"}
+    _TS_TERMS = {"l2", "amplitude", "omega", "fcd", "phfcd", "phase_fc_correlation", "metastability"}
     _FC_TERMS = {"fc_mse", "fc_correlation"}
 
     def __init__(
