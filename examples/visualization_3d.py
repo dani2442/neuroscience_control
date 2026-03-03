@@ -106,7 +106,7 @@ def roi_vals_to_surf_textures(roi_vals: np.ndarray):
 
 
 # Pre-compute global colour limits (symmetric around 0 for diverging cmap)
-abs_max = float(np.abs(activity).max())
+abs_max = float(np.abs(activity).max())-0.5
 vmin, vmax = -abs_max, abs_max
 norm = Normalize(vmin=vmin, vmax=vmax)
 
@@ -160,6 +160,13 @@ print("Building interactive HTML …")
 x, y, z = coords_both[:, 0], coords_both[:, 1], coords_both[:, 2]
 i_f, j_f, k_f = faces_both[:, 0], faces_both[:, 1], faces_both[:, 2]
 
+# Convert matplotlib 'twilight' colormap to a Plotly-compatible colorscale
+_twilight_cmap = cm.get_cmap("seismic", 256)
+_plotly_twilight = [
+    [i / 255, f"rgb({int(c[0]*255)},{int(c[1]*255)},{int(c[2]*255)})"]
+    for i, c in enumerate(_twilight_cmap(np.linspace(0, 1, 256)))
+]
+
 # Initial mesh (t=0)
 intensity_0 = merged_vertex_intensity(0)
 
@@ -168,7 +175,7 @@ mesh_trace = go.Mesh3d(
     i=i_f, j=j_f, k=k_f,
     intensity=intensity_0,
     intensitymode="vertex",
-    colorscale="RdBu_r",
+    colorscale=_plotly_twilight,
     cmin=vmin, cmax=vmax,
     colorbar=dict(title="Brain Activity", len=0.6),
     lighting=dict(ambient=0.5, diffuse=0.7, specular=0.2, roughness=0.5),
@@ -242,56 +249,56 @@ print(f"  → {OUTPUT_HTML}")
 # ═══════════════════════════════════════════════════════════════════════════
 # 2.  GIF animation (matplotlib – both hemispheres merged)
 # ═══════════════════════════════════════════════════════════════════════════
-print(f"Rendering {N_STEPS}-frame GIF …")
+# print(f"Rendering {N_STEPS}-frame GIF …")
 
-fig_mpl = plt.figure(figsize=(12, 7), facecolor="white")
-ax = fig_mpl.add_subplot(111, projection="3d")
+# fig_mpl = plt.figure(figsize=(12, 7), facecolor="white")
+# ax = fig_mpl.add_subplot(111, projection="3d")
 
-# Pre-compute fixed axis limits
-_margin = 8
-_xlim = (coords_both[:, 0].min() - _margin, coords_both[:, 0].max() + _margin)
-_ylim = (coords_both[:, 1].min() - _margin, coords_both[:, 1].max() + _margin)
-_zlim = (coords_both[:, 2].min() - _margin, coords_both[:, 2].max() + _margin)
-
-
-def _render_frame(t_idx: int):
-    """Draw merged brain with face colours driven by brain activity."""
-    ax.clear()
-
-    intensity = merged_vertex_intensity(t_idx)
-
-    # Build polygon collection from faces
-    verts = coords_both[faces_both]  # (n_faces, 3, 3)
-    poly = Poly3DCollection(verts, linewidths=0)
-
-    # Per-face colour = mean vertex intensity → RdBu_r (diverging)
-    face_vals = intensity[faces_both].mean(axis=1)
-    face_colors = cm.RdBu_r(norm(face_vals))
-    poly.set_facecolor(face_colors)
-    poly.set_edgecolor("none")
-    ax.add_collection3d(poly)
-
-    ax.set_xlim(*_xlim)
-    ax.set_ylim(*_ylim)
-    ax.set_zlim(*_zlim)
-    # Oblique top-front view for a visually pleasing perspective
-    ax.view_init(elev=25, azim=-120)
-    ax.set_axis_off()
-    ax.dist = 6.5  # zoom in slightly
-
-    t_seconds = t_idx * SIM_DT
-    fig_mpl.suptitle(
-        f"Coupled Hopf – Brain Activity   t = {t_seconds:.2f} s",
-        fontsize=14, fontweight="bold", y=0.95,
-    )
+# # Pre-compute fixed axis limits
+# _margin = 8
+# _xlim = (coords_both[:, 0].min() - _margin, coords_both[:, 0].max() + _margin)
+# _ylim = (coords_both[:, 1].min() - _margin, coords_both[:, 1].max() + _margin)
+# _zlim = (coords_both[:, 2].min() - _margin, coords_both[:, 2].max() + _margin)
 
 
-ani = animation.FuncAnimation(
-    fig_mpl, lambda f: _render_frame(f), frames=N_STEPS, interval=1000 // FPS,
-)
-OUTPUT_GIF.parent.mkdir(parents=True, exist_ok=True)
-ani.save(str(OUTPUT_GIF), writer="pillow", fps=FPS, dpi=120)
-print(f"  → {OUTPUT_GIF}")
-plt.close(fig_mpl)
+# def _render_frame(t_idx: int):
+#     """Draw merged brain with face colours driven by brain activity."""
+#     ax.clear()
 
-print("Done.")
+#     intensity = merged_vertex_intensity(t_idx)
+
+#     # Build polygon collection from faces
+#     verts = coords_both[faces_both]  # (n_faces, 3, 3)
+#     poly = Poly3DCollection(verts, linewidths=0)
+
+#     # Per-face colour = mean vertex intensity → twilight
+#     face_vals = intensity[faces_both].mean(axis=1)
+#     face_colors = cm.twilight(norm(face_vals))
+#     poly.set_facecolor(face_colors)
+#     poly.set_edgecolor("none")
+#     ax.add_collection3d(poly)
+
+#     ax.set_xlim(*_xlim)
+#     ax.set_ylim(*_ylim)
+#     ax.set_zlim(*_zlim)
+#     # Oblique top-front view for a visually pleasing perspective
+#     ax.view_init(elev=25, azim=-120)
+#     ax.set_axis_off()
+#     ax.dist = 6.5  # zoom in slightly
+
+#     t_seconds = t_idx * SIM_DT
+#     fig_mpl.suptitle(
+#         f"Coupled Hopf – Brain Activity   t = {t_seconds:.2f} s",
+#         fontsize=14, fontweight="bold", y=0.95,
+#     )
+
+
+# ani = animation.FuncAnimation(
+#     fig_mpl, lambda f: _render_frame(f), frames=N_STEPS, interval=1000 // FPS,
+# )
+# OUTPUT_GIF.parent.mkdir(parents=True, exist_ok=True)
+# ani.save(str(OUTPUT_GIF), writer="pillow", fps=FPS, dpi=120)
+# print(f"  → {OUTPUT_GIF}")
+# plt.close(fig_mpl)
+
+# print("Done.")

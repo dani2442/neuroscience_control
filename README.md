@@ -177,8 +177,7 @@ Static Pearson correlation between regional time series.  Given the real part of
 
 $$
 \text{FC}_{nm} = \frac{\text{Cov}(s_n, s_m)}{\text{SD}(s_n) \cdot \text{SD}(s_m)}
-= \frac{\sum_{t=1}^T (s_n(t) - \bar{s}_n)(s_m(t) - \bar{s}_m)}
-       {\sqrt{\sum_{t=1}^T (s_n(t) - \bar{s}_n)^2} \;\sqrt{\sum_{t=1}^T (s_m(t) - \bar{s}_m)^2}}
+
 $$
 
 where $\bar{s}_n = \frac{1}{T}\sum_t s_n(t)$ is the temporal mean of region $n$, $\text{Cov}(s_n, s_m)$ is the sample covariance between regions $n$ and $m$, and $\text{SD}(s_n)$ is the sample standard deviation of region $n$.
