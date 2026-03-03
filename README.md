@@ -24,7 +24,7 @@ This project provides a PyTorch-based framework for **whole-brain modeling** of 
 
 2. **Neural SDE Model** — A data-driven approach using neural networks to parameterize stochastic differential equations (SDEs) for flexible, learnable brain dynamics.
 
-Both models operate entirely in **complex-valued** space: state, drift, diffusion, and Brownian motion are all complex tensors.  The observed BOLD signal is taken as the real part of the complex state.
+Both models operate entirely in **complex-valued** space: state, drift, diffusion, and Brownian motion are all complex tensors. The observed BOLD signal is taken as the real part of the complex state.
 
 ### Key Features
 
@@ -186,8 +186,8 @@ where $\bar{s}_n = \frac{1}{T}\sum_t s_n(t)$ is the temporal mean of region $n$,
 The resulting FC matrix is symmetric with diagonal entries equal to 1 and off-diagonal entries in $[-1, 1]$.
 
 **Training terms:**
-- `loss_fc_correlation`: $1 - \text{corr}\!\bigl(\text{vec}(\text{FC}_{\text{pred}}),\; \text{vec}(\text{FC}_{\text{target}})\bigr)$ — Pearson correlation between the upper-triangular vectors of predicted and target FC, converted to a minimizable loss.
-- `loss_fc_mse`: $\text{MSE}\!\bigl(\text{vec}(\text{FC}_{\text{pred}}),\; \text{vec}(\text{FC}_{\text{target}})\bigr)$ — Mean squared error between upper-triangular entries.
+- `loss_fc_correlation`: $1 - \text{corr}\bigl(\text{vec}(\text{FC}_{\text{pred}}),\; \text{vec}(\text{FC}_{\text{target}})\bigr)$ — Pearson correlation between the upper-triangular vectors of predicted and target FC, converted to a minimizable loss.
+- `loss_fc_mse`: $\text{MSE} \bigl(\text{vec}(\text{FC}_{\text{pred}}),\; \text{vec}(\text{FC}_{\text{target}})\bigr)$ — Mean squared error between upper-triangular entries.
 
 **Evaluation metrics:**
 - `fc_correlation`: Pearson correlation between predicted and target FC (upper triangle), averaged over the batch. Range $[-1, 1]$; **higher = better**.
@@ -213,7 +213,7 @@ Captures how FC evolves over time using sliding windows on the **real part** of 
 The paper's **main model-fitting metric**. Instead of sliding-window Pearson FC, phFCD uses instantaneous phase coherence to capture time-varying functional connectivity:
 
 1. Extract instantaneous phase from the complex analytic signal: $\phi_n(t) = \arg(z_n(t))$
-2. Compute phase coherence at each time point: $P_{nm}(t) = \cos\!\bigl(\phi_n(t) - \phi_m(t)\bigr)$
+2. Compute phase coherence at each time point: $P_{nm}(t) = \cos \bigl(\phi_n(t) - \phi_m(t)\bigr)$
 3. Vectorise upper-triangular entries: $\mathbf{p}(t) = \text{vec}_{\triangle}(P(t)) \in \mathbb{R}^M$
 4. Build phFCD similarity matrix via cosine similarity between time points:
 
@@ -235,14 +235,14 @@ $$
 The time-averaged instantaneous phase-coherence matrix (Eq. 11 in Deco et al. 2019):
 
 $$
-\mathrm{FC}^{\phi}_{nm} = \left\langle \cos\!\bigl(\phi_n(t) - \phi_m(t)\bigr) \right\rangle_t
-= \frac{1}{T}\sum_{t=1}^{T} \cos\!\bigl(\phi_n(t) - \phi_m(t)\bigr)
+\mathrm{FC}^{\phi}_{nm} = \left\langle \cos \bigl(\phi_n(t) - \phi_m(t)\bigr) \right\rangle_t
+= \frac{1}{T}\sum_{t=1}^{T} \cos \bigl(\phi_n(t) - \phi_m(t)\bigr)
 $$
 
 where $\phi_n(t) = \arg(z_n(t))$ is the instantaneous phase of region $n$.  Each entry is the mean phase coherence between two ROIs over time, producing a symmetric matrix with diagonal identically 1 and entries in $[-1, 1]$.
 
 **Training term:**
-- `loss_phase_fc_correlation`: $1 - \text{corr}\!\bigl(\text{vec}(\text{FC}^{\phi}_{\text{pred}}),\; \text{vec}(\text{FC}^{\phi}_{\text{target}})\bigr)$ — analogous to `loss_fc_correlation` but operating on phase-coherence FC.
+- `loss_phase_fc_correlation`: $1 - \text{corr} \bigl(\text{vec}(\text{FC}^{\phi}_{\text{pred}}), \text{vec}(\text{FC}^{\phi}_{\text{target}})\bigr)$ — analogous to `loss_fc_correlation` but operating on phase-coherence FC.
 
 **Evaluation metric:**
 - `phase_fc_correlation`: Pearson correlation between upper-triangular entries of predicted and target grand-average phase-coherence FC. Range $[-1, 1]$; **higher = better**.
@@ -256,7 +256,7 @@ R(t) = \left| \frac{1}{N} \sum_{n=1}^{N} e^{i\phi_n(t)} \right|
 $$
 
 $$
-\text{Metastability} = \text{std}_t\!\bigl(R(t)\bigr)
+\text{Metastability} = \text{std}_t \bigl(R(t)\bigr)
 $$
 
 **Training term:**
@@ -343,7 +343,7 @@ All losses are oriented **lower = better** and composable via `CompositeLoss`.
 | `loss_omega` | `omega` | Time series | Per-ROI mean frequency error |
 | `loss_fcd` | `fcd` | Time series | MSE surrogate for `fcd_ks` |
 | `loss_phfcd` | `phfcd` | Time series (complex) | MSE surrogate for `phfcd_ks` |
-| `loss_phase_fc_correlation` | `phase_fc_correlation` | Time series (complex) | $1 - \text{phase\_fc\_correlation}$ |
+| `loss_phase_fc_correlation` | `phase_fc_correlation` | Time series (complex) | $1 - \text{phase_fc_correlation}$ |
 | `loss_metastability` | `metastability` | Time series | L1 metastability difference |
 
 #### Loss Presets

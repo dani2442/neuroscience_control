@@ -7,7 +7,10 @@ requires-python = ">=3.13"
 dependencies = [
     "ipykernel>=7.1.0",
     "matplotlib>=3.10.8",
+    "nibabel>=5.4.0",
+    "nilearn>=0.13.1",
     "numpy>=2.4.2",
+    "plotly>=6.6.0",
     "scipy>=1.15.0",
     "torch>=2.10.0",
     "torchsde",
