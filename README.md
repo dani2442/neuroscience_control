@@ -185,8 +185,21 @@ where $\bar{s}_n = \frac{1}{T}\sum_t s_n(t)$ is the temporal mean of region $n$,
 The resulting FC matrix is symmetric with diagonal entries equal to 1 and off-diagonal entries in $[-1, 1]$.
 
 **Training terms:**
-- `loss_fc_correlation`: $1 - \text{corr}\bigl(\text{vec}(\text{FC}_{\text{pred}}),\; \text{vec}(\text{FC}_{\text{target}})\bigr)$ — Pearson correlation between the upper-triangular vectors of predicted and target FC, converted to a minimizable loss.
-- `loss_fc_mse`: $\text{MSE} \bigl(\text{vec}(\text{FC}_{\text{pred}}),\; \text{vec}(\text{FC}_{\text{target}})\bigr)$ — Mean squared error between upper-triangular entries.
+- `loss_fc_correlation`:
+
+$$
+\mathcal{L}_{\mathrm{FC\text{-}corr}} = 1 - \operatorname{corr}\!\bigl(\operatorname{vec}(\mathrm{FC}_{\mathrm{pred}}),\; \operatorname{vec}(\mathrm{FC}_{\mathrm{target}})\bigr)
+$$
+
+  Pearson correlation between the upper-triangular vectors of predicted and target FC, converted to a minimizable loss.
+
+- `loss_fc_mse`:
+
+$$
+\mathcal{L}_{\mathrm{FC\text{-}MSE}} = \operatorname{MSE}\!\bigl(\operatorname{vec}(\mathrm{FC}_{\mathrm{pred}}),\; \operatorname{vec}(\mathrm{FC}_{\mathrm{target}})\bigr)
+$$
+
+  Mean squared error between upper-triangular entries.
 
 **Evaluation metrics:**
 - `fc_correlation`: Pearson correlation between predicted and target FC (upper triangle), averaged over the batch. Range $[-1, 1]$; **higher = better**.
@@ -241,7 +254,13 @@ $$
 where $\phi_n(t) = \arg(z_n(t))$ is the instantaneous phase of region $n$.  Each entry is the mean phase coherence between two ROIs over time, producing a symmetric matrix with diagonal identically 1 and entries in $[-1, 1]$.
 
 **Training term:**
-- `loss_phase_fc_correlation`: $1 - \text{corr} \bigl(\text{vec}(\text{FC}^{\phi}_{\text{pred}}), \text{vec}(\text{FC}^{\phi}_{\text{target}})\bigr)$ — analogous to `loss_fc_correlation` but operating on phase-coherence FC.
+- `loss_phase_fc_correlation`:
+
+$$
+\mathcal{L}_{\mathrm{phase\text{-}FC}} = 1 - \operatorname{corr}\!\bigl(\operatorname{vec}(\mathrm{FC}^{\phi}_{\mathrm{pred}}),\; \operatorname{vec}(\mathrm{FC}^{\phi}_{\mathrm{target}})\bigr)
+$$
+
+  Analogous to `loss_fc_correlation` but operating on phase-coherence FC.
 
 **Evaluation metric:**
 - `phase_fc_correlation`: Pearson correlation between upper-triangular entries of predicted and target grand-average phase-coherence FC. Range $[-1, 1]$; **higher = better**.
@@ -515,22 +534,6 @@ The loader expects a `.mat` file with these keys:
 
 `FC_mean` can be precomputed in file or recomputed from `FC_all` when subject subsampling is requested.
 
----
-
-## Theoretical Background
-
-This project is based on the theoretical framework described in the accompanying paper:
-
-> **Continuous-Time Coupled Hopf Model for fMRI: Definitions and Fitting Objectives**
->
-> This note defines a continuous-time preprocessing and fitting objective for a coupled Hopf whole-brain model of resting-state fMRI BOLD signals. We formalize detrending, zero-phase bandpass filtering, normalization, intrinsic frequency estimation, and summary statistics based on functional connectivity (FC) and functional connectivity dynamics (FCD).
-
-Key theoretical contributions:
-- Rigorous continuous-time formulation of preprocessing
-- Formal definitions of FC, FCD, and metastability losses
-- Data-driven controllability tests for linear systems
-
----
 
 ## Citation
 
