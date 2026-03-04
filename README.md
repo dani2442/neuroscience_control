@@ -171,7 +171,7 @@ All evaluation metrics are defined in `EVAL_METRIC_KEYS` and reported by every t
 
 **Functional Connectivity (FC)** — Static Pearson correlation between regional time series from the real part $s_n(t) = \Re(z_n(t))$:
 
-$$\text{FC}\_{nm} = \frac{\operatorname{Cov}(s_n,\, s_m)}{\operatorname{SD}(s_n) \cdot \operatorname{SD}(s_m)}$$
+$$\text{FC}\_{nm} = \frac{\text{Cov}(s_n,\, s_m)}{\text{SD}(s_n) \cdot \text{SD}(s_m)}$$
 
 **Functional Connectivity Dynamics (FCD)** — Sliding-window FC vectors, z-scored, then correlated pairwise across windows. Compared via two-sample KS distance.
 
@@ -179,7 +179,7 @@ $$\text{FC}\_{nm} = \frac{\operatorname{Cov}(s_n,\, s_m)}{\operatorname{SD}(s_n)
 
 **Metastability** — Temporal variability of global synchronisation via the Kuramoto order parameter:
 
-$$R(t) = \left\lvert \frac{1}{N} \sum_{n=1}^{N} e^{i\phi_n(t)} \right\rvert, \qquad \text{Metastability} = \operatorname{std}_t\bigl(R(t)\bigr)$$
+$$R(t) = \left\lvert \frac{1}{N} \sum_{n=1}^{N} e^{i\phi_n(t)} \right\rvert, \qquad \text{Metastability} = \text{std}_t\bigl(R(t)\bigr)$$
 
 ### Loss Presets
 
