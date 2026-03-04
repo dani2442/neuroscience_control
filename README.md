@@ -42,8 +42,8 @@ All three models operate in **complex-valued** space — state, drift, diffusion
 Requires **Python ≥ 3.13** and **PyTorch ≥ 2.10**.
 
 ```bash
-git clone https://github.com/your-username/neuroscience-control.git
-cd neuroscience-control
+git clone https://github.com/dani2442/neuroscience_control.git
+cd neuroscience_control
 uv sync
 ```
 
