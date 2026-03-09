@@ -81,6 +81,7 @@ _DATASET_ARG_NAMES = (
     "dataset_type",
     "data_path",
     "lsd_data_dir",
+    "max_subjects",
     "nilearn_dataset",
     "nilearn_data_dir",
     "nilearn_n_subjects",
@@ -509,6 +510,7 @@ def _add_dataset_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--data-path", type=str, default=None, help="Path to local .mat dataset.")
     parser.add_argument("--lsd-data-dir", type=str, default=None, help="Directory containing LSD .mat files.")
+    parser.add_argument("--max-subjects", type=int, default=None, help="Limit number of subjects loaded (None = all).")
     parser.add_argument(
         "--nilearn-dataset",
         type=str,

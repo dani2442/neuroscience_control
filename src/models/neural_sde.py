@@ -43,11 +43,17 @@ class DriftNetwork(nn.Module):
     def forward(self, x: torch.Tensor, control: Optional[torch.Tensor] = None) -> torch.Tensor:
         # x: complex (batch, n_rois)
         x_real = torch.view_as_real(x).reshape(x.shape[0], -1)  # (batch, 2*n_rois)
-        if control is not None and self.n_control_dims > 0:
-            ctrl = control.to(x.dtype)
-            if not torch.is_complex(ctrl):
-                ctrl = torch.complex(ctrl, torch.zeros_like(ctrl))
-            ctrl_real = torch.view_as_real(ctrl).reshape(x.shape[0], -1)  # (batch, 2*m)
+        if self.n_control_dims > 0:
+            if control is not None:
+                ctrl = control.to(x.dtype)
+                if not torch.is_complex(ctrl):
+                    ctrl = torch.complex(ctrl, torch.zeros_like(ctrl))
+                ctrl_real = torch.view_as_real(ctrl).reshape(x.shape[0], -1)  # (batch, 2*m)
+            else:
+                # No control provided: pad with zeros (zero-control = baseline)
+                ctrl_real = torch.zeros(
+                    x.shape[0], 2 * self.n_control_dims, dtype=x_real.dtype, device=x_real.device
+                )
             x_real = torch.cat([x_real, ctrl_real], dim=1)  # (batch, 2*(n_rois+m))
         out = self.net(x_real)  # (batch, 2*n_rois)
         return torch.view_as_complex(out.reshape(x.shape[0], self.n_rois, 2))

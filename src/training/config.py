@@ -57,7 +57,7 @@ class TrainingConfig:
     atlas_yeo_networks: int = 7
     atlas_resolution_mm: int = 1
     atlas_smoothing_fwhm: Optional[float] = None
-    max_subjects: Optional[int] = 50
+    max_subjects: Optional[int] = None  # None means use all subjects
     window_size: int = 100
     n_windows_per_epoch: int = 1024
     batch_size: int = 128

@@ -162,13 +162,14 @@ def load_lsd_data(
         )
         n_subs = int(cond_data.shape[0])
 
-        # Map condition name to control value (case-insensitive match)
+        # Map condition name to control value (case-insensitive match).
+        # Sort keys longest-first so "LSD+KET" matches before "LSD".
         ctrl_val = None
         cond_norm = _normalize_cond_name(cond_name)
-        for key, val in condition_map.items():
+        for key in sorted(condition_map, key=len, reverse=True):
             key_norm = _normalize_cond_name(key)
-            if key_norm in cond_norm or cond_norm in key_norm:
-                ctrl_val = val
+            if key_norm == cond_norm or key_norm in cond_norm:
+                ctrl_val = condition_map[key]
                 break
         if ctrl_val is None:
             # Fallback: use condition index
