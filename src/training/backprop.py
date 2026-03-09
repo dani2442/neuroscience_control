@@ -2,13 +2,9 @@
 
 from __future__ import annotations
 
-import math
-
-import torch
 from torch.utils.data import DataLoader
 
 from ..dataset import NeuroscienceDataset, create_data_loaders
-from ..metrics import compute_all_fc_metrics, compute_dynamics_fit_metrics
 from ..metrics.metrics_store import MetricsStore
 from ..models import BaseNeuroscienceModel
 from .config import TrainingConfig

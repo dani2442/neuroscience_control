@@ -73,21 +73,25 @@ def generate_fc_figure(
     default_name: str,
     use_wandb: bool = False,
     wandb_key: str = "figures/fc_comparison",
+    control: torch.Tensor | None = None,
 ) -> plt.Figure:
     """Simulate a few subjects for aggregate FC and plot comparison."""
     n_fc_paths = min(6, val_timeseries.shape[0])
     fc_initial_states = val_timeseries[:n_fc_paths, :, 0]
+    fwd_kwargs: dict[str, Any] = dict(
+        initial_state=fc_initial_states,
+        n_steps=n_timepoints,
+        dt=dt,
+        sde_type=sde_type,
+        method=method,
+        dt_min=dt_min,
+        use_adjoint=use_adjoint,
+        adjoint_method=adjoint_method,
+    )
+    if control is not None:
+        fwd_kwargs["control"] = control[:n_fc_paths]
     with torch.no_grad():
-        fc_ts = model.forward(
-            initial_state=fc_initial_states,
-            n_steps=n_timepoints,
-            dt=dt,
-            sde_type=sde_type,
-            method=method,
-            dt_min=dt_min,
-            use_adjoint=use_adjoint,
-            adjoint_method=adjoint_method,
-        )
+        fc_ts = model.forward(**fwd_kwargs)
         fc_pred = model.compute_fc(fc_ts)
         fc_mean = fc_pred.mean(dim=0)
 
@@ -118,6 +122,7 @@ def generate_multigrid_figure(
     dt_min: float | None = 0.1,
     use_adjoint: bool = False,
     adjoint_method: str | None = "adjoint_euler",
+    control: torch.Tensor | None = None,
     *,
     n_rois: int = 12,
     n_cols: int = 4,
@@ -137,17 +142,21 @@ def generate_multigrid_figure(
     ic = real_ts[:, 0]  # (n_rois,)
     initial_states_repeated = ic.unsqueeze(0).expand(n_simulations, -1)  # (n_sim, n_rois)
 
+    fwd_kwargs: dict[str, Any] = dict(
+        initial_state=initial_states_repeated,
+        n_steps=n_timepoints,
+        dt=dt,
+        sde_type=sde_type,
+        method=method,
+        dt_min=dt_min,
+        use_adjoint=use_adjoint,
+        adjoint_method=adjoint_method,
+    )
+    if control is not None:
+        # Repeat the first subject's control for all simulations
+        fwd_kwargs["control"] = control[:1].expand(n_simulations, -1)
     with torch.no_grad():
-        sim_ts = model.forward(
-            initial_state=initial_states_repeated,
-            n_steps=n_timepoints,
-            dt=dt,
-            sde_type=sde_type,
-            method=method,
-            dt_min=dt_min,
-            use_adjoint=use_adjoint,
-            adjoint_method=adjoint_method,
-        )
+        sim_ts = model.forward(**fwd_kwargs)
     # sim_ts: (n_simulations, n_rois, n_timepoints)
 
     fig = plot_simulation_multigrid(
@@ -290,8 +299,15 @@ def evaluate_hopf_model(
     eval_indices = subject_indices[:n_paths]
     initial_states = dataset.timeseries[eval_indices, :, 0]
 
+    # Extract control for evaluated subjects if available
+    ctrl = getattr(dataset, "control", None)
+    eval_control = ctrl[eval_indices] if ctrl is not None else None
+
+    fwd_kwargs: dict[str, Any] = dict(initial_state=initial_states, n_steps=n_timepoints, dt=cfg.tr)
+    if eval_control is not None:
+        fwd_kwargs["control"] = eval_control
     with torch.no_grad():
-        hopf_ts = hopf_model.forward(initial_state=initial_states, n_steps=n_timepoints, dt=cfg.tr)
+        hopf_ts = hopf_model.forward(**fwd_kwargs)
         hopf_fc = hopf_model.compute_fc(hopf_ts)
         hopf_fc_mean = hopf_fc.mean(dim=0)
 
@@ -315,9 +331,10 @@ def _forward_for_metrics(
     initial_state: torch.Tensor,
     n_steps: int,
     cfg,
+    control: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Forward helper used to keep metric simulation settings identical."""
-    return model.forward(
+    kwargs: dict[str, Any] = dict(
         initial_state=initial_state,
         n_steps=n_steps,
         dt=cfg.tr,
@@ -327,6 +344,9 @@ def _forward_for_metrics(
         use_adjoint=getattr(cfg, "use_adjoint", False),
         adjoint_method=getattr(cfg, "adjoint_method", None),
     )
+    if control is not None:
+        kwargs["control"] = control
+    return model.forward(**kwargs)
 
 
 EVAL_METRIC_KEYS = (
@@ -360,9 +380,17 @@ def evaluate_model_loader_metrics(
     counts: dict[str, int] = {}
 
     for batch in loader:
-        windows, fc_targets, _ = batch
+        if len(batch) == 4:
+            windows, fc_targets, _, control = batch
+        else:
+            windows, fc_targets, _ = batch
+            control = None
         windows = windows.to(model.device)
         fc_targets = fc_targets.to(model.device)
+        if control is not None:
+            control = control.to(model.device)
+            if control.shape[-1] == 0:
+                control = None
 
         batch_steps = windows.shape[2]
         n_sim_steps = min(batch_steps, n_steps) if n_steps is not None else batch_steps
@@ -370,7 +398,7 @@ def evaluate_model_loader_metrics(
         initial_state = target_window[:, :, 0]
 
         with torch.no_grad():
-            simulated = _forward_for_metrics(model, initial_state, n_sim_steps, cfg)
+            simulated = _forward_for_metrics(model, initial_state, n_sim_steps, cfg, control=control)
             fc_pred = model.compute_fc(simulated)
             batch_metrics = compute_all_fc_metrics(fc_pred, fc_targets)
             batch_metrics.update(compute_all_timeseries_metrics(simulated, target_window))

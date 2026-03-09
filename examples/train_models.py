@@ -77,6 +77,67 @@ _MODEL_TITLES = {
     "hybrid_hopf": "Hybrid Hopf",
 }
 
+_DATASET_ARG_NAMES = (
+    "dataset_type",
+    "data_path",
+    "lsd_data_dir",
+    "nilearn_dataset",
+    "nilearn_data_dir",
+    "nilearn_n_subjects",
+    "openneuro_dataset",
+    "openneuro_tag",
+    "openneuro_target_dir",
+    "openneuro_include",
+    "openneuro_exclude",
+    "datalad_source",
+    "datalad_dataset_dir",
+    "datalad_get_paths",
+    "bids_root",
+    "bids_relative_path",
+    "bids_derivatives_dir",
+    "bids_task",
+    "bids_space",
+    "bids_desc",
+    "bids_subject_ids",
+    "bids_runs_per_subject",
+    "atlas_n_rois",
+    "atlas_yeo_networks",
+    "atlas_resolution_mm",
+    "atlas_smoothing_fwhm",
+)
+
+
+def _apply_common_cfg_overrides(cfg, args: argparse.Namespace) -> None:
+    if args.no_wandb:
+        cfg.use_wandb = False
+    if args.device is not None:
+        cfg.device = args.device
+    if args.n_epochs is not None:
+        cfg.n_epochs = args.n_epochs
+
+
+def _apply_dataset_cfg_overrides(cfg, args: argparse.Namespace) -> None:
+    for name in _DATASET_ARG_NAMES:
+        value = getattr(args, name, None)
+        if value is not None:
+            setattr(cfg, name, value)
+    if getattr(args, "no_nilearn_reduce_confounds", False):
+        cfg.nilearn_reduce_confounds = False
+
+
+def _make_backprop_namespace_from_paper_args(args: argparse.Namespace, model_name: str) -> argparse.Namespace:
+    payload = {
+        "model": model_name,
+        "no_wandb": args.no_wandb,
+        "device": args.device,
+        "skip_figures": args.skip_figures,
+        "n_epochs": args.n_epochs,
+        "no_nilearn_reduce_confounds": getattr(args, "no_nilearn_reduce_confounds", False),
+    }
+    for name in _DATASET_ARG_NAMES:
+        payload[name] = getattr(args, name, None)
+    return argparse.Namespace(**payload)
+
 
 def _create_validation_loader(
     dataset: NeuroscienceDataset,
@@ -88,12 +149,15 @@ def _create_validation_loader(
     window_size = min(cfg.window_size, dataset.n_timepoints // 4)
     n_val_win = max(cfg.batch_size, cfg.n_windows_per_epoch // 4)
     val_idx = torch.as_tensor(val_idx, device=dataset.timeseries.device, dtype=torch.long)
+    ctrl = getattr(dataset, "control", None)
+    val_ctrl = ctrl[val_idx] if ctrl is not None else None
     val_dataset = RandomWindowDataset(
         dataset.timeseries[val_idx],
         dataset.fc_matrices[val_idx],
         window_size=window_size,
         n_windows=n_val_win,
         device=device,
+        control=val_ctrl,
     )
     return DataLoader(val_dataset, batch_size=cfg.batch_size, shuffle=False, drop_last=True)
 
@@ -126,12 +190,8 @@ def _format_metrics_mean_std(metrics: dict[str, object]) -> dict[str, str]:
 def _run_backprop(args: argparse.Namespace) -> dict[str, object]:
     cfg = _CONFIG_CLS[args.model]()
     cfg.experiment_name = f"{args.model}_backprop"
-    if args.no_wandb:
-        cfg.use_wandb = False
-    if args.device is not None:
-        cfg.device = args.device
-    if args.n_epochs is not None:
-        cfg.n_epochs = args.n_epochs
+    _apply_common_cfg_overrides(cfg, args)
+    _apply_dataset_cfg_overrides(cfg, args)
 
     print_section(f"{args.model.upper()} BACKPROP TRAINING")
     ensure_proxy_env()
@@ -146,7 +206,8 @@ def _run_backprop(args: argparse.Namespace) -> dict[str, object]:
     print(f"  window_size={window_size}  train={len(train_loader)}  val={len(val_loader)}  test={len(test_loader)}")
 
     print_section("STEP 2: Training Model (Backpropagation)")
-    model = build_model(args.model, dataset, cfg, device, structural_connectivity=dataset.fc_mean)
+    model = build_model(args.model, dataset, cfg, device, structural_connectivity=dataset.fc_mean,
+                        n_control_dims=dataset.n_control_dims)
     ref_amplitude = compute_ref_amplitude(dataset.timeseries)
     ref_omega = compute_ref_omega(dataset.timeseries, tr=cfg.tr, f_lo=cfg.f_lo, f_hi=cfg.f_hi)
     print(f"  ref_amplitude=[{ref_amplitude.min():.4f}, {ref_amplitude.max():.4f}]")
@@ -232,10 +293,8 @@ def _run_backprop(args: argparse.Namespace) -> dict[str, object]:
 
 def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
     cfg = HopfConfig(experiment_name="hopf_grid")
-    if args.no_wandb:
-        cfg.use_wandb = False
-    if args.device is not None:
-        cfg.device = args.device
+    _apply_common_cfg_overrides(cfg, args)
+    _apply_dataset_cfg_overrides(cfg, args)
 
     print_section("COUPLED HOPF MODEL TRAINING (GRID SEARCH)")
     ensure_proxy_env()
@@ -316,6 +375,7 @@ def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
             fcd_step_sec=cfg.fcd_step_sec,
             metric_weights=metric_weights or None,
             noise_sigma=cfg.noise_sigma,
+            n_control_dims=dataset.n_control_dims,
         )
 
         n_eval_paths = max(10, cfg.n_simulations)
@@ -429,13 +489,7 @@ def _run_paper_suite(args: argparse.Namespace) -> dict[str, object]:
     report["hopf_grid"] = grid_result["paper_metrics"]
 
     for model_name in ("hopf", "nsde", "hybrid_hopf"):
-        backprop_args = argparse.Namespace(
-            model=model_name,
-            no_wandb=args.no_wandb,
-            device=args.device,
-            skip_figures=args.skip_figures,
-            n_epochs=args.n_epochs,
-        )
+        backprop_args = _make_backprop_namespace_from_paper_args(args, model_name)
         backprop_result = _run_backprop(backprop_args)
         report[f"{model_name}_backprop"] = backprop_result["paper_metrics"]
 
@@ -443,6 +497,87 @@ def _run_paper_suite(args: argparse.Namespace) -> dict[str, object]:
     output_path = _save_paper_report(report, args.output_json)
 
     return {"paper_metrics": report, "output_json": str(output_path)}
+
+
+def _add_dataset_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--dataset-type",
+        type=str,
+        default=None,
+        choices=["ts_young", "mat", "lsd", "nilearn", "openneuro", "datalad", "bids"],
+        help="Dataset backend to use.",
+    )
+    parser.add_argument("--data-path", type=str, default=None, help="Path to local .mat dataset.")
+    parser.add_argument("--lsd-data-dir", type=str, default=None, help="Directory containing LSD .mat files.")
+    parser.add_argument(
+        "--nilearn-dataset",
+        type=str,
+        default=None,
+        choices=["development_fmri", "adhd"],
+        help="nilearn fetcher dataset name.",
+    )
+    parser.add_argument("--nilearn-data-dir", type=str, default=None, help="Cache directory for nilearn data.")
+    parser.add_argument("--nilearn-n-subjects", type=int, default=None, help="Limit nilearn fetched subjects.")
+    parser.add_argument(
+        "--no-nilearn-reduce-confounds",
+        action="store_true",
+        help="Disable nilearn fetch_development_fmri confound reduction.",
+    )
+    parser.add_argument("--openneuro-dataset", type=str, default=None, help="OpenNeuro dataset id (e.g. ds000030).")
+    parser.add_argument("--openneuro-tag", type=str, default=None, help="OpenNeuro dataset tag/revision.")
+    parser.add_argument("--openneuro-target-dir", type=str, default=None, help="Directory for OpenNeuro download.")
+    parser.add_argument(
+        "--openneuro-include",
+        nargs="+",
+        default=None,
+        help="OpenNeuro include glob patterns.",
+    )
+    parser.add_argument(
+        "--openneuro-exclude",
+        nargs="+",
+        default=None,
+        help="OpenNeuro exclude glob patterns.",
+    )
+    parser.add_argument("--datalad-source", type=str, default=None, help="DataLad dataset source URL/path.")
+    parser.add_argument("--datalad-dataset-dir", type=str, default=None, help="Local DataLad dataset checkout dir.")
+    parser.add_argument(
+        "--datalad-get-paths",
+        nargs="+",
+        default=None,
+        help="DataLad paths/globs to materialize with `datalad get`.",
+    )
+    parser.add_argument("--bids-root", type=str, default=None, help="Root path for direct BIDS loading.")
+    parser.add_argument("--bids-relative-path", type=str, default=None, help="Subpath under downloaded dataset root.")
+    parser.add_argument(
+        "--bids-derivatives-dir",
+        type=str,
+        default=None,
+        help="Relative derivatives directory containing preprocessed BOLD files.",
+    )
+    parser.add_argument("--bids-task", type=str, default=None, help="BIDS task label filter.")
+    parser.add_argument("--bids-space", type=str, default=None, help="BIDS space label filter.")
+    parser.add_argument("--bids-desc", type=str, default=None, help="BIDS desc label filter.")
+    parser.add_argument(
+        "--bids-subject-ids",
+        nargs="+",
+        default=None,
+        help="Optional subject list (sub-XXX or XXX).",
+    )
+    parser.add_argument(
+        "--bids-runs-per-subject",
+        type=int,
+        default=None,
+        help="Number of BOLD runs to use per subject.",
+    )
+    parser.add_argument("--atlas-n-rois", type=int, default=None, help="Schaefer atlas ROI count.")
+    parser.add_argument("--atlas-yeo-networks", type=int, default=None, help="Schaefer atlas network count.")
+    parser.add_argument("--atlas-resolution-mm", type=int, default=None, help="Schaefer atlas resolution.")
+    parser.add_argument(
+        "--atlas-smoothing-fwhm",
+        type=float,
+        default=None,
+        help="Optional smoothing passed to nilearn masker.",
+    )
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -457,18 +592,21 @@ def _build_parser() -> argparse.ArgumentParser:
     backprop.add_argument("--device", type=str, default=None, help="Device (auto, cuda, cpu)")
     backprop.add_argument("--skip-figures", action="store_true", help="Skip final figure generation")
     backprop.add_argument("--n-epochs", type=int, default=None, help="Override number of training epochs")
+    _add_dataset_args(backprop)
 
     hopf_grid = subparsers.add_parser("hopf-grid", help="Train Coupled Hopf with grid search")
     hopf_grid.add_argument("--no-wandb", action="store_true", help="Disable wandb logging")
     hopf_grid.add_argument("--device", type=str, default=None, help="Device (auto, cuda, cpu)")
     hopf_grid.add_argument("--skip-figures", action="store_true", help="Skip final figure generation")
     hopf_grid.add_argument("--n-epochs", type=int, default=None, help=argparse.SUPPRESS)
+    _add_dataset_args(hopf_grid)
 
     paper = subparsers.add_parser("paper", help="Run Hopf-grid + all backprop models and report paper metrics")
     paper.add_argument("--no-wandb", action="store_true", help="Disable wandb logging")
     paper.add_argument("--device", type=str, default=None, help="Device (auto, cuda, cpu)")
     paper.add_argument("--skip-figures", action="store_true", help="Skip final figure generation")
     paper.add_argument("--n-epochs", type=int, default=None, help="Override backprop training epochs")
+    _add_dataset_args(paper)
     paper.add_argument(
         "--output-json",
         type=Path,

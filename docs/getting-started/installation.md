@@ -2,8 +2,9 @@
 
 ## Requirements
 
-- Python 3.13+
-- Linux/macOS/Windows
+- **Python ≥ 3.13**
+- **PyTorch ≥ 2.2**
+- Linux / macOS / Windows
 - Optional CUDA-enabled GPU for training speed
 
 ## Install from PyPI
@@ -26,6 +27,16 @@ cd neuroscience_control
 uv sync
 ```
 
+## Optional dataset integrations
+
+`nilearn` is included by default. For OpenNeuro and DataLad dataset download support, install the `datasets` extra:
+
+```bash
+pip install "neuroscience-control[datasets]"
+# or
+uv sync --group datasets
+```
+
 ## Verify installation
 
 ```bash
@@ -34,5 +45,9 @@ python -c "import neuroscience_control as nc; print(nc.__version__)"
 
 ## Dependency notes
 
-`uv` is configured to use your `torchsde` fork through `tool.uv.sources`.
-If you install with plain `pip`, it will use the PyPI `torchsde` release.
+!!! note "Complex-valued `torchsde` fork"
+    This project depends on a [fork of `torchsde`](https://github.com/dani2442/torchsde)
+    that adds complex Brownian motion support. When installing from source with `uv`, this
+    is resolved automatically via the `[tool.uv.sources]` override in `pyproject.toml`.
+    If you install with plain `pip`, it will use the PyPI `torchsde` release (which may
+    lack complex-valued support).
