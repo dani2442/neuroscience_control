@@ -398,6 +398,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#optional-dataset-integrations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Optional dataset integrations
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#verify-installation" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -691,6 +702,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#optional-dataset-integrations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Optional dataset integrations
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#verify-installation" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -735,8 +757,9 @@
 <h1 id="installation">Installation<a class="headerlink" href="#installation" title="Permanent link">&para;</a></h1>
 <h2 id="requirements">Requirements<a class="headerlink" href="#requirements" title="Permanent link">&para;</a></h2>
 <ul>
-<li>Python 3.13+</li>
-<li>Linux/macOS/Windows</li>
+<li><strong>Python ≥ 3.13</strong></li>
+<li><strong>PyTorch ≥ 2.2</strong></li>
+<li>Linux / macOS / Windows</li>
 <li>Optional CUDA-enabled GPU for training speed</li>
 </ul>
 <h2 id="install-from-pypi">Install from PyPI<a class="headerlink" href="#install-from-pypi" title="Permanent link">&para;</a></h2>
@@ -750,12 +773,24 @@
 <span class="nb">cd</span><span class="w"> </span>neuroscience_control
 uv<span class="w"> </span>sync
 </code></pre></div>
+<h2 id="optional-dataset-integrations">Optional dataset integrations<a class="headerlink" href="#optional-dataset-integrations" title="Permanent link">&para;</a></h2>
+<p><code>nilearn</code> is included by default. For OpenNeuro and DataLad dataset download support, install the <code>datasets</code> extra:</p>
+<div class="highlight"><pre><span></span><code>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;neuroscience-control[datasets]&quot;</span>
+<span class="c1"># or</span>
+uv<span class="w"> </span>sync<span class="w"> </span>--group<span class="w"> </span>datasets
+</code></pre></div>
 <h2 id="verify-installation">Verify installation<a class="headerlink" href="#verify-installation" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code>python<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;import neuroscience_control as nc; print(nc.__version__)&quot;</span>
 </code></pre></div>
 <h2 id="dependency-notes">Dependency notes<a class="headerlink" href="#dependency-notes" title="Permanent link">&para;</a></h2>
-<p><code>uv</code> is configured to use your <code>torchsde</code> fork through <code>tool.uv.sources</code>.
-If you install with plain <code>pip</code>, it will use the PyPI <code>torchsde</code> release.</p>
+<div class="admonition note">
+<p class="admonition-title">Complex-valued <code>torchsde</code> fork</p>
+<p>This project depends on a <a href="https://github.com/dani2442/torchsde">fork of <code>torchsde</code></a>
+that adds complex Brownian motion support. When installing from source with <code>uv</code>, this
+is resolved automatically via the <code>[tool.uv.sources]</code> override in <code>pyproject.toml</code>.
+If you install with plain <code>pip</code>, it will use the PyPI <code>torchsde</code> release (which may
+lack complex-valued support).</p>
+</div>
 
 
 

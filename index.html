@@ -282,10 +282,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#why-this-package" class="md-nav__link">
+  <a href="#key-features" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Why this package
+        Key Features
       
     </span>
   </a>
@@ -293,10 +293,21 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#quick-links" class="md-nav__link">
+  <a href="#quick-start" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Quick links
+        Quick Start
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#documentation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Documentation
       
     </span>
   </a>
@@ -621,10 +632,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#why-this-package" class="md-nav__link">
+  <a href="#key-features" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Why this package
+        Key Features
       
     </span>
   </a>
@@ -632,10 +643,21 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#quick-links" class="md-nav__link">
+  <a href="#quick-start" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Quick links
+        Quick Start
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#documentation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Documentation
       
     </span>
   </a>
@@ -663,27 +685,91 @@
 
 
 <h1 id="neuroscience-control">Neuroscience Control<a class="headerlink" href="#neuroscience-control" title="Permanent link">&para;</a></h1>
-<p><code>neuroscience-control</code> is a PyTorch toolkit for whole-brain resting-state fMRI modeling.
-It provides three model families with a shared training and evaluation pipeline:</p>
+<p><code>neuroscience-control</code> is a PyTorch framework for <strong>whole-brain modeling</strong> of resting-state fMRI BOLD signals. It implements three complementary model families — all operating in <strong>complex-valued</strong> space — with a shared training and evaluation pipeline.</p>
+<table>
+<thead>
+<tr>
+<th>Model</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Coupled Hopf</strong></td>
+<td>Physics-based coupled oscillators at the supercritical Hopf bifurcation, informed by structural connectivity</td>
+</tr>
+<tr>
+<td><strong>Hybrid Hopf</strong></td>
+<td>Hopf oscillators with a learnable complex-valued graph-coupling network replacing fixed linear diffusive coupling</td>
+</tr>
+<tr>
+<td><strong>Neural SDE</strong></td>
+<td>Data-driven neural networks parameterising stochastic differential equations</td>
+</tr>
+</tbody>
+</table>
+<p>The observed BOLD signal is the real part of the complex state, $s_i(t) = \Re(z_i(t))$.</p>
+<h2 id="key-features">Key Features<a class="headerlink" href="#key-features" title="Permanent link">&para;</a></h2>
 <ul>
-<li>Coupled Hopf (physics-informed oscillators)</li>
-<li>Hybrid Hopf (Hopf + learnable coupling network)</li>
-<li>Neural SDE (data-driven stochastic dynamics)</li>
+<li><strong>Biologically-grounded</strong> modeling with structural connectivity from DTI</li>
+<li><strong>Native complex-valued SDEs</strong> via a <a href="https://github.com/dani2442/torchsde">complex-valued fork of <code>torchsde</code></a></li>
+<li><strong>Comprehensive evaluation</strong>: FC, FCD, phFCD, phase-coherence FC, metastability, power spectrum, autocorrelation</li>
+<li><strong>Composable losses</strong> via <code>CompositeLoss</code> with presets (<code>mse</code>, <code>combined</code>, <code>fc_phfcd_meta</code>, <code>full</code>, …)</li>
+<li><strong>Flexible data loading</strong>: local <code>.mat</code> files, LSD pharmacological data, nilearn, OpenNeuro, DataLad, BIDS</li>
+<li><strong>Weights &amp; Biases</strong> integration for experiment tracking</li>
+<li><strong>GPU-accelerated</strong> training and simulation</li>
+<li><strong>CI / Docs / PyPI</strong> workflows ready out of the box</li>
 </ul>
-<h2 id="why-this-package">Why this package<a class="headerlink" href="#why-this-package" title="Permanent link">&para;</a></h2>
-<ul>
-<li>Complex-valued dynamical systems support for state and noise</li>
-<li>Reproducible training pipelines (<code>grid search</code>, <code>backprop</code>, <code>paper</code> run)</li>
-<li>Domain metrics out of the box: FC, FCD, phFCD, metastability, and timeseries fit</li>
-<li>Ready for package publishing to TestPyPI/PyPI and docs deployment via GitHub Pages</li>
-</ul>
-<h2 id="quick-links">Quick links<a class="headerlink" href="#quick-links" title="Permanent link">&para;</a></h2>
-<ul>
-<li>Installation: <a href="getting-started/installation/">Getting Started / Installation</a></li>
-<li>Tutorial: <a href="tutorials/first-training-run/">First Training Run</a></li>
-<li>Metrics tutorial: <a href="tutorials/metrics-evaluation/">Metrics Evaluation</a></li>
-<li>Publishing checklist: <a href="publishing/">Publishing</a></li>
-</ul>
+<h2 id="quick-start">Quick Start<a class="headerlink" href="#quick-start" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">neuroscience_control.models</span><span class="w"> </span><span class="kn">import</span> <span class="n">CoupledHopfModel</span>
+
+<span class="n">device</span> <span class="o">=</span> <span class="s2">&quot;cuda&quot;</span> <span class="k">if</span> <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">is_available</span><span class="p">()</span> <span class="k">else</span> <span class="s2">&quot;cpu&quot;</span>
+<span class="n">model</span> <span class="o">=</span> <span class="n">CoupledHopfModel</span><span class="p">(</span>
+    <span class="n">n_rois</span><span class="o">=</span><span class="mi">68</span><span class="p">,</span>
+    <span class="n">initial_a</span><span class="o">=-</span><span class="mf">0.02</span><span class="p">,</span>   <span class="c1"># Bifurcation parameter (near criticality)</span>
+    <span class="n">initial_g</span><span class="o">=</span><span class="mf">0.5</span><span class="p">,</span>      <span class="c1"># Global coupling strength</span>
+    <span class="n">initial_kappa</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span>  <span class="c1"># Scaling factor for local dynamics</span>
+    <span class="n">noise_sigma</span><span class="o">=</span><span class="mf">0.5</span><span class="p">,</span>
+    <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
+<span class="p">)</span>
+
+<span class="n">initial_state</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">randn</span><span class="p">(</span><span class="mi">10</span><span class="p">,</span> <span class="mi">68</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">complex64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+<span class="k">with</span> <span class="n">torch</span><span class="o">.</span><span class="n">no_grad</span><span class="p">():</span>
+    <span class="n">timeseries</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">forward</span><span class="p">(</span><span class="n">initial_state</span><span class="o">=</span><span class="n">initial_state</span><span class="p">,</span> <span class="n">n_steps</span><span class="o">=</span><span class="mi">200</span><span class="p">)</span>
+    <span class="n">fc_matrix</span>  <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">compute_fc</span><span class="p">(</span><span class="n">timeseries</span><span class="p">)</span>
+</code></pre></div>
+<h2 id="documentation">Documentation<a class="headerlink" href="#documentation" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Page</th>
+<th>Contents</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="getting-started/installation/">Installation</a></td>
+<td>Requirements, PyPI/source install, optional extras, torchsde note</td>
+</tr>
+<tr>
+<td><a href="tutorials/first-training-run/">First Training Run</a></td>
+<td>End-to-end training walkthrough, CLI flags, dataset backends</td>
+</tr>
+<tr>
+<td><a href="tutorials/metrics-evaluation/">Metrics &amp; Evaluation</a></td>
+<td>All 9 evaluation metrics, mathematical definitions, loss presets</td>
+</tr>
+<tr>
+<td><a href="api/">API Overview</a></td>
+<td>Module-by-module reference: models, metrics, training, dataset, utils</td>
+</tr>
+<tr>
+<td><a href="publishing/">Publishing</a></td>
+<td>TestPyPI / PyPI release checklist</td>
+</tr>
+</tbody>
+</table>
 
 
 
