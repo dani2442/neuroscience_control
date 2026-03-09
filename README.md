@@ -1,45 +1,43 @@
 # Neuroscience Control
 
-<p align="center">
-  <b>Brain dynamics simulation and control using Coupled Hopf and Neural SDE models</b>
-</p>
+[![CI](https://github.com/dani2442/neuroscience_control/actions/workflows/ci.yml/badge.svg)](https://github.com/dani2442/neuroscience_control/actions/workflows/ci.yml)
+[![Docs](https://github.com/dani2442/neuroscience_control/actions/workflows/docs.yml/badge.svg)](https://github.com/dani2442/neuroscience_control/actions/workflows/docs.yml)
+[![PyPI version](https://img.shields.io/pypi/v/neuroscience-control.svg)](https://pypi.org/project/neuroscience-control/)
+[![Python versions](https://img.shields.io/pypi/pyversions/neuroscience-control.svg)](https://pypi.org/project/neuroscience-control/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Coverage](https://codecov.io/gh/dani2442/neuroscience_control/branch/main/graph/badge.svg)](https://app.codecov.io/gh/dani2442/neuroscience_control)
 
-<p align="center">
-  <a href="#overview">Overview</a> •
-  <a href="#installation">Installation</a> •
-  <a href="#quick-start">Quick Start</a> •
-  <a href="#models">Models</a> •
-  <a href="#metrics">Metrics</a> •
-  <a href="#examples">Examples</a> •
-  <a href="#citation">Citation</a>
-</p>
+Whole-brain resting-state fMRI simulation and control using:
 
+- Coupled Hopf oscillators
+- Hybrid Hopf (learnable coupling)
+- Neural SDE models
 
-## Overview
+Built with PyTorch, complex-valued dynamics, and domain metrics for FC/FCD/phFCD/metastability.
 
-A PyTorch framework for **whole-brain modeling** of resting-state fMRI BOLD signals. It implements three complementary approaches:
+## Features
 
-| Model | Description |
-|-------|-------------|
-| **Coupled Hopf** | Physics-based coupled oscillators at the supercritical Hopf bifurcation, informed by structural connectivity |
-| **Hybrid Hopf** | Hopf oscillators with a learnable graph-coupling network replacing fixed linear diffusive coupling |
-| **Neural SDE** | Data-driven neural networks parameterizing stochastic differential equations |
-
-All three models operate in **complex-valued** space — state, drift, diffusion, and Brownian motion are complex tensors. The observed BOLD signal is the real part of the complex state.
-
-### Key Features
-
-- **Biologically-grounded** modeling with structural connectivity integration
-- **Native complex-valued SDEs** via [`torchsde`](https://github.com/dani2442/torchsde) with complex Brownian motion support
-- **Comprehensive evaluation**: FC, FCD, phFCD, phase-coherence FC, metastability, and timeseries metrics
-- **Weights & Biases** integration for experiment tracking
-- **GPU-accelerated** training and simulation
-
----
+- Unified training entry point (`examples/train_models.py`)
+- Grid search and backprop training pipelines
+- Evaluation metrics for FC, dynamics, and timeseries fidelity
+- Experiment logging integration (Weights & Biases)
+- Package + CI + docs + release workflows ready for TestPyPI/PyPI
 
 ## Installation
 
-Requires **Python ≥ 3.13** and **PyTorch ≥ 2.10**.
+### From PyPI
+
+```bash
+pip install neuroscience-control
+```
+
+Or with `uv`:
+
+```bash
+uv add neuroscience-control
+```
+
+### From source
 
 ```bash
 git clone https://github.com/dani2442/neuroscience_control.git
@@ -47,275 +45,116 @@ cd neuroscience_control
 uv sync
 ```
 
----
+### Verify
+
+```bash
+python -c "import neuroscience_control as nc; print(nc.__version__)"
+```
 
 ## Quick Start
 
 ```python
 import torch
-from src.models import CoupledHopfModel
+from neuroscience_control.models import CoupledHopfModel
 
-model = CoupledHopfModel(
-    n_rois=68,
-    initial_a=-0.02,   # Bifurcation parameter (near criticality)
-    initial_g=0.5,      # Global coupling strength
-    noise_sigma=0.01,
-    device="cuda" if torch.cuda.is_available() else "cpu",
-)
+device = "cuda" if torch.cuda.is_available() else "cpu"
+model = CoupledHopfModel(n_rois=68, initial_a=-0.02, initial_g=0.5, device=device)
 
-# Simulate 200 timepoints from 10 initial conditions
+initial_state = torch.randn(10, 68, dtype=torch.complex64, device=device)
 with torch.no_grad():
-    timeseries = model.forward(initial_state=initial_state, n_steps=200)  # (10, 68, 200) complex
-    fc_matrix = model.compute_fc(timeseries)                               # (10, 68, 68)
+    ts = model.forward(initial_state=initial_state, n_steps=200)
+    fc = model.compute_fc(ts)
 ```
 
----
-
-## Models
-
-### Coupled Hopf Model
-
-Each brain region is a nonlinear oscillator at the supercritical Hopf bifurcation:
-
-$$dz_i = \Bigl[\bigl(a + i\omega_i - \lvert z_i \rvert^2\bigr) z_i + G \sum_{j=1}^{N} C_{ij} (z_j - z_i)\Bigr] dt + \sigma\, dW_i$$
-
-where $W_i = W_{1,i} + i\, W_{2,i}$ is complex Brownian motion.
-
-| Symbol | Description |
-|--------|-------------|
-| $z_i \in \mathbb{C}$ | Complex state of region $i$ |
-| $a$ | Bifurcation parameter ($a < 0$: damped; $a > 0$: oscillatory) |
-| $\omega_i$ | Intrinsic frequency of region $i$ |
-| $G$ | Global coupling strength |
-| $C_{ij}$ | Structural connectivity from DTI |
-| $\sigma$ | Noise amplitude |
-
-The BOLD signal is $s_i(t) = \Re(z_i(t))$. The brain is hypothesized to operate near criticality ($a \approx 0$).
-
-```python
-from src.models import CoupledHopfModel
-
-model = CoupledHopfModel(
-    n_rois=68,
-    structural_connectivity=sc_matrix,
-    initial_a=-0.02,
-    initial_g=0.5,
-    omega=intrinsic_frequencies,
-    noise_sigma=0.01,
-    learnable_a=True,
-    learnable_g=True,
-)
-```
-
-### Hybrid Hopf Model
-
-Combines Hopf local oscillator dynamics with a learnable graph-coupling network $\psi_\theta$:
-
-$$dz_i = \Bigl[\bigl(a + i\omega_i - \lvert z_i \rvert^2\bigr) z_i + G \sum_j \psi_\theta(z_j - z_i,\; C_{ij})\Bigr] dt + \sigma\, dW_i$$
-
-The network $\psi_\theta : \mathbb{C}^2 \to \mathbb{C}$ is a complex-valued harmonic network with phase-preserving activations, replacing the fixed linear coupling of the classical Hopf model.
-
-```python
-from src.models import HybridHopfModel
-
-model = HybridHopfModel(
-    n_rois=68,
-    structural_connectivity=sc_matrix,
-    initial_a=-0.02,
-    initial_g=0.5,
-    omega=intrinsic_frequencies,
-)
-```
-
-### Neural SDE Model
-
-Uses neural networks to parameterize drift and diffusion of a complex-valued SDE:
-
-$$dz_t = f_\theta(z_t)\, dt + g_\phi(z_t)\, dW_t$$
-
-where $f_\theta$ and $g_\phi$ are real-valued MLPs operating on `torch.view_as_real` / `torch.view_as_complex` conversions.
-
-```python
-from src.models import NeuralSDE
-
-model = NeuralSDE(
-    n_rois=68,
-    hidden_dim=64,
-    n_layers=2,
-    structural_connectivity=sc_matrix,
-    coupling_strength=0.1,
-)
-```
-
----
-
-## Metrics
-
-All evaluation metrics are defined in `EVAL_METRIC_KEYS` and reported by every training and evaluation script. Metrics operate on complex analytic signals produced by the preprocessing pipeline (z-score → optional bandpass → Hilbert transform).
-
-### Evaluation Metrics
-
-| Metric | Range | Direction | Description |
-|--------|-------|-----------|-------------|
-| `fc_correlation` | $[-1, 1]$ | Higher | Pearson correlation of upper-triangular FC |
-| `fc_mse` | $[0, \infty)$ | Lower | MSE of upper-triangular FC |
-| `fcd_ks` | $[0, 1]$ | Lower | KS distance between FCD distributions (sliding-window) |
-| `phfcd_ks` | $[0, 1]$ | Lower | KS distance between phase-FCD distributions |
-| `phase_fc_correlation` | $[-1, 1]$ | Higher | Pearson correlation of phase-coherence FC |
-| `metastability_diff` | $[0, \infty)$ | Lower | Absolute difference in metastability |
-| `temporal_correlation` | $[-1, 1]$ | Higher | Mean per-ROI Pearson correlation over time |
-| `power_spectrum_distance` | $[0, \infty)$ | Lower | MSE between normalised power spectra |
-| `autocorr_distance` | $[0, \infty)$ | Lower | MSE between autocorrelation functions |
-
-### Mathematical Details
-
-**Functional Connectivity (FC)** — Static Pearson correlation between regional time series from the real part $s_n(t) = \Re(z_n(t))$:
-
-$$\text{FC}\_{nm} = \frac{\text{Cov}(s_n,\, s_m)}{\text{SD}(s_n) \cdot \text{SD}(s_m)}$$
-
-**Functional Connectivity Dynamics (FCD)** — Sliding-window FC vectors, z-scored, then correlated pairwise across windows. Compared via two-sample KS distance.
-
-**Phase FCD (phFCD)** — The paper's main model-fitting metric. Uses instantaneous phase coherence $P_{nm}(t) = \cos\bigl(\phi_n(t) - \phi_m(t)\bigr)$ instead of windowed Pearson FC. The phFCD matrix is built from cosine similarity of the upper-triangular phase-coherence vectors across time.
-
-**Metastability** — Temporal variability of global synchronisation via the Kuramoto order parameter:
-
-$$R(t) = \left\lvert \frac{1}{N} \sum_{n=1}^{N} e^{i\phi_n(t)} \right\rvert, \qquad \text{Metastability} = \text{std}_t\bigl(R(t)\bigr)$$
-
-### Loss Presets
-
-Losses are composable via `CompositeLoss`. Preset names can be passed in the training config:
-
-| Preset | Terms (default weights) |
-|--------|------------------------|
-| `mse` | `fc_mse: 1.0` |
-| `correlation` | `fc_correlation: 1.0` |
-| `combined` | `fc_mse: 1.0`, `fc_correlation: 0.5` |
-| `fc_fcd_meta` | `fc_correlation: 1.0`, `fcd: 1.0`, `metastability: 1.0` |
-| `fc_phfcd_meta` | `fc_correlation: 1.0`, `phfcd: 1.0`, `metastability: 1.0` |
-| `full` | `fc_correlation`, `l2`, `amplitude`, `omega`, `fcd`, `phfcd`, `metastability` (all 1.0) |
-
----
-
-## Training
-
-### Unified Entry Point
-
-All training goes through `examples/train_models.py` with three subcommands:
+## Training Commands
 
 ```bash
-# Hopf grid search over (G, a, κ)
+# Hopf grid search
 python examples/train_models.py hopf-grid
 
-# Backprop training for any model
-python examples/train_models.py backprop --model nsde
+# Backprop training
 python examples/train_models.py backprop --model hopf
 python examples/train_models.py backprop --model hybrid_hopf
+python examples/train_models.py backprop --model nsde
 
-# Full paper reproduction: grid search + all backprop models + comparison report
+# Full paper-style pipeline
 python examples/train_models.py paper --output-json results/paper_metrics.json
 ```
 
-**Common flags:** `--no-wandb`, `--device {auto,cuda,cpu}`, `--skip-figures`, `--n-epochs N`
+## Import Path
 
-Training hyperparameters (learning rate, loss function, window size, etc.) are configured via the `TrainingConfig` dataclass in `src/training/config.py`.
-
-### Fine-Tuning a Neural SDE
-
-```bash
-python examples/train_nsde_finetune.py \
-    --checkpoint checkpoints/nsde_best.pt \
-    --fine-tune-epochs 20 \
-    --fine-tune-lr 1e-4
-```
-
----
-
-## Data Format
-
-`NeuroscienceDataset` loads a `.mat` file (via `scipy.io.loadmat`) with these keys:
+Use the public namespace in new code:
 
 ```python
-{
-    'timeseries_all': np.ndarray,  # (n_rois, n_timepoints, n_subjects)
-    'FC_all':         np.ndarray,  # (n_rois, n_rois, n_subjects)
-    'FC_mean':        np.ndarray,  # (n_rois, n_rois)
-}
+from neuroscience_control.models import NeuralSDE
 ```
 
-### Preprocessing Pipeline
+Legacy imports are still supported:
 
-1. **Z-score** each ROI time series
-2. **FFT bandpass** denoising (optional; default 0.008–0.08 Hz)
-3. **Hilbert transform** to complex analytic signal
-
-All downstream metrics and losses operate on this complex signal — FCD and timeseries metrics use `.real`, phase-based metrics extract phases via `torch.angle(z)`.
-
----
-
-## Project Structure
-
-```
-neuroscience_control/
-├── src/
-│   ├── dataset/               # Data loading and preprocessing
-│   │   ├── data_loader.py     # NeuroscienceDataset, Hilbert transform
-│   │   └── preprocessing.py   # Windowing, omega estimation
-│   ├── models/                # Brain dynamics models
-│   │   ├── base_model.py      # Abstract base class
-│   │   ├── hopf_model.py      # Coupled Hopf oscillator
-│   │   ├── hybrid_hopf_model.py # Hybrid mechanistic–neural Hopf
-│   │   ├── neural_sde.py      # Neural SDE
-│   │   ├── factory.py         # build_model() dispatcher
-│   │   └── checkpointing.py   # Checkpoint loading
-│   ├── metrics/               # Evaluation metrics
-│   │   ├── fc_metrics.py      # FC correlation, MSE
-│   │   ├── dynamics_metrics.py    # FCD, phFCD, metastability
-│   │   ├── timeseries_metrics.py  # Power spectrum, autocorrelation
-│   │   └── metrics_store.py   # MetricsStore accumulator
-│   ├── training/              # Training utilities
-│   │   ├── trainer.py         # Backprop trainer
-│   │   ├── grid_search.py     # Hopf grid search
-│   │   ├── fine_tuning.py     # Fine-tuning
-│   │   ├── losses.py          # CompositeLoss and loss functions
-│   │   ├── backprop.py        # Backprop training loop
-│   │   └── config.py          # TrainingConfig dataclass
-│   └── utils/                 # Visualization, evaluation, runtime
-├── examples/                  # Entry-point scripts
-│   ├── train_models.py        # Unified training (grid / backprop / paper)
-│   ├── train_nsde_finetune.py # Neural SDE fine-tuning
-│   ├── compare_models.py      # Side-by-side model comparison
-│   ├── test.py                # Checkpoint evaluation
-│   └── visualization.py       # Plotting utilities
-├── paper/                     # LaTeX source for accompanying paper
-├── data/                      # Data directory
-└── checkpoints/               # Saved model weights
+```python
+from src.models import NeuralSDE
 ```
 
----
+## Documentation Website
 
-## Examples
+Docs are built with MkDocs Material.
+
+- Local preview:
 
 ```bash
-# Evaluate a saved checkpoint
-python examples/test.py --checkpoint checkpoints/best_nsde_backprop.pt
-
-# Compare two trained models
-python examples/compare_models.py \
-    --hopf-checkpoint checkpoints/hopf_best.pt \
-    --nsde-checkpoint checkpoints/nsde_best.pt \
-    --n-simulations 10
+uv sync --group docs
+uv run mkdocs serve
 ```
 
----
+- Build static site:
 
-## Related Work
+```bash
+uv run mkdocs build --strict
+```
 
-- [Deco et al., 2017](https://doi.org/10.1038/s41598-017-03073-5) — Whole-brain coupled Hopf model
-- [torchsde](https://github.com/dani2442/torchsde) — SDE solvers for PyTorch (complex-valued fork)
-- [The Virtual Brain](https://www.thevirtualbrain.org/) — Open-source brain simulation platform
+Main pages:
 
----
+- [Getting Started](docs/getting-started/installation.md)
+- [First Training Run Tutorial](docs/tutorials/first-training-run.md)
+- [Publishing Guide](docs/publishing.md)
 
-## License
+## Development and Test Coverage
 
-MIT License
+```bash
+uv sync --group dev
+uv run pytest --cov=src --cov=neuroscience_control --cov-report=term-missing
+```
+
+## Release and Publishing
+
+Automated workflows included:
+
+- `CI` (`.github/workflows/ci.yml`): tests + coverage
+- `Docs` (`.github/workflows/docs.yml`): docs build + GitHub Pages deploy
+- `Publish` (`.github/workflows/publish.yml`):
+  - manual dispatch -> TestPyPI
+  - GitHub release -> PyPI
+
+Before publishing:
+
+```bash
+uv run python -m build
+uv run twine check dist/*
+```
+
+## Project Layout
+
+```text
+neuroscience_control/
+├── src/                         # Core implementation (legacy namespace)
+├── neuroscience_control/        # Public package namespace
+├── examples/                    # Training and evaluation scripts
+├── tests/                       # Unit tests
+├── docs/                        # Documentation site
+├── mkdocs.yml
+└── pyproject.toml
+```
+
+## Citation
+
+If you use this project in academic work, cite this repository and the associated paper in `paper/`.

@@ -1,27 +1,100 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "neuroscience-control"
-version = "0.1.0"
-description = "Brain dynamics simulation and control using Coupled Hopf and Neural SDE models"
+dynamic = ["version"]
+description = "Brain dynamics simulation and control with Coupled Hopf and Neural SDE models"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = [
-    "ipykernel>=7.1.0",
-    "matplotlib>=3.10.8",
-    "nibabel>=5.4.0",
-    "nilearn>=0.13.1",
-    "numpy>=2.4.2",
-    "plotly>=6.6.0",
-    "scipy>=1.15.0",
-    "torch>=2.10.0",
-    "torchsde",
-    "tqdm>=4.67.2",
-    "wandb>=0.24.1",
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Daniel López Montero", email = "dani.lopez@fau.de" },
+    { name = "Xenia Kobeleva", email = "research@xenia-kobeleva.com" },
+    { name = "Lorenzo Liverani", email = "lorenzo.liverani@fau.de" },
 ]
+keywords = ["neuroscience", "fMRI", "SDE", "Hopf", "pytorch"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = [
+    "ipykernel>=6.29",
+    "matplotlib>=3.8",
+    "nibabel>=5.0",
+    "nilearn>=0.10",
+    "numpy>=1.26",
+    "plotly>=5.20",
+    "scipy>=1.11",
+    "torch>=2.2",
+    "torchsde>=0.2.6",
+    "tqdm>=4.66",
+    "wandb>=0.16",
+]
+
+[project.optional-dependencies]
+dev = [
+    "build>=1.2",
+    "pytest>=8.3",
+    "pytest-cov>=5.0",
+    "ruff>=0.8",
+    "twine>=6.1",
+]
+docs = [
+    "mkdocs>=1.6",
+    "mkdocs-material>=9.5",
+]
+
+[project.urls]
+Homepage = "https://github.com/dani2442/neuroscience_control"
+Repository = "https://github.com/dani2442/neuroscience_control"
+Issues = "https://github.com/dani2442/neuroscience_control/issues"
+Documentation = "https://dani2442.github.io/neuroscience_control/"
+
+[tool.setuptools.dynamic]
+version = { attr = "src.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*", "neuroscience_control*"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra --strict-markers --strict-config"
+
+[tool.coverage.run]
+source = ["src", "neuroscience_control"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
 
 [tool.uv.sources]
 torchsde = { git = "https://github.com/dani2442/torchsde" }
 
 [dependency-groups]
 dev = [
-    "pytest>=9.0.2",
+    "build>=1.2",
+    "pytest>=8.3",
+    "pytest-cov>=5.0",
+    "ruff>=0.8",
+    "twine>=6.1",
+]
+docs = [
+    "mkdocs>=1.6",
+    "mkdocs-material>=9.5",
 ]
