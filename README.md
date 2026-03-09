@@ -45,6 +45,20 @@ cd neuroscience_control
 uv sync
 ```
 
+### Optional dataset integrations
+
+`nilearn` is included by default. For OpenNeuro/DataLad dataset download support:
+
+```bash
+pip install "neuroscience-control[datasets]"
+```
+
+Or with `uv`:
+
+```bash
+uv sync --group datasets
+```
+
 ### Verify
 
 ```bash
@@ -81,6 +95,55 @@ python examples/train_models.py backprop --model nsde
 python examples/train_models.py paper --output-json results/paper_metrics.json
 ```
 
+### Dataset backends
+
+The training scripts now support:
+
+- `ts_young` / `mat`: local MAT file with `FC_all`, `FC_mean`, `timeseries_all`
+- `lsd`: local LSD directory (`time_series_data.mat`, `condition_names.mat`)
+- `nilearn`: download + extract ROI timeseries from nilearn datasets
+- `openneuro`: download with `openneuro-py`, then load BIDS derivatives
+- `datalad`: install/get with DataLad, then load BIDS derivatives
+- `bids`: load a local BIDS derivatives directory directly
+
+Example commands:
+
+```bash
+# 1) nilearn fetcher dataset
+python examples/train_models.py backprop --model hopf \
+  --dataset-type nilearn \
+  --nilearn-dataset development_fmri \
+  --nilearn-n-subjects 20 \
+  --atlas-n-rois 100 \
+  --no-wandb
+
+# 2) OpenNeuro via openneuro-py (downloads derivatives subset)
+python examples/train_models.py backprop --model nsde \
+  --dataset-type openneuro \
+  --openneuro-dataset ds000030 \
+  --openneuro-target-dir data/openneuro \
+  --bids-derivatives-dir derivatives/fmriprep \
+  --bids-space MNI152NLin2009cAsym \
+  --bids-desc preproc \
+  --no-wandb
+
+# 3) DataLad + BIDS derivatives loading
+python examples/train_models.py backprop --model hybrid_hopf \
+  --dataset-type datalad \
+  --datalad-source https://github.com/OpenNeuroDatasets/ds000030.git \
+  --datalad-dataset-dir data/datalad/ds000030 \
+  --datalad-get-paths 'derivatives/fmriprep/sub-*/**/*_desc-preproc_bold.nii.gz' \
+  --bids-space MNI152NLin2009cAsym \
+  --bids-desc preproc \
+  --no-wandb
+```
+
+Notes:
+
+- `openneuro`, `datalad`, and `bids` loading expects preprocessed BOLD files (typically fMRIPrep outputs).
+- ROI extraction uses the Schaefer atlas via nilearn (`--atlas-n-rois`, `--atlas-yeo-networks`, `--atlas-resolution-mm`).
+- If BOLD runs have different lengths, the loader trims all runs to the shortest length before training.
+
 ## Import Path
 
 Use the public namespace in new code:
@@ -98,6 +161,7 @@ from src.models import NeuralSDE
 ## Documentation Website
 
 Docs are built with MkDocs Material.
+Live site: `https://dani2442.github.io/neuroscience_control/`
 
 - Local preview:
 
@@ -116,6 +180,7 @@ Main pages:
 
 - [Getting Started](docs/getting-started/installation.md)
 - [First Training Run Tutorial](docs/tutorials/first-training-run.md)
+- [Website Deployment](docs/website.md)
 - [Publishing Guide](docs/publishing.md)
 
 ## Development and Test Coverage

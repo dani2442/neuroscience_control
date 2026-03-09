@@ -21,6 +21,7 @@ nav:
       - First Training Run: tutorials/first-training-run.md
       - Metrics Evaluation: tutorials/metrics-evaluation.md
   - API Overview: api/index.md
+  - Website Deployment: website.md
   - Publishing: publishing.md
 
 plugins:

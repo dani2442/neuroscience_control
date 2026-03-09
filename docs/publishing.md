@@ -29,4 +29,5 @@ On `release: published`, workflow uploads `dist/*` to PyPI.
 1. Configure PyPI and TestPyPI trusted publishing for this repo.
 2. Create GitHub Environments: `testpypi` and `pypi`.
 3. Configure Codecov for coverage badge/reporting.
-4. Ensure `main` is your default release branch.
+4. Enable GitHub Pages to serve `gh-pages` (see `docs/website.md`).
+5. Ensure `main` is your default release branch.
