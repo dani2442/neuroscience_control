@@ -37,6 +37,7 @@ WANDB_EPOCH_METRICS = ALL_METRICS
 class _MetricAccumulator:
     def __init__(self) -> None:
         self.sums: Dict[str, float] = {}
+        self.sum_squares: Dict[str, float] = {}
         self.counts: Dict[str, int] = {}
 
     def update(self, metrics: Dict[str, float]) -> None:
@@ -47,7 +48,9 @@ class _MetricAccumulator:
                 continue
             if isinstance(value, torch.Tensor):
                 value = value.item()
-            self.sums[key] = self.sums.get(key, 0.0) + float(value)
+            numeric = float(value)
+            self.sums[key] = self.sums.get(key, 0.0) + numeric
+            self.sum_squares[key] = self.sum_squares.get(key, 0.0) + (numeric * numeric)
             self.counts[key] = self.counts.get(key, 0) + 1
 
     def average(self, key: str) -> float:
@@ -55,6 +58,15 @@ class _MetricAccumulator:
         if count == 0:
             return float("nan")
         return self.sums[key] / count
+
+    def std(self, key: str) -> float:
+        count = self.counts.get(key, 0)
+        if count == 0:
+            return float("nan")
+        mean = self.sums[key] / count
+        mean_square = self.sum_squares[key] / count
+        variance = max(0.0, mean_square - (mean * mean))
+        return math.sqrt(variance)
 
 
 class Trainer:
@@ -368,9 +380,12 @@ class Trainer:
             )
 
         for batch in iterable:
-            windows, fc_targets, _ = batch
+            windows, fc_targets, _, control = batch
             windows = windows.to(self.device)
             fc_targets = fc_targets.to(self.device)
+            control = control.to(self.device)
+            # Treat empty control (n_control_dims==0) as None
+            ctrl_arg = control if control.shape[-1] > 0 else None
 
             n_timepoints = windows.shape[2]
             n_sim_steps = min(n_steps, n_timepoints)
@@ -394,6 +409,7 @@ class Trainer:
                     dt_min=self.dt_min,
                     use_adjoint=self.use_adjoint,
                     adjoint_method=self.adjoint_method,
+                    control=ctrl_arg,
                 )
                 fc_pred = self.model.compute_fc(simulated)
                 loss, loss_components = self._compute_loss(
@@ -413,6 +429,7 @@ class Trainer:
                         dt_min=self.dt_min,
                         use_adjoint=self.use_adjoint,
                         adjoint_method=self.adjoint_method,
+                        control=ctrl_arg,
                     )
                     fc_pred = self.model.compute_fc(simulated)
                     loss, loss_components = self._compute_loss(
@@ -642,7 +659,52 @@ class Trainer:
         Returns:
             Test metrics
         """
-        metrics = self.validate(test_loader, n_steps, dt)
+        accumulator = _MetricAccumulator()
+        for batch in test_loader:
+            windows, fc_targets, _, control = batch
+            windows = windows.to(self.device)
+            fc_targets = fc_targets.to(self.device)
+            control = control.to(self.device)
+            ctrl_arg = control if control.shape[-1] > 0 else None
+
+            n_timepoints = windows.shape[2]
+            n_sim_steps = min(n_steps, n_timepoints)
+            if n_sim_steps <= 0:
+                raise ValueError(f"n_steps must be >= 1, got {n_steps}")
+
+            target_window = windows[:, :, :n_sim_steps]
+            initial_state = target_window[:, :, 0]
+            simulated = self.model.forward(
+                initial_state=initial_state,
+                n_steps=n_sim_steps,
+                dt=dt,
+                sde_type=self.sde_type,
+                method=self.sde_method,
+                dt_min=self.dt_min,
+                use_adjoint=self.use_adjoint,
+                adjoint_method=self.adjoint_method,
+                control=ctrl_arg,
+            )
+            fc_pred = self.model.compute_fc(simulated)
+            loss, loss_components = self._compute_loss(
+                fc_pred,
+                fc_targets,
+                simulated,
+                target_window,
+            )
+            batch_metrics = self._compute_batch_metrics(
+                fc_pred,
+                fc_targets,
+                simulated,
+                target_window,
+                loss,
+                loss_components,
+            )
+            accumulator.update(batch_metrics)
+
+        metric_names = sorted(set(ALL_METRICS) | set(accumulator.sums.keys()))
+        metrics = {name: accumulator.average(name) for name in metric_names}
+        metrics.update({f"{name}_std": accumulator.std(name) for name in metric_names})
         self.metrics_store.log_test(metrics)
         
         # Log test metrics to wandb

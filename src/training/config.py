@@ -7,6 +7,14 @@ from pathlib import Path
 import datetime
 
 
+def _default_openneuro_derivative_patterns() -> List[str]:
+    """Default subset of files that enables BIDS-derivative ROI extraction."""
+    return [
+        "derivatives/fmriprep/sub-*/**/*_space-MNI152NLin2009cAsym_desc-preproc_bold.nii.gz",
+        "derivatives/fmriprep/sub-*/**/*_desc-confounds_timeseries.tsv",
+    ]
+
+
 @dataclass
 class TrainingConfig:
     """Configuration for training experiments."""
@@ -22,7 +30,33 @@ class TrainingConfig:
     use_wandb: bool = True
     
     # Data settings
+    dataset_type: str = "ts_young"  # "ts_young", "lsd", "nilearn", "openneuro", "datalad", "bids"
     data_path: str = "data/ts_young/ts_young_TR0.72.mat"
+    lsd_data_dir: str = "data/lsd"
+    nilearn_dataset: str = "development_fmri"
+    nilearn_data_dir: str = "data/nilearn"
+    nilearn_n_subjects: Optional[int] = None
+    nilearn_reduce_confounds: bool = True
+    openneuro_dataset: str = "ds000030"
+    openneuro_tag: Optional[str] = None
+    openneuro_target_dir: str = "data/openneuro"
+    openneuro_include: List[str] = field(default_factory=_default_openneuro_derivative_patterns)
+    openneuro_exclude: List[str] = field(default_factory=list)
+    datalad_source: str = "https://github.com/OpenNeuroDatasets/ds000030.git"
+    datalad_dataset_dir: str = "data/datalad/ds000030"
+    datalad_get_paths: List[str] = field(default_factory=_default_openneuro_derivative_patterns)
+    bids_root: Optional[str] = None
+    bids_relative_path: Optional[str] = None
+    bids_derivatives_dir: str = "derivatives/fmriprep"
+    bids_task: Optional[str] = None
+    bids_space: Optional[str] = "MNI152NLin2009cAsym"
+    bids_desc: Optional[str] = "preproc"
+    bids_subject_ids: List[str] = field(default_factory=list)
+    bids_runs_per_subject: int = 1
+    atlas_n_rois: int = 100
+    atlas_yeo_networks: int = 7
+    atlas_resolution_mm: int = 1
+    atlas_smoothing_fwhm: Optional[float] = None
     max_subjects: Optional[int] = 50
     window_size: int = 100
     n_windows_per_epoch: int = 1024
@@ -50,13 +84,13 @@ class TrainingConfig:
     lr: float = 1e-3
     loss_fn: str = "combined"
     loss_weight_fc: Optional[float] = None
-    loss_weight_fc_mse: Optional[float] = None
+    loss_weight_fc_mse: Optional[float] = 1.0
     loss_weight_l2: Optional[float] = 0.0
     loss_weight_amplitude: Optional[float] = 1.0
     loss_weight_omega: Optional[float] = 1.0
-    loss_weight_fcd: Optional[float] = None
+    loss_weight_fcd: Optional[float] = 1.0
     loss_weight_phfcd: Optional[float] = 1.0
-    loss_weight_metastability: Optional[float] = None
+    loss_weight_metastability: Optional[float] = 1.0
     early_stopping_patience: int = 15
     n_steps: int = 100
     dt_min: Optional[float] = 0.05  # Fixed solver sub-step (passed as torchsde `dt`)

@@ -67,6 +67,7 @@ class GridSearch:
         tr: float = 0.72,
         fcd_win_sec: float = 60.0,
         fcd_step_sec: float = 2.0,
+        control: Optional[torch.Tensor] = None,
     ) -> Dict[str, float]:
         """Evaluate a model with given initial states.
 
@@ -81,11 +82,13 @@ class GridSearch:
             tr: Repetition time in seconds (for FCD window sizing).
             fcd_win_sec: FCD window length in seconds.
             fcd_step_sec: FCD window step in seconds.
+            control: Optional control input (batch, n_control_dims).
         """
         batch_size = initial_states.shape[0]
         with torch.no_grad():
             timeseries = model.forward(
                 initial_state=initial_states, n_steps=n_timepoints, dt=dt,
+                control=control,
             )
             fc_pred = model.compute_fc(timeseries)
 
@@ -240,6 +243,8 @@ def grid_search_hopf(
     fcd_step_sec: float = 2.0,
     metric_weights: Optional[Dict[str, float]] = None,
     noise_sigma: float = 0.0,
+    n_control_dims: int = 0,
+    control: Optional[torch.Tensor] = None,
 ) -> Tuple[Dict[str, Any], CoupledHopfModel]:
     """Grid search for Hopf model parameters.
 
@@ -290,6 +295,7 @@ def grid_search_hopf(
         'learnable_a': False,
         'learnable_g': False,
         'learnable_kappa': False,
+        'n_control_dims': n_control_dims,
     }
     # When kappa is not in the grid, pass the single default value
     if len(kappa_values) == 1:
@@ -303,6 +309,8 @@ def grid_search_hopf(
             tr=tr,
             fcd_win_sec=fcd_win_sec, fcd_step_sec=fcd_step_sec,
         )
+    if control is not None:
+        eval_kwargs["control"] = control
 
     best_params, best_metrics = grid_search.search(
         model_class=CoupledHopfModel,
@@ -328,6 +336,7 @@ def grid_search_hopf(
         initial_kappa=best_params.get('initial_kappa', kappa_values[0]),
         noise_sigma=noise_sigma,
         device=device,
+        n_control_dims=n_control_dims,
     )
 
     return best_params, best_model

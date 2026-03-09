@@ -65,6 +65,7 @@ class RandomWindowDataset(Dataset):
         window_size: int,
         n_windows: int,
         device: str = "cpu",
+        control: Optional[torch.Tensor] = None,
     ):
         self.timeseries = timeseries.to(device)    # (n_subjects, n_rois, T), complex
         self.fc_matrices = fc_matrices.to(device)  # (n_subjects, n_rois, n_rois), real
@@ -72,15 +73,20 @@ class RandomWindowDataset(Dataset):
         self.n_windows = n_windows
         self.n_subjects = timeseries.shape[0]
         self.max_start = timeseries.shape[2] - window_size
+        # control: (n_subjects, n_control_dims) or None
+        if control is not None:
+            self.control = control.to(device)
+        else:
+            self.control = torch.zeros(self.n_subjects, 0, device=device)
 
     def __len__(self) -> int:
         return self.n_windows
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, int]:
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, int, torch.Tensor]:
         subj = torch.randint(0, self.n_subjects, (1,)).item()
         start = torch.randint(0, self.max_start + 1, (1,)).item()
         window = self.timeseries[subj, :, start:start + self.window_size]
-        return window, self.fc_matrices[subj], subj
+        return window, self.fc_matrices[subj], subj, self.control[subj]
 
 
 def create_data_loaders(
@@ -106,11 +112,16 @@ def create_data_loaders(
     if len(test_idx) == 0:
         test_idx = val_idx  # fallback
 
+    # Extract per-subject control tensor (may be empty dim-1 for uncontrolled)
+    ctrl = getattr(dataset, "control", None)
+
     def _loader(subj_idx, n_win, shuffle=True):
+        subj_ctrl = ctrl[subj_idx] if ctrl is not None else None
         ds = RandomWindowDataset(
             dataset.timeseries[subj_idx],
             dataset.fc_matrices[subj_idx],
             window_size, n_win, device,
+            control=subj_ctrl,
         )
         return DataLoader(ds, batch_size=batch_size, shuffle=shuffle, drop_last=True)
 

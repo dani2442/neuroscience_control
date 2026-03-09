@@ -19,23 +19,36 @@ class DriftNetwork(nn.Module):
     of the same shape.  Internally the complex tensor is flattened to a
     ``2 * n_rois`` real representation, processed by a real-valued MLP,
     and reshaped back to complex.
+
+    When ``n_control_dims > 0`` the input dimension is
+    ``2 * (n_rois + n_control_dims)`` (augmented state) but the output
+    remains ``2 * n_rois`` (only biological nodes evolve).
     """
 
-    def __init__(self, n_rois: int, hidden_dim: int = 64, n_layers: int = 2):
+    def __init__(self, n_rois: int, hidden_dim: int = 64, n_layers: int = 2,
+                 n_control_dims: int = 0):
         super().__init__()
         self.n_rois = n_rois
-        state_dim = 2 * n_rois  # real representation width
+        self.n_control_dims = n_control_dims
+        state_dim = 2 * (n_rois + n_control_dims)  # input: augmented real repr
+        out_dim = 2 * n_rois  # output: only brain nodes
         layers = []
         in_dim = state_dim
         for _ in range(n_layers):
             layers.extend([nn.Linear(in_dim, hidden_dim), nn.Tanh()])
             in_dim = hidden_dim
-        layers.append(nn.Linear(hidden_dim, state_dim))
+        layers.append(nn.Linear(hidden_dim, out_dim))
         self.net = nn.Sequential(*layers)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, control: Optional[torch.Tensor] = None) -> torch.Tensor:
         # x: complex (batch, n_rois)
         x_real = torch.view_as_real(x).reshape(x.shape[0], -1)  # (batch, 2*n_rois)
+        if control is not None and self.n_control_dims > 0:
+            ctrl = control.to(x.dtype)
+            if not torch.is_complex(ctrl):
+                ctrl = torch.complex(ctrl, torch.zeros_like(ctrl))
+            ctrl_real = torch.view_as_real(ctrl).reshape(x.shape[0], -1)  # (batch, 2*m)
+            x_real = torch.cat([x_real, ctrl_real], dim=1)  # (batch, 2*(n_rois+m))
         out = self.net(x_real)  # (batch, 2*n_rois)
         return torch.view_as_complex(out.reshape(x.shape[0], self.n_rois, 2))
 
@@ -85,11 +98,15 @@ class NeuralSDEFunc(nn.Module):
         n_layers: int = 2,
         structural_connectivity: Optional[torch.Tensor] = None,
         coupling_strength: float = 0.1,
+        n_control_dims: int = 0,
     ):
         super().__init__()
         self.n_rois = n_rois
+        self.n_control_dims = n_control_dims
+        # Set by model.forward() before each sdeint call
+        self.control_input: Optional[torch.Tensor] = None
 
-        self.drift_net = DriftNetwork(n_rois, hidden_dim, n_layers)
+        self.drift_net = DriftNetwork(n_rois, hidden_dim, n_layers, n_control_dims=n_control_dims)
         self.diffusion_net = DiffusionNetwork(n_rois, hidden_dim // 2)
 
         if structural_connectivity is not None:
@@ -100,7 +117,7 @@ class NeuralSDEFunc(nn.Module):
             self.coupling = None
 
     def f(self, t: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        drift = self.drift_net(y)
+        drift = self.drift_net(y, control=self.control_input)
         if self.sc is not None:
             sc = self.sc.to(y.dtype)
             coupling = self.coupling * (y @ sc.T)
@@ -126,10 +143,12 @@ class NeuralSDE(BaseNeuroscienceModel):
         structural_connectivity: Optional[torch.Tensor] = None,
         coupling_strength: float = 0.1,
         device: str = "cpu",
+        n_control_dims: int = 0,
     ):
         super().__init__(n_rois, device)
         self.hidden_dim = hidden_dim
         self.n_layers = n_layers
+        self.n_control_dims = n_control_dims
 
         self.sde_func = NeuralSDEFunc(
             n_rois=n_rois,
@@ -137,6 +156,7 @@ class NeuralSDE(BaseNeuroscienceModel):
             n_layers=n_layers,
             structural_connectivity=structural_connectivity,
             coupling_strength=coupling_strength,
+            n_control_dims=n_control_dims,
         )
         self.to(device)
 
@@ -150,6 +170,7 @@ class NeuralSDE(BaseNeuroscienceModel):
         dt_min: Optional[float] = 0.1,
         use_adjoint: bool = False,
         adjoint_method: Optional[str] = None,
+        control: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Simulate brain dynamics via Neural SDE.
 
@@ -162,6 +183,7 @@ class NeuralSDE(BaseNeuroscienceModel):
             dt_min: Sub-step for SDE solver.
             use_adjoint: Use torchsde adjoint solver.
             adjoint_method: Adjoint SDE solver method (defaults to ``method``).
+            control: Optional control input (batch, n_control_dims). Constant in time.
 
         Returns:
             Complex timeseries (batch, n_rois, n_steps).
@@ -170,6 +192,15 @@ class NeuralSDE(BaseNeuroscienceModel):
         if not torch.is_complex(z):
             z = torch.complex(z, torch.zeros_like(z))
         self.sde_func.sde_type = sde_type
+
+        # Set control input on SDE func (constant in time)
+        if control is not None and self.n_control_dims > 0:
+            ctrl = control.to(self.device)
+            if not torch.is_complex(ctrl):
+                ctrl = torch.complex(ctrl, torch.zeros_like(ctrl))
+            self.sde_func.control_input = ctrl
+        else:
+            self.sde_func.control_input = None
 
         ts = torch.linspace(0, (n_steps - 1) * dt, n_steps, device=self.device)
 
@@ -207,5 +238,6 @@ class NeuralSDE(BaseNeuroscienceModel):
             "n_layers": int(self.n_layers),
             "has_structural_connectivity": self.sde_func.sc is not None,
             "coupling_strength": coupling_strength,
+            "n_control_dims": int(self.n_control_dims),
         }
     

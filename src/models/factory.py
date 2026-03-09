@@ -17,11 +17,15 @@ def build_model(
     cfg: TrainingConfig,
     device: str,
     structural_connectivity: torch.Tensor | None = None,
+    n_control_dims: int = 0,
 ) -> CoupledHopfModel | HybridHopfModel | NeuralSDE:
     """Create model instance for *model_name* using *cfg* parameters.
 
     All hyper-parameters are read from *cfg* so callers don't need to forward
     individual values from argparse.
+
+    Args:
+        n_control_dims: Number of control input dimensions (0 = autonomous).
     """
     if model_name == "nsde":
         model = NeuralSDE(
@@ -29,6 +33,7 @@ def build_model(
             hidden_dim=cfg.hidden_dim,
             n_layers=cfg.n_layers,
             device=device,
+            n_control_dims=n_control_dims,
         )
         print(f"\nNeural SDE model — params: {sum(p.numel() for p in model.parameters())}")
         return model
@@ -64,6 +69,7 @@ def build_model(
             learnable_kappa=cfg.learnable_kappa,
             learnable_omega=cfg.learnable_omega,
             learnable_fc=cfg.learnable_fc,
+            n_control_dims=n_control_dims,
         )
         n_learn = sum(p.numel() for p in model.parameters() if p.requires_grad)
         print(f"\nCoupled Hopf model — learnable params: {n_learn}")
@@ -87,6 +93,7 @@ def build_model(
             learnable_g=cfg.learnable_g,
             learnable_kappa=cfg.learnable_kappa,
             learnable_omega=cfg.learnable_omega,
+            n_control_dims=n_control_dims,
         )
         n_learn = sum(p.numel() for p in model.parameters() if p.requires_grad)
         print(

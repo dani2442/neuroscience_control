@@ -33,6 +33,7 @@ class BaseNeuroscienceModel(nn.Module, ABC):
         initial_state: torch.Tensor,
         n_steps: int,
         dt: float = 0.01,
+        control: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Generate complex timeseries from complex initial conditions.
 
@@ -40,6 +41,8 @@ class BaseNeuroscienceModel(nn.Module, ABC):
             initial_state: Complex tensor of shape (batch, n_rois).
             n_steps: Number of time steps to simulate.
             dt: Time step size.
+            control: Optional control input of shape (batch, n_control_dims).
+                     Constant in time.  ``None`` means no external control.
 
         Returns:
             Complex timeseries of shape (batch, n_rois, n_steps).

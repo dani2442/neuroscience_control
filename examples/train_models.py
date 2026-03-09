@@ -108,6 +108,21 @@ def _as_numeric(metrics: dict[str, object]) -> dict[str, float]:
     return numeric
 
 
+def _format_metrics_mean_std(metrics: dict[str, object]) -> dict[str, str]:
+    """Format metrics as `mean ± std` when `<metric>_std` is present."""
+    numeric = _as_numeric(metrics)
+    formatted: dict[str, str] = {}
+    for key in sorted(numeric):
+        if key.endswith("_std"):
+            continue
+        std_key = f"{key}_std"
+        if std_key in numeric:
+            formatted[key] = f"{numeric[key]:.6f} ± {numeric[std_key]:.6f}"
+        else:
+            formatted[key] = f"{numeric[key]:.6f}"
+    return formatted
+
+
 def _run_backprop(args: argparse.Namespace) -> dict[str, object]:
     cfg = _CONFIG_CLS[args.model]()
     cfg.experiment_name = f"{args.model}_backprop"
@@ -201,7 +216,7 @@ def _run_backprop(args: argparse.Namespace) -> dict[str, object]:
     print("\n" + "=" * 60)
     print(f"{args.model.upper()} BACKPROP TRAINING COMPLETED SUCCESSFULLY")
     print("=" * 60)
-    print(f"\nTest metrics: {_as_numeric(test_metrics)}")
+    print(f"\nTest metrics (mean ± std): {_format_metrics_mean_std(test_metrics)}")
     print(f"Final metrics: {final_metrics}")
     print(f"Model saved to: {checkpoint_path}")
     print(f"Figures saved to: {FIGURES_DIR}")

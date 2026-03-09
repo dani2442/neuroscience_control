@@ -103,6 +103,9 @@ class HybridHopfSDEFunc(nn.Module):
         dz_i = \bigl[(a + i\omega_i - |z_i|^2)\,z_i
                + G\sum_j \psi_\theta(z_j - z_i,\, C_{ij})\bigr]\,dt
                + \sigma\,dW_i
+
+    When control inputs are present the coupling sum extends over
+    ``n_rois + n_control_dims`` augmented nodes.
     """
 
     noise_type = "diagonal"
@@ -118,6 +121,8 @@ class HybridHopfSDEFunc(nn.Module):
         structural_connectivity: torch.Tensor,
         coupling_net: CouplingNetwork,
         noise_sigma: float = 0.5,
+        control_coupling: Optional[torch.Tensor] = None,
+        n_control_dims: int = 0,
     ):
         super().__init__()
         self.n_rois = n_rois
@@ -128,9 +133,12 @@ class HybridHopfSDEFunc(nn.Module):
         self.omega = omega
         self.structural_connectivity = structural_connectivity
         self.coupling_net = coupling_net
+        self.control_coupling = control_coupling
+        self.n_control_dims = n_control_dims
+        self.control_input: Optional[torch.Tensor] = None
 
     def f(self, t: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        """Drift: z_i·(κa + iω_i − κ|z_i|²) + G·Σ_j ψ_θ(z_j − z_i, C_ij)."""
+        """Drift: z_i·(κa + iω_i − κ|z_i|²) + G·Σ_j ψ_θ(z̃_j − z_i, C̃_ij)."""
         # Soft-clamp state magnitude to prevent runaway growth
         mag = y.abs().clamp(min=1e-8)
         scale = torch.where(mag > 10.0, 10.0 / mag, torch.ones_like(mag))
@@ -141,13 +149,30 @@ class HybridHopfSDEFunc(nn.Module):
         omega = self.omega.unsqueeze(0)  # (1, n_rois)
         local = y * (self.kappa * self.a - self.kappa * z_sq + 1j * omega)  # (batch, n_rois)
 
-        # --- learned coupling term ---
+        # --- learned coupling term (possibly augmented with control) ---
         batch, n = y.shape
-        # Pairwise difference z_j − z_i: (batch, n_target, n_source)
-        z_i = y.unsqueeze(2).expand(batch, n, n)  # target: dim 1
-        z_j = y.unsqueeze(1).expand(batch, n, n)  # source: dim 2
-        z_diff = z_j - z_i  # (batch, n, n) complex
-        sc = self.structural_connectivity.unsqueeze(0).expand(batch, n, n)  # (batch, n, n) real
+
+        # Build augmented node set if control is present
+        if self.n_control_dims > 0 and self.control_input is not None and self.control_coupling is not None:
+            u = self.control_input.to(y.dtype)  # (batch, m)
+            z_all = torch.cat([y, u], dim=1)  # (batch, n + m)
+            # Extended SC: [sc | control_coupling]  shape (n, n+m)
+            cc = self.control_coupling.to(y.real.dtype)  # (n, m)
+            sc_base = self.structural_connectivity
+            sc_ext = torch.cat([sc_base, cc], dim=1)  # (n, n+m)
+            n_total = n + self.n_control_dims
+        else:
+            z_all = y
+            sc_ext = self.structural_connectivity
+            n_total = n
+
+        # Pairwise difference z̃_j − z_i: (batch, n_target, n_source)
+        # Target nodes are always the n biological nodes (rows of z_i)
+        # Source nodes are all n_total augmented nodes (z̃_j)
+        z_i = y.unsqueeze(2).expand(batch, n, n_total)    # target: dim 1
+        z_j = z_all.unsqueeze(1).expand(batch, n, n_total)  # source: dim 2
+        z_diff = z_j - z_i  # (batch, n, n_total) complex
+        sc = sc_ext.unsqueeze(0).expand(batch, n, n_total)  # (batch, n, n_total) real
         sc = sc.to(y.real.dtype)
 
         # Checkpoint the edge MLP during training to avoid storing large
@@ -155,7 +180,7 @@ class HybridHopfSDEFunc(nn.Module):
         if torch.is_grad_enabled() and y.requires_grad:
             psi = checkpoint(self.coupling_net, z_diff, sc, use_reentrant=False)
         else:
-            psi = self.coupling_net(z_diff, sc)  # (batch, n, n) complex
+            psi = self.coupling_net(z_diff, sc)  # (batch, n, n_total) complex
 
         coupling = self.global_coupling * psi.sum(dim=2)  # sum over j → (batch, n)
         return local + coupling
@@ -188,6 +213,7 @@ class HybridHopfModel(BaseNeuroscienceModel):
         learnable_g: bool = True,
         learnable_kappa: bool = True,
         learnable_omega: bool = False,
+        n_control_dims: int = 0,
     ):
         super().__init__(n_rois, device)
         self.noise_sigma = noise_sigma
@@ -196,6 +222,7 @@ class HybridHopfModel(BaseNeuroscienceModel):
         self.learnable_omega = learnable_omega
         self.coupling_hidden_dim = coupling_hidden_dim
         self.coupling_n_layers = coupling_n_layers
+        self.n_control_dims = n_control_dims
 
         # Structural connectivity (default: identity)
         sc = (
@@ -243,6 +270,14 @@ class HybridHopfModel(BaseNeuroscienceModel):
             n_layers=coupling_n_layers,
         )
 
+        # Control coupling: learnable weights from control nodes to brain ROIs
+        if n_control_dims > 0:
+            self.control_coupling = nn.Parameter(
+                torch.randn(n_rois, n_control_dims, device=device) * 0.01
+            )
+        else:
+            self.control_coupling = None
+
         self.sde_func = HybridHopfSDEFunc(
             n_rois,
             self.a,
@@ -252,6 +287,8 @@ class HybridHopfModel(BaseNeuroscienceModel):
             self.structural_connectivity,
             self.coupling_net,
             noise_sigma,
+            control_coupling=self.control_coupling,
+            n_control_dims=n_control_dims,
         )
         self.to(device)
 
@@ -261,6 +298,7 @@ class HybridHopfModel(BaseNeuroscienceModel):
         self.sde_func.omega = self.omega
         self.sde_func.structural_connectivity = self.structural_connectivity
         self.sde_func.coupling_net = self.coupling_net
+        self.sde_func.control_coupling = self.control_coupling
 
     def forward(
         self,
@@ -272,6 +310,7 @@ class HybridHopfModel(BaseNeuroscienceModel):
         dt_min: Optional[float] = 0.1,
         use_adjoint: bool = False,
         adjoint_method: Optional[str] = None,
+        control: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Simulate brain dynamics via SDE integration.
 
@@ -284,6 +323,7 @@ class HybridHopfModel(BaseNeuroscienceModel):
             dt_min: Sub-step for SDE solver.
             use_adjoint: Use torchsde adjoint solver.
             adjoint_method: Adjoint SDE solver method (defaults to ``method``).
+            control: Optional control input (batch, n_control_dims). Constant in time.
 
         Returns:
             Complex timeseries (batch, n_rois, n_steps).
@@ -294,6 +334,15 @@ class HybridHopfModel(BaseNeuroscienceModel):
         if not torch.is_complex(z):
             z = torch.complex(z, torch.zeros_like(z))
         self.sde_func.sde_type = sde_type
+
+        # Set control input on SDE func (constant in time)
+        if control is not None and self.n_control_dims > 0:
+            ctrl = control.to(self.device)
+            if not torch.is_complex(ctrl):
+                ctrl = torch.complex(ctrl, torch.zeros_like(ctrl))
+            self.sde_func.control_input = ctrl
+        else:
+            self.sde_func.control_input = None
 
         ts = torch.linspace(0, (n_steps - 1) * dt, n_steps, device=self.device)
 
@@ -333,6 +382,7 @@ class HybridHopfModel(BaseNeuroscienceModel):
             "coupling_n_layers": int(self.coupling_n_layers),
             "initial_a": float(self.a.detach().mean().cpu().item()),
             "initial_g": float(self.g.detach().cpu().item()),
+            "n_control_dims": int(self.n_control_dims),
         }
 
     def set_parameters(self, a=None, g=None, omega=None):
