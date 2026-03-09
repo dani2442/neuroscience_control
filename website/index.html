@@ -10,13 +10,13 @@
       
       
       
-        <link rel="canonical" href="https://dani2442.github.io/neuroscience_control/api/">
+        <link rel="canonical" href="https://dani2442.github.io/neuroscience_control/website/">
       
       
-        <link rel="prev" href="../tutorials/metrics-evaluation/">
+        <link rel="prev" href="../api/">
       
       
-        <link rel="next" href="../website/">
+        <link rel="next" href="../publishing/">
       
       
         
@@ -27,7 +27,7 @@
     
     
       
-        <title>API Overview - Neuroscience Control</title>
+        <title>Website Deployment - Neuroscience Control</title>
       
     
     
@@ -68,7 +68,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#api-overview" class="md-skip">
+        <a href="#website-deployment" class="md-skip">
           Skip to content
         </a>
       
@@ -104,7 +104,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              API Overview
+              Website Deployment
             
           </span>
         </div>
@@ -450,6 +450,33 @@
       
   
   
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
     
   
   
@@ -469,7 +496,7 @@
   <span class="md-ellipsis">
     
   
-    API Overview
+    Website Deployment
   
 
     
@@ -487,7 +514,7 @@
   <span class="md-ellipsis">
     
   
-    API Overview
+    Website Deployment
   
 
     
@@ -513,10 +540,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#import-examples" class="md-nav__link">
+  <a href="#live-url" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Import examples
+        Live URL
       
     </span>
   </a>
@@ -524,10 +551,43 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#backwards-compatibility" class="md-nav__link">
+  <a href="#how-deployment-works" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Backwards compatibility
+        How deployment works
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#one-time-github-setup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        One-time GitHub setup
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#local-preview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Local preview
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Troubleshooting
       
     </span>
   </a>
@@ -538,33 +598,6 @@
   
 </nav>
       
-    </li>
-  
-
-    
-      
-      
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../website/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Website Deployment
-  
-
-    
-  </span>
-  
-  
-
-      </a>
     </li>
   
 
@@ -623,10 +656,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#import-examples" class="md-nav__link">
+  <a href="#live-url" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Import examples
+        Live URL
       
     </span>
   </a>
@@ -634,10 +667,43 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#backwards-compatibility" class="md-nav__link">
+  <a href="#how-deployment-works" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Backwards compatibility
+        How deployment works
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#one-time-github-setup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        One-time GitHub setup
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#local-preview" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Local preview
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Troubleshooting
       
     </span>
   </a>
@@ -664,25 +730,42 @@
   
 
 
-<h1 id="api-overview">API Overview<a class="headerlink" href="#api-overview" title="Permanent link">&para;</a></h1>
-<p>Current public modules:</p>
+<h1 id="website-deployment">Website Deployment<a class="headerlink" href="#website-deployment" title="Permanent link">&para;</a></h1>
+<p>This project publishes docs to GitHub Pages from the <code>main</code> branch via the Docs workflow.</p>
+<h2 id="live-url">Live URL<a class="headerlink" href="#live-url" title="Permanent link">&para;</a></h2>
+<p>Default GitHub Pages URL for this repository:</p>
+<div class="highlight"><pre><span></span><code>https://dani2442.github.io/neuroscience_control/
+</code></pre></div>
+<h2 id="how-deployment-works">How deployment works<a class="headerlink" href="#how-deployment-works" title="Permanent link">&para;</a></h2>
+<ol>
+<li>Push changes to <code>main</code> that touch <code>docs/**</code>, <code>mkdocs.yml</code>, <code>README.md</code>, or <code>pyproject.toml</code>.</li>
+<li>GitHub Action <code>.github/workflows/docs.yml</code> runs:</li>
+<li><code>uv sync --group docs</code></li>
+<li><code>uv run mkdocs build --strict</code></li>
+<li>deploys <code>site/</code> to <code>gh-pages</code></li>
+<li>GitHub Pages serves the <code>gh-pages</code> branch.</li>
+</ol>
+<h2 id="one-time-github-setup">One-time GitHub setup<a class="headerlink" href="#one-time-github-setup" title="Permanent link">&para;</a></h2>
+<ol>
+<li>Open repository settings.</li>
+<li>Go to <strong>Pages</strong>.</li>
+<li>Set <strong>Source</strong> to <strong>Deploy from a branch</strong>.</li>
+<li>Select branch <code>gh-pages</code> and folder <code>/ (root)</code>.</li>
+<li>Save.</li>
+</ol>
+<h2 id="local-preview">Local preview<a class="headerlink" href="#local-preview" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code>uv<span class="w"> </span>sync<span class="w"> </span>--group<span class="w"> </span>docs
+uv<span class="w"> </span>run<span class="w"> </span>mkdocs<span class="w"> </span>serve
+</code></pre></div>
+<p>Then open:</p>
+<div class="highlight"><pre><span></span><code>http://127.0.0.1:8000/
+</code></pre></div>
+<h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h2>
 <ul>
-<li><code>neuroscience_control.dataset</code></li>
-<li><code>neuroscience_control.models</code></li>
-<li><code>neuroscience_control.training</code></li>
-<li><code>neuroscience_control.metrics</code></li>
-<li><code>neuroscience_control.utils</code></li>
+<li>If Pages is blank, verify <code>gh-pages</code> exists and has <code>index.html</code>.</li>
+<li>If docs action fails, run <code>uv run mkdocs build --strict</code> locally and fix warnings/errors.</li>
+<li>If workflow updates fail to push, ensure your GitHub token has <code>workflow</code> scope.</li>
 </ul>
-<h2 id="import-examples">Import examples<a class="headerlink" href="#import-examples" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">neuroscience_control.models</span><span class="w"> </span><span class="kn">import</span> <span class="n">CoupledHopfModel</span><span class="p">,</span> <span class="n">HybridHopfModel</span><span class="p">,</span> <span class="n">NeuralSDE</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">neuroscience_control.training</span><span class="w"> </span><span class="kn">import</span> <span class="n">HopfConfig</span><span class="p">,</span> <span class="n">NeuralSDEConfig</span><span class="p">,</span> <span class="n">run_backprop_training</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">neuroscience_control.metrics</span><span class="w"> </span><span class="kn">import</span> <span class="n">compute_all_fc_metrics</span><span class="p">,</span> <span class="n">compute_dynamics_fit_metrics</span>
-</code></pre></div>
-<h2 id="backwards-compatibility">Backwards compatibility<a class="headerlink" href="#backwards-compatibility" title="Permanent link">&para;</a></h2>
-<p>Legacy imports continue to work:</p>
-<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">src.models</span><span class="w"> </span><span class="kn">import</span> <span class="n">CoupledHopfModel</span>
-</code></pre></div>
-<p>Use <code>neuroscience_control.*</code> in new code.</p>
 
 
 
