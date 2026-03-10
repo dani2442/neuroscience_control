@@ -11,16 +11,27 @@ Dataset-to-table mapping:
 
 Default output targets:
     - tab:model_comparison      → paper/sections/ts_young_model_table.tex
-    - tab:lsd_model_comparison  → paper/sections/03_results.tex
+    - tab:lsd_model_comparison  → paper/sections/lsd_model_table.tex
 
 If the JSON contains <metric>_std keys, they will be formatted as
 "value {\scriptsize \pm std}" in the LaTeX table.
 
 Usage
 -----
+# Auto-detect the latest metrics file and update the corresponding table:
     python examples/update_paper_tables.py
-    python examples/update_paper_tables.py --metrics results/ts_young_paper_metrics_20260310_123456.json
-    python examples/update_paper_tables.py --metrics results/lsd_paper_metrics_20260310_123456.json --table-label tab:lsd_model_comparison
+
+# Update ts_young model comparison table:
+    python examples/update_paper_tables.py \
+        --metrics results/ts_young_paper_metrics_<timestamp>.json
+
+# Update LSD model comparison table:
+    python examples/update_paper_tables.py \
+        --metrics results/lsd_paper_metrics_<timestamp>.json
+
+# Dry-run (preview without writing):
+    python examples/update_paper_tables.py \
+        --metrics results/lsd_paper_metrics_<timestamp>.json --dry-run
 """
 
 from __future__ import annotations
@@ -51,10 +62,11 @@ METRIC_COLS: list[tuple[str, str]] = [
 
 # Map JSON model key → display name in the table
 MODEL_DISPLAY: dict[str, str] = {
-    "hopf_grid":          "Coupled Hopf (grid search)",
-    "hopf_backprop":      "Coupled Hopf (gradient opt.)",
+    "hopf_grid":            "Coupled Hopf (grid search)",
+    "hopf_backprop":        "Coupled Hopf (gradient opt.)",
     "hybrid_hopf_backprop": "Hybrid Hopf (gradient opt.)",
-    "nsde_backprop":      "Neural SDE (gradient opt.)",
+    "nsde_backprop":        "Neural SDE (gradient opt.)",
+    "gnn_hopf_backprop":    "GNN Hopf (gradient opt.)",
 }
 
 # Best metric per column (True → higher better, False → lower better)
@@ -137,26 +149,8 @@ _BOTTOMRULE = r"\bottomrule"
 
 TABLE_TARGET_BY_LABEL: dict[str, Path] = {
     "tab:model_comparison": Path("paper/sections/ts_young_model_table.tex"),
-    "tab:lsd_model_comparison": Path("paper/sections/03_results.tex"),
+    "tab:lsd_model_comparison": Path("paper/sections/lsd_model_table.tex"),
 }
-
-
-def _patch_table(tex: str, table_label: str, new_body: str) -> str:
-    """Replace the row block between \\midrule and \\bottomrule for *table_label*."""
-    # Find the table environment containing the label
-    label_pattern = re.compile(
-        r"(\\label\{" + re.escape(table_label) + r"\}.*?"
-        r"\\midrule\n)"          # everything up to and including \midrule\n
-        r"(.*?)"                 # the row block we want to replace
-        r"(\n\s*\\bottomrule)",  # the \bottomrule line
-        re.DOTALL,
-    )
-    def _replacement(m: re.Match) -> str:
-        return m.group(1) + new_body + m.group(3)
-    patched, n_subs = label_pattern.subn(_replacement, tex)
-    if n_subs == 0:
-        print(f"  Warning: table '{table_label}' not found in LaTeX source.", file=sys.stderr)
-    return patched
 
 
 def _patch_tabular_body(tex: str, new_body: str) -> str:
@@ -267,10 +261,7 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(1)
 
     original = tex_target.read_text(encoding="utf-8")
-    if tex_target.name == "03_results.tex":
-        patched = _patch_table(original, table_label, body)
-    else:
-        patched = _patch_tabular_body(original, body)
+    patched = _patch_tabular_body(original, body)
 
     if patched == original:
         print("No changes made (table not found or already up to date).")

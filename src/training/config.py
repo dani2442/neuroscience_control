@@ -92,7 +92,7 @@ class TrainingConfig:
     loss_weight_phfcd: Optional[float] = 1.0
     loss_weight_metastability: Optional[float] = 1.0
     early_stopping_patience: int = 15
-    n_steps: int = 100
+    n_steps: int = 50
     dt_min: Optional[float] = 0.05  # Fixed solver sub-step (passed as torchsde `dt`)
     sde_type: str = "ito"  # SDE interpretation required by reversible_heun
     sde_method: str = "euler"  # Stable Stratonovich solver
@@ -174,6 +174,7 @@ class HybridHopfConfig(TrainingConfig):
     learnable_kappa: bool = False
     learnable_omega: bool = False
     learnable_fc: bool = False  # Kept for backward compat with HopfConfig checks
+    use_adjoint: bool = True  # Adjoint SDE solver to reduce CUDA memory usage
 
     # Node-network architecture (key + output MLPs)
     coupling_hidden_dim: int = 16
@@ -200,6 +201,7 @@ class GNNHopfConfig(TrainingConfig):
     # Node-wise network architecture
     node_hidden_dim: int = 16
     node_n_layers: int = 1
+    use_adjoint: bool = True  # Adjoint SDE solver to reduce CUDA memory usage
 
 
 @dataclass

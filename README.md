@@ -529,3 +529,36 @@ If you use this project in academic work, please cite this repository and the ac
 ## License
 
 MIT License — see [LICENSE](LICENSE) for details.
+
+---
+
+## Paper Commands (`.venv`)
+
+Run from the repository root. See each script's docstring for full usage details.
+
+```bash
+# 1) Paper suite — train all models on a dataset and generate metrics JSON
+#    LSD dataset:
+.venv/bin/python examples/train_models.py paper \
+  --dataset-type lsd --lsd-data-dir data/lsd
+
+#    ts_young dataset:
+.venv/bin/python examples/train_models.py paper \
+  --dataset-type ts_young --data-path data/ts_young/ts_young_TR0.72.mat
+
+# 2) Update paper LaTeX tables from metrics JSON (see examples/update_paper_tables.py)
+.venv/bin/python examples/update_paper_tables.py \
+  --metrics results/lsd_paper_metrics_<timestamp>.json
+
+.venv/bin/python examples/update_paper_tables.py \
+  --metrics results/ts_young_paper_metrics_<timestamp>.json
+
+# 3) Compare LSD control conditions (see examples/compare_control_conditions.py)
+.venv/bin/python examples/compare_control_conditions.py \
+  --checkpoints checkpoints/hopf_grid_lsd_best_*.pt \
+                checkpoints/hopf_backprop_lsd_best_*.pt \
+                checkpoints/nsde_backprop_lsd_best_*.pt \
+                checkpoints/hybrid_hopf_backprop_lsd_best_*.pt \
+                checkpoints/gnn_hopf_backprop_lsd_best_*.pt \
+  --lsd-data-dir data/lsd
+```

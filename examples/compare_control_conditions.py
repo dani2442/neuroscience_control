@@ -13,9 +13,23 @@ n_control_dims=1) and simulates trajectories for each condition value
 
 Usage
 -----
+# Compare all LSD-trained checkpoints (labels auto-detected from filenames):
     python examples/compare_control_conditions.py \
-        --checkpoints checkpoints/hopf_backprop_best_*.pt \
-                      checkpoints/nsde_backprop_best_*.pt \
+        --checkpoints checkpoints/hopf_grid_lsd_best_*.pt \
+                      checkpoints/hopf_backprop_lsd_best_*.pt \
+                      checkpoints/nsde_backprop_lsd_best_*.pt \
+                      checkpoints/hybrid_hopf_backprop_lsd_best_*.pt \
+                      checkpoints/gnn_hopf_backprop_lsd_best_*.pt \
+        --lsd-data-dir data/lsd
+
+# With explicit model labels:
+    python examples/compare_control_conditions.py \
+        --checkpoints checkpoints/hopf_grid_lsd_best_*.pt \
+                      checkpoints/hopf_backprop_lsd_best_*.pt \
+                      checkpoints/nsde_backprop_lsd_best_*.pt \
+                      checkpoints/hybrid_hopf_backprop_lsd_best_*.pt \
+                      checkpoints/gnn_hopf_backprop_lsd_best_*.pt \
+        --model-labels "Hopf Grid" "Hopf Backprop" "Neural SDE" "Hybrid Hopf" "GNN Hopf" \
         --lsd-data-dir data/lsd
 
 You can also pass a single checkpoint and a readable --model-label.
@@ -44,6 +58,28 @@ from src.dataset.data_loader import LSD_CONDITION_MAP
 from src.metrics import fc_correlation
 from src.models import load_model_from_checkpoint
 from src.utils import FIGURES_DIR, print_section, resolve_device, seed_all
+
+
+# ---------------------------------------------------------------------------
+# Model label helpers
+# ---------------------------------------------------------------------------
+
+_MODEL_TAGS = [
+    ("gnn_hopf", "GNN Hopf"),
+    ("hybrid_hopf", "Hybrid Hopf"),
+    ("nsde", "Neural SDE"),
+    ("hopf", "Hopf"),
+]
+
+
+def _short_model_label(stem: str) -> str:
+    """Extract a concise model tag from a checkpoint file stem."""
+    lower = stem.lower()
+    for tag, label in _MODEL_TAGS:  # longest tags checked first
+        if tag in lower:
+            suffix = " (Grid)" if "grid" in lower else ""
+            return f"{label}{suffix}"
+    return stem
 
 
 # ---------------------------------------------------------------------------
@@ -394,9 +430,9 @@ def main(argv: list[str] | None = None) -> None:
         args.checkpoints = [str(p) for p in found]
         print(f"  Auto-discovered {len(args.checkpoints)} checkpoint(s).")
 
-    labels = args.model_labels or [Path(c).stem for c in args.checkpoints]
+    labels = args.model_labels or [_short_model_label(Path(c).stem) for c in args.checkpoints]
     if len(labels) < len(args.checkpoints):
-        labels += [Path(c).stem for c in args.checkpoints[len(labels):]]
+        labels += [_short_model_label(Path(c).stem) for c in args.checkpoints[len(labels):]]
 
     models: dict[str, Any] = {}
     for ckpt_path, label in zip(args.checkpoints, labels):
@@ -453,7 +489,7 @@ def main(argv: list[str] | None = None) -> None:
 
     plot_fc_grid(
         fc_per_model, empirical_fc_per_ctrl,
-        save_path=figures_dir / "lsd_control_fc_grid.pdf",
+        save_path=figures_dir / "lsd" / "control_fc_grid.pdf",
     )
 
     for mname in models:
@@ -461,12 +497,12 @@ def main(argv: list[str] | None = None) -> None:
             fc_per_model[mname],
             model_name=mname,
             baseline_ctrl=0,
-            save_path=figures_dir / f"lsd_fc_delta_{mname.lower().replace(' ', '_')}.pdf",
+            save_path=figures_dir / "lsd" / f"fc_delta_{mname.lower().replace(' ', '_')}.pdf",
         )
 
     plot_fc_corr_bar(
         metrics,
-        save_path=figures_dir / "lsd_control_fc_corr_bar.pdf",
+        save_path=figures_dir / "lsd" / "control_fc_corr.pdf",
     )
 
     # ------------------------------------------------------------------

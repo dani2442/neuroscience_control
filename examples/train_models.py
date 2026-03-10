@@ -4,9 +4,25 @@ Unified training entry point for Hopf grid-search and backprop models.
 
 Examples
 --------
+# Single model training:
     python examples/train_models.py backprop --model nsde
     python examples/train_models.py hopf-grid
-    python examples/train_models.py paper
+
+# Paper suite — trains all models and generates metrics JSON for table updates.
+#
+# LSD dataset:
+    python examples/train_models.py paper \
+        --dataset-type lsd --lsd-data-dir data/lsd
+#
+# ts_young dataset:
+    python examples/train_models.py paper \
+        --dataset-type ts_young --data-path data/ts_young/ts_young_TR0.72.mat
+
+# After training, update paper LaTeX tables:
+    python examples/update_paper_tables.py \
+        --metrics results/lsd_paper_metrics_<timestamp>.json
+    python examples/update_paper_tables.py \
+        --metrics results/ts_young_paper_metrics_<timestamp>.json
 """
 
 from __future__ import annotations
@@ -262,16 +278,18 @@ def _run_backprop(args: argparse.Namespace) -> dict[str, object]:
                 model, val_timeseries, target_fc, n_timepoints, cfg.tr,
                 sde_type=cfg.sde_type, method=cfg.sde_method, dt_min=cfg.dt_min,
                 title=f"{title} (Backprop) - FC Comparison",
-                default_name=f"{args.model}_backprop_fc_comparison",
+                default_name=f"{ds_tag}/{args.model}_fc",
                 use_wandb=cfg.use_wandb,
+                wandb_key=f"figures/{ds_tag}/{args.model}_fc",
             )
             generate_multigrid_figure(
                 model, val_timeseries, n_timepoints, cfg.tr,
                 n_simulations=3, n_rois=3, n_cols=3,
                 sde_type=cfg.sde_type, method=cfg.sde_method, dt_min=cfg.dt_min,
                 title=f"{title} (Backprop) - Real vs Simulated",
-                default_name=f"{args.model}_backprop_real_vs_sim_multigrid",
+                default_name=f"{ds_tag}/{args.model}_timeseries",
                 use_wandb=cfg.use_wandb,
+                wandb_key=f"figures/{ds_tag}/{args.model}_timeseries",
             )
         else:
             print("Skipping figure generation (--skip-figures).")
@@ -288,7 +306,7 @@ def _run_backprop(args: argparse.Namespace) -> dict[str, object]:
     print(f"\nTest metrics (mean ± std): {_format_metrics_mean_std(test_metrics)}")
     print(f"Final metrics: {final_metrics}")
     print(f"Model saved to: {checkpoint_path}")
-    print(f"Figures saved to: {FIGURES_DIR}")
+    print(f"Figures saved to: {FIGURES_DIR / ds_tag}")
 
     return {
         "run": f"{args.model}_backprop",
@@ -424,15 +442,17 @@ def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
             generate_fc_figure(
                 hopf_model, val_timeseries, target_fc, n_tp, cfg.tr,
                 title="Coupled Hopf (Grid) - FC Comparison",
-                default_name="hopf_grid_fc_comparison",
+                default_name=f"{ds_tag}/hopf_grid_fc",
                 use_wandb=cfg.use_wandb,
+                wandb_key=f"figures/{ds_tag}/hopf_grid_fc",
             )
             generate_multigrid_figure(
                 hopf_model, val_timeseries, n_tp, cfg.tr,
                 n_simulations=3, n_rois=3, n_cols=3,
                 title="Coupled Hopf (Grid) - Real vs Simulated",
-                default_name="hopf_grid_real_vs_sim",
+                default_name=f"{ds_tag}/hopf_grid_timeseries",
                 use_wandb=cfg.use_wandb,
+                wandb_key=f"figures/{ds_tag}/hopf_grid_timeseries",
             )
         else:
             print("Skipping figure generation (--skip-figures).")
@@ -457,7 +477,7 @@ def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
     print(f"Final metrics (full val loader): {final_metrics}")
     print(f"Test metrics (mean ± std): {_format_metrics_mean_std(test_metrics)}")
     print(f"Checkpoint: {checkpoint}")
-    print(f"Figures saved to: {FIGURES_DIR}")
+    print(f"Figures saved to: {FIGURES_DIR / ds_tag}")
 
     return {
         "run": "hopf_grid",
