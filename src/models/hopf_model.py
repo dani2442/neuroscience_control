@@ -18,7 +18,7 @@ class HopfSDEFunc(nn.Module):
     State is complex: ``(batch, n_rois)`` with ``dtype=complex64/128``.
 
     .. math::
-        dz = \\bigl[(a + i\\omega - |z|^2)\\,z
+        dz = \\bigl[(\\kappa a + i\\omega - \\kappa|z|^2)\\,z
              + G\\sum_j C_{ij}(z_j - z_i)\\bigr]\\,dt
              + \\sigma\\,dW
 

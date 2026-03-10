@@ -92,8 +92,8 @@ class TrainingConfig:
     loss_weight_phfcd: Optional[float] = 1.0
     loss_weight_metastability: Optional[float] = 1.0
     early_stopping_patience: int = 15
-    n_steps: int = 50
-    dt_min: Optional[float] = 0.05  # Fixed solver sub-step (passed as torchsde `dt`)
+    n_steps: int = 100
+    dt_min: Optional[float] = 0.1  # Fixed solver sub-step (passed as torchsde `dt`)
     sde_type: str = "ito"  # SDE interpretation required by reversible_heun
     sde_method: str = "euler"  # Stable Stratonovich solver
     use_adjoint: bool = False  # Use torchsde.sdeint_adjoint for backprop memory efficiency
@@ -163,7 +163,7 @@ class HopfConfig(TrainingConfig):
 
 @dataclass
 class HybridHopfConfig(TrainingConfig):
-    """Configuration for HybridHopf model training (learnable coupling network)."""
+    """Configuration for HybridHopf model training (low-rank coupling + node networks)."""
     experiment_name: str = "hybrid_hopf"
     noise_sigma: float = 0.1
     initial_a: float = -0.02
@@ -173,11 +173,33 @@ class HybridHopfConfig(TrainingConfig):
     learnable_g: bool = True
     learnable_kappa: bool = False
     learnable_omega: bool = False
-    learnable_fc: bool = False  # Learnable functional connectivity matrix
-    
-    # Coupling network architecture
+    learnable_fc: bool = False  # Kept for backward compat with HopfConfig checks
+
+    # Node-network architecture (key + output MLPs)
     coupling_hidden_dim: int = 16
     coupling_n_layers: int = 1
+
+    # Low-rank coupling: None = full n×n, int = rank-r factorisation
+    coupling_rank: Optional[int] = 10
+    d_key: int = 4  # dimension of the key embedding
+
+
+@dataclass
+class GNNHopfConfig(TrainingConfig):
+    """Configuration for GNN-Hopf model training (node-wise neural coupling)."""
+    experiment_name: str = "gnn_hopf"
+    noise_sigma: float = 0.1
+    initial_a: float = -0.02
+    initial_g: float = 0.5
+    initial_kappa: float = 1.0
+    learnable_a: bool = True
+    learnable_g: bool = True
+    learnable_kappa: bool = False
+    learnable_omega: bool = False
+
+    # Node-wise network architecture
+    node_hidden_dim: int = 16
+    node_n_layers: int = 1
 
 
 @dataclass

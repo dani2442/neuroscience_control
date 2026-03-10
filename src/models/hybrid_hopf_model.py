@@ -1,26 +1,34 @@
 """Hybrid mechanistic–neural Hopf Model for brain dynamics simulation.
 
-Combines Hopf local oscillator dynamics with a learnable graph-coupling
-network ψ_θ.  The SDE reads:
+Low-rank factored coupling with node-wise neural networks.  The SDE reads:
 
-    dz_i = [(a + iω_i − |z_i|²) z_i
-            + G Σ_j ψ_θ(z_j − z_i, C_ij)] dt + σ dW_i
+    k_j = φ_key(z_j)                             — key network  (O(n))
+    m_i = Σ_j C_ij (k_j − k_i)                   — diffusive aggregation
+    dz_i = [(κa + iω_i − κ|z_i|²) z_i
+            + G · ψ_out(m_i, z_i)] dt + σ dW_i    — output network (O(n))
 
-where ψ_θ : ℂ² → ℂ is a complex-valued harmonic network that replaces
-the fixed linear diffusive coupling C_ij(z_j − z_i) of the classical
-Hopf model.  The network operates natively on complex numbers.
+The coupling matrix C is optionally low-rank:  C ≈ L Rᵀ  (rank *r*).
+  • Full-rank (``coupling_rank=None``):  C is n×n, initialised from SC.
+  • Low-rank  (``coupling_rank=r``):     L, R ∈ ℝ^{n×r}, initialised
+    from the top-*r* SVD of SC.  Aggregation costs O(n·r·d_k) instead
+    of O(n²·d_k), and stores 2nr parameters instead of n².
 
-Native complex-valued SDE: state, drift, diffusion, and Brownian motion
+Memory comparison at n=100, r=10, d_k=4, hidden=16:
+  Old edge-wise model     →  10 000 NN evals/step, O(n² · h · T) memory
+  New low-rank node model →  200 NN evals/step,    O(n · h · T) memory
+
+Native complex-valued SDE: state, drift, diffusion, Brownian motion
 are all complex.
 """
 
 import torch
 import torch.nn as nn
-from torch.utils.checkpoint import checkpoint
 from typing import Any, Dict, Optional
 from .base_model import BaseNeuroscienceModel
 import torchsde
 
+
+# ── Complex building blocks (shared with gnn_hopf_model) ──────────────
 
 class ComplexLinear(nn.Module):
     """Fully complex linear layer: out = W z + b with W, b ∈ ℂ."""
@@ -48,64 +56,81 @@ class PhasePreservingActivation(nn.Module):
         return z / mag * torch.tanh(mag)
 
 
-class CouplingNetwork(nn.Module):
-    r"""Learnable edge-wise coupling ψ_θ(z_j − z_i, C_ij) → ℂ.
+# ── Node-wise networks ────────────────────────────────────────────────
 
-    A harmonic (complex-valued) MLP.  Each edge receives a 2-d complex
-    input vector ``[z_j − z_i,  C_ij + 0j]`` and the network maps it
-    to a scalar complex coupling value.  All weights and biases are
-    complex; the activation is phase-preserving.
+def _build_complex_mlp(in_dim: int, out_dim: int, hidden_dim: int, n_layers: int,
+                        near_zero_output: bool = True) -> nn.Sequential:
+    """Helper: build a complex-valued MLP with phase-preserving activations."""
+    layers: list[nn.Module] = []
+    d = in_dim
+    for _ in range(n_layers):
+        layers.extend([ComplexLinear(d, hidden_dim), PhasePreservingActivation()])
+        d = hidden_dim
+    layers.append(ComplexLinear(d, out_dim))
+    net = nn.Sequential(*layers)
+    if near_zero_output:
+        with torch.no_grad():
+            net[-1].weight.mul_(0.01)
+            net[-1].bias.zero_()
+    return net
+
+
+class KeyNetwork(nn.Module):
+    r"""Per-node key encoder  φ_key : ℂ → ℂ^{d_k}.
+
+    Enriches each node's scalar complex state into a ``d_k``-dimensional
+    complex embedding *before* the linear aggregation step.
     """
 
-    def __init__(self, hidden_dim: int = 32, n_layers: int = 2):
+    def __init__(self, d_key: int = 4, hidden_dim: int = 16, n_layers: int = 1):
         super().__init__()
-        # Input: (z_j − z_i, C_ij) ∈ ℂ²  →  output ∈ ℂ¹
-        in_dim = 2
-        out_dim = 1
-        layers: list[nn.Module] = []
-        d = in_dim
-        for _ in range(n_layers):
-            layers.extend([ComplexLinear(d, hidden_dim), PhasePreservingActivation()])
-            d = hidden_dim
-        layers.append(ComplexLinear(d, out_dim))
-        self.net = nn.Sequential(*layers)
+        self.net = _build_complex_mlp(1, d_key, hidden_dim, n_layers, near_zero_output=False)
 
-        # Near-zero init for the output layer so the model starts in the
-        # pure-Hopf regime and gradually learns the neural coupling.
-        with torch.no_grad():
-            self.net[-1].weight.mul_(0.01)
-            self.net[-1].bias.zero_()
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        """z: (batch, n) complex  →  (batch, n, d_k) complex."""
+        return self.net(z.unsqueeze(-1))  # (batch, n, 1) → (batch, n, d_k)
 
-    def forward(
-        self,
-        z_diff: torch.Tensor,
-        c_ij: torch.Tensor,
-    ) -> torch.Tensor:
-        """Evaluate ψ_θ for every edge in a vectorised fashion.
 
-        Args:
-            z_diff: Complex tensor (..., ) – pairwise difference z_j − z_i.
-            c_ij:   Real tensor  (..., ) – structural connectivity weights.
+class OutputNetwork(nn.Module):
+    r"""Per-node output transform  ψ_out : ℂ^{d_k + 1} → ℂ.
 
-        Returns:
-            Complex tensor (..., ) – coupling contribution per edge.
-        """
-        c_complex = torch.complex(c_ij, torch.zeros_like(c_ij))
-        features = torch.stack([z_diff, c_complex], dim=-1)  # (..., 2) complex
-        out = self.net(features)  # (..., 1) complex
-        return out.squeeze(-1)
+    Maps the aggregated message concatenated with the local state to a
+    scalar complex coupling correction.
+    """
 
+    def __init__(self, d_key: int = 4, hidden_dim: int = 16, n_layers: int = 1):
+        super().__init__()
+        self.net = _build_complex_mlp(d_key + 1, 1, hidden_dim, n_layers, near_zero_output=True)
+
+    def forward(self, m_i: torch.Tensor, z_i: torch.Tensor) -> torch.Tensor:
+        """m_i: (batch, n, d_k), z_i: (batch, n)  →  (batch, n) complex."""
+        features = torch.cat([m_i, z_i.unsqueeze(-1)], dim=-1)  # (batch, n, d_k+1)
+        return self.net(features).squeeze(-1)  # (batch, n)
+
+
+# ── Low-rank coupling helpers ────────────────────────────────────────
+
+def _svd_init(sc: torch.Tensor, rank: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """Initialise L, R from the top-*rank* SVD of *sc*."""
+    U, S, Vh = torch.linalg.svd(sc.float(), full_matrices=False)
+    sqrt_S = S[:rank].sqrt()
+    L = U[:, :rank] * sqrt_S.unsqueeze(0)   # (n, r)
+    R = Vh[:rank, :].T * sqrt_S.unsqueeze(0) # (n, r)
+    return L, R
+
+
+# ── SDE function ──────────────────────────────────────────────────────
 
 class HybridHopfSDEFunc(nn.Module):
-    r"""SDE function for the hybrid Hopf model (torchsde-compatible).
+    r"""SDE function for the low-rank hybrid Hopf model.
 
     .. math::
-        dz_i = \bigl[(a + i\omega_i - |z_i|^2)\,z_i
-               + G\sum_j \psi_\theta(z_j - z_i,\, C_{ij})\bigr]\,dt
-               + \sigma\,dW_i
+        k_j &= \phi_\text{key}(z_j) \\
+        m_i &= \sum_j C_{ij}(k_j - k_i) \\
+        dz_i &= \bigl[(\kappa a + i\omega_i - \kappa|z_i|^2)\,z_i
+               + G\,\psi_\text{out}(m_i,\, z_i)\bigr]\,dt + \sigma\,dW_i
 
-    When control inputs are present the coupling sum extends over
-    ``n_rois + n_control_dims`` augmented nodes.
+    ``C`` is either a full (n, n) matrix or factored as ``L @ R.T``.
     """
 
     noise_type = "diagonal"
@@ -114,14 +139,14 @@ class HybridHopfSDEFunc(nn.Module):
     def __init__(
         self,
         n_rois: int,
-        a,
-        g,
-        kappa,
-        omega,
-        structural_connectivity: torch.Tensor,
-        coupling_net: CouplingNetwork,
+        a, g, kappa, omega,
+        key_net: KeyNetwork,
+        output_net: OutputNetwork,
+        coupling_L: Optional[nn.Parameter],
+        coupling_R: Optional[nn.Parameter],
+        coupling_full: Optional[nn.Parameter],
         noise_sigma: float = 0.5,
-        control_coupling: Optional[torch.Tensor] = None,
+        control_coupling: Optional[nn.Parameter] = None,
         n_control_dims: int = 0,
     ):
         super().__init__()
@@ -131,70 +156,133 @@ class HybridHopfSDEFunc(nn.Module):
         self.global_coupling = g
         self.kappa = kappa
         self.omega = omega
-        self.structural_connectivity = structural_connectivity
-        self.coupling_net = coupling_net
+        self.key_net = key_net
+        self.output_net = output_net
+        self.coupling_L = coupling_L
+        self.coupling_R = coupling_R
+        self.coupling_full = coupling_full
         self.control_coupling = control_coupling
         self.n_control_dims = n_control_dims
         self.control_input: Optional[torch.Tensor] = None
 
+    # ── helpers for the two coupling modes ──
+
+    def _aggregate_full(self, K: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        """Full-rank aggregation: m_i = Σ_j C_ij (k_j − k_i).
+
+        K: (batch, n, d_k),  C_full: (n, n)  →  (batch, n, d_k).
+        """
+        C = self.coupling_full
+        assert C is not None
+        batch, n, d_k = K.shape
+
+        # Optionally extend C with control coupling columns
+        if self.n_control_dims > 0 and self.control_input is not None and self.control_coupling is not None:
+            cc = self.control_coupling  # (n, m)
+            C_ext = torch.cat([C, cc], dim=1)  # (n, n + m)
+            u = self.control_input.to(y.dtype)  # (batch, m)
+            K_ctrl = self.key_net(u)  # (batch, m, d_k)
+            K_aug = torch.cat([K, K_ctrl], dim=1)  # (batch, n+m, d_k)
+        else:
+            C_ext = C
+            K_aug = K
+
+        # m_i = Σ_j C_ij k_j  −  k_i Σ_j C_ij
+        C_c = C_ext.to(K.dtype)  # (n, n_total)
+        Ck = torch.einsum("ij,bjd->bid", C_c, K_aug)  # (batch, n, d_k)
+        row_sum = C_c.sum(dim=1)  # (n_total →) (n,)
+        m = Ck - K[:, :n] * row_sum.unsqueeze(0).unsqueeze(-1)  # (batch, n, d_k)
+        return m
+
+    def _aggregate_lowrank(self, K: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        """Low-rank aggregation via C ≈ L R^T.
+
+        m_i = Σ_j [LR^T]_ij (k_j − k_i)
+            = L (R^T K_sum) − (L R^T 1) ⊙ k_i
+
+        K: (batch, n, d_k), L: (n, r), R: (n, r)  →  (batch, n, d_k).
+        """
+        L = self.coupling_L
+        R = self.coupling_R
+        assert L is not None and R is not None
+
+        # Control augmentation: extend R with control rows
+        if self.n_control_dims > 0 and self.control_input is not None and self.control_coupling is not None:
+            cc = self.control_coupling  # (n, m)
+            # For low-rank, control columns are added as: C_ext = [L R^T | cc]
+            # We handle the control part separately as a dense (n, m) block.
+            u = self.control_input.to(y.dtype)  # (batch, m)
+            K_ctrl = self.key_net(u)  # (batch, m, d_k)
+            cc_c = cc.to(K.dtype)  # (n, m)
+            ctrl_Ck = torch.einsum("im,bmd->bid", cc_c, K_ctrl)  # (batch, n, d_k)
+            ctrl_rowsum = cc_c.sum(dim=1)  # (m →) (n,)
+        else:
+            ctrl_Ck = None
+            ctrl_rowsum = None
+
+        L_c = L.to(K.dtype)  # (n, r)
+        R_c = R.to(K.dtype)  # (n, r)
+
+        # Efficient low-rank path: O(n · r · d_k)
+        RtK = torch.einsum("jr,bjd->brd", R_c, K)  # (batch, r, d_k)
+        LRtK = torch.einsum("ir,brd->bid", L_c, RtK)  # (batch, n, d_k)
+
+        # Row sums of C = L R^T:  (L R^T) 1 = L (R^T 1)
+        Rt_ones = R_c.sum(dim=0)  # (r,)
+        LRt_ones = L_c @ Rt_ones  # (n,)
+
+        m = LRtK - K * LRt_ones.unsqueeze(0).unsqueeze(-1)  # (batch, n, d_k)
+
+        # Add control contributions
+        if ctrl_Ck is not None:
+            m = m + ctrl_Ck - K * ctrl_rowsum.unsqueeze(0).unsqueeze(-1)
+
+        return m
+
     def f(self, t: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        """Drift: z_i·(κa + iω_i − κ|z_i|²) + G·Σ_j ψ_θ(z̃_j − z_i, C̃_ij)."""
-        # Soft-clamp state magnitude to prevent runaway growth
+        """Drift: (κa + iω − κ|z|²)z + G · ψ_out(m, z)."""
+        # Soft-clamp state magnitude
         mag = y.abs().clamp(min=1e-8)
         scale = torch.where(mag > 10.0, 10.0 / mag, torch.ones_like(mag))
         y = y * scale
 
         # --- local Hopf term ---
-        z_sq = torch.abs(y) ** 2  # (batch, n_rois), real
-        omega = self.omega.unsqueeze(0)  # (1, n_rois)
-        local = y * (self.kappa * self.a - self.kappa * z_sq + 1j * omega)  # (batch, n_rois)
+        z_sq = torch.abs(y) ** 2
+        omega = self.omega.unsqueeze(0)
+        local = y * (self.kappa * self.a - self.kappa * z_sq + 1j * omega)
 
-        # --- learned coupling term (possibly augmented with control) ---
-        batch, n = y.shape
+        # --- key embeddings ---
+        K = self.key_net(y)  # (batch, n, d_k)
 
-        # Build augmented node set if control is present
-        if self.n_control_dims > 0 and self.control_input is not None and self.control_coupling is not None:
-            u = self.control_input.to(y.dtype)  # (batch, m)
-            z_all = torch.cat([y, u], dim=1)  # (batch, n + m)
-            # Extended SC: [sc | control_coupling]  shape (n, n+m)
-            cc = self.control_coupling.to(y.real.dtype)  # (n, m)
-            sc_base = self.structural_connectivity
-            sc_ext = torch.cat([sc_base, cc], dim=1)  # (n, n+m)
-            n_total = n + self.n_control_dims
+        # --- diffusive aggregation ---
+        if self.coupling_full is not None:
+            m = self._aggregate_full(K, y)
         else:
-            z_all = y
-            sc_ext = self.structural_connectivity
-            n_total = n
+            m = self._aggregate_lowrank(K, y)
 
-        # Pairwise difference z̃_j − z_i: (batch, n_target, n_source)
-        # Target nodes are always the n biological nodes (rows of z_i)
-        # Source nodes are all n_total augmented nodes (z̃_j)
-        z_i = y.unsqueeze(2).expand(batch, n, n_total)    # target: dim 1
-        z_j = z_all.unsqueeze(1).expand(batch, n, n_total)  # source: dim 2
-        z_diff = z_j - z_i  # (batch, n, n_total) complex
-        sc = sc_ext.unsqueeze(0).expand(batch, n, n_total)  # (batch, n, n_total) real
-        sc = sc.to(y.real.dtype)
+        # --- node-wise output network ---
+        psi = self.output_net(m, y)  # (batch, n)
+        coupling = self.global_coupling * psi
 
-        # Checkpoint the edge MLP during training to avoid storing large
-        # per-step activations across the SDE rollout.
-        if torch.is_grad_enabled() and y.requires_grad:
-            psi = checkpoint(self.coupling_net, z_diff, sc, use_reentrant=False)
-        else:
-            psi = self.coupling_net(z_diff, sc)  # (batch, n, n_total) complex
-
-        coupling = self.global_coupling * psi.sum(dim=2)  # sum over j → (batch, n)
         return local + coupling
 
     def g(self, t: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         return self.noise_sigma * torch.ones_like(y)
 
 
+# ── Top-level model ──────────────────────────────────────────────────
+
 class HybridHopfModel(BaseNeuroscienceModel):
-    r"""Hybrid mechanistic–neural Hopf oscillator model.
+    r"""Low-rank hybrid Hopf oscillator model.
 
-    dz_i = [z_i·(a + iω_i − |z_i|²) + G·Σ_j ψ_θ(z_j − z_i, C_ij)] dt + σ dW_i
+    k_j = φ_key(z_j)
+    m_i = Σ_j C_ij (k_j − k_i)        (C learned, optionally low-rank)
+    dz_i = [(κa + iω_i − κ|z_i|²) z_i + G · ψ_out(m_i, z_i)] dt + σ dW_i
 
-    where ψ_θ is a complex-valued harmonic network coupling function.
+    Args:
+        coupling_rank: Rank of the low-rank approximation of C.
+            ``None`` → full n×n learnable matrix (like the old model).
+            An integer *r* → C ≈ L R^T with L, R ∈ ℝ^{n×r}.
     """
 
     def __init__(
@@ -208,6 +296,8 @@ class HybridHopfModel(BaseNeuroscienceModel):
         noise_sigma: float = 0.5,
         coupling_hidden_dim: int = 16,
         coupling_n_layers: int = 1,
+        coupling_rank: Optional[int] = 10,
+        d_key: int = 4,
         device: str = "cpu",
         learnable_a: bool = True,
         learnable_g: bool = True,
@@ -222,6 +312,8 @@ class HybridHopfModel(BaseNeuroscienceModel):
         self.learnable_omega = learnable_omega
         self.coupling_hidden_dim = coupling_hidden_dim
         self.coupling_n_layers = coupling_n_layers
+        self.coupling_rank = coupling_rank
+        self.d_key = d_key
         self.n_control_dims = n_control_dims
 
         # Structural connectivity (default: identity)
@@ -232,6 +324,20 @@ class HybridHopfModel(BaseNeuroscienceModel):
         )
         sc = sc / (sc.sum(dim=1, keepdim=True) + 1e-8)
         self.register_buffer("structural_connectivity", sc)
+
+        # ── coupling matrix C ──
+        if coupling_rank is not None:
+            r = min(coupling_rank, n_rois)
+            L_init, R_init = _svd_init(sc, r)
+            self.coupling_L = nn.Parameter(L_init.to(device))
+            self.coupling_R = nn.Parameter(R_init.to(device))
+            self.coupling_full = None
+            self._effective_rank = r
+        else:
+            self.coupling_L = None
+            self.coupling_R = None
+            self.coupling_full = nn.Parameter(sc.clone().to(device))
+            self._effective_rank = n_rois
 
         # Bifurcation parameter
         a_init = torch.tensor(initial_a, device=device)
@@ -264,13 +370,11 @@ class HybridHopfModel(BaseNeuroscienceModel):
         else:
             self.register_buffer("omega", omega_init)
 
-        # Coupling network
-        self.coupling_net = CouplingNetwork(
-            hidden_dim=coupling_hidden_dim,
-            n_layers=coupling_n_layers,
-        )
+        # Node-wise networks
+        self.key_net = KeyNetwork(d_key=d_key, hidden_dim=coupling_hidden_dim, n_layers=coupling_n_layers)
+        self.output_net = OutputNetwork(d_key=d_key, hidden_dim=coupling_hidden_dim, n_layers=coupling_n_layers)
 
-        # Control coupling: learnable weights from control nodes to brain ROIs
+        # Control coupling
         if n_control_dims > 0:
             self.control_coupling = nn.Parameter(
                 torch.randn(n_rois, n_control_dims, device=device) * 0.01
@@ -280,12 +384,9 @@ class HybridHopfModel(BaseNeuroscienceModel):
 
         self.sde_func = HybridHopfSDEFunc(
             n_rois,
-            self.a,
-            self.g,
-            self.kappa,
-            self.omega,
-            self.structural_connectivity,
-            self.coupling_net,
+            self.a, self.g, self.kappa, self.omega,
+            self.key_net, self.output_net,
+            self.coupling_L, self.coupling_R, self.coupling_full,
             noise_sigma,
             control_coupling=self.control_coupling,
             n_control_dims=n_control_dims,
@@ -296,8 +397,11 @@ class HybridHopfModel(BaseNeuroscienceModel):
         self.sde_func.a = self.a
         self.sde_func.global_coupling = self.g
         self.sde_func.omega = self.omega
-        self.sde_func.structural_connectivity = self.structural_connectivity
-        self.sde_func.coupling_net = self.coupling_net
+        self.sde_func.key_net = self.key_net
+        self.sde_func.output_net = self.output_net
+        self.sde_func.coupling_L = self.coupling_L
+        self.sde_func.coupling_R = self.coupling_R
+        self.sde_func.coupling_full = self.coupling_full
         self.sde_func.control_coupling = self.control_coupling
 
     def forward(
@@ -365,11 +469,17 @@ class HybridHopfModel(BaseNeuroscienceModel):
         return trajectory.permute(1, 2, 0)
 
     def get_parameters_dict(self) -> Dict[str, torch.Tensor]:
-        return {
+        d = {
             "a": self.a.detach().clone(),
             "g": self.g.detach().clone(),
             "omega": self.omega.detach().clone(),
         }
+        if self.coupling_full is not None:
+            d["coupling_matrix"] = self.coupling_full.detach().clone()
+        else:
+            d["coupling_L"] = self.coupling_L.detach().clone()
+            d["coupling_R"] = self.coupling_R.detach().clone()
+        return d
 
     def get_model_config(self) -> Dict[str, Any]:
         return {
@@ -380,6 +490,8 @@ class HybridHopfModel(BaseNeuroscienceModel):
             "learnable_omega": bool(self.learnable_omega),
             "coupling_hidden_dim": int(self.coupling_hidden_dim),
             "coupling_n_layers": int(self.coupling_n_layers),
+            "coupling_rank": self.coupling_rank,
+            "d_key": int(self.d_key),
             "initial_a": float(self.a.detach().mean().cpu().item()),
             "initial_g": float(self.g.detach().cpu().item()),
             "n_control_dims": int(self.n_control_dims),

@@ -32,6 +32,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.dataset import NeuroscienceDataset, RandomWindowDataset, compute_omega_from_timeseries
 from src.models import build_model
 from src.training import (
+    GNNHopfConfig,
     HopfConfig,
     HybridHopfConfig,
     NeuralSDEConfig,
@@ -69,12 +70,14 @@ _CONFIG_CLS = {
     "nsde": NeuralSDEConfig,
     "hopf": HopfConfig,
     "hybrid_hopf": HybridHopfConfig,
+    "gnn_hopf": GNNHopfConfig,
 }
 
 _MODEL_TITLES = {
     "nsde": "Neural SDE",
     "hopf": "Coupled Hopf",
     "hybrid_hopf": "Hybrid Hopf",
+    "gnn_hopf": "GNN Hopf",
 }
 
 _DATASET_ARG_NAMES = (
@@ -512,7 +515,7 @@ def _run_paper_suite(args: argparse.Namespace) -> dict[str, object]:
     _apply_dataset_cfg_overrides(cfg_temp, args)
     dataset_type = cfg_temp.dataset_type
 
-    for model_name in ("hopf", "nsde", "hybrid_hopf"):
+    for model_name in ("hopf", "nsde", "hybrid_hopf", "gnn_hopf"):
         backprop_args = _make_backprop_namespace_from_paper_args(args, model_name)
         backprop_result = _run_backprop(backprop_args)
         # Use test_metrics (which include std) for paper reporting
