@@ -258,17 +258,20 @@ def extract_val_data(
 # Hopf evaluation helpers (moved from train_hopf.py)
 # ---------------------------------------------------------------------------
 
-def split_subject_indices(cfg, n_subjects: int) -> tuple[torch.Tensor, torch.Tensor]:
-    """Deterministic train/validation subject split."""
+def split_subject_indices(cfg, n_subjects: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Deterministic train/validation/test subject split."""
     generator = torch.Generator().manual_seed(cfg.seed)
     indices = torch.randperm(n_subjects, generator=generator)
     n_train = max(1, int(cfg.train_ratio * n_subjects))
     n_val = max(1, int(cfg.val_ratio * n_subjects))
     train_idx = indices[:n_train]
     val_idx = indices[n_train : n_train + n_val]
+    test_idx = indices[n_train + n_val :]
     if val_idx.numel() == 0:
         val_idx = train_idx[:1]
-    return train_idx, val_idx
+    if test_idx.numel() == 0:
+        test_idx = val_idx[:1]
+    return train_idx, val_idx, test_idx
 
 
 def evaluate_hopf_model(
@@ -368,8 +371,21 @@ def evaluate_model_loader_metrics(
     cfg,
     *,
     n_steps: int | None = None,
+    return_std: bool = False,
 ) -> dict[str, float]:
-    """Evaluate all paper metrics with loader-based batch aggregation."""
+    """
+    Evaluate a model on the provided data loader.
+
+    Args:
+        model: Model to evaluate
+        loader: DataLoader
+        cfg: Config containing simulation settings
+        n_steps: Optional simulation length override
+        return_std: If True, also return <metric>_std keys computed across batches
+
+    Returns:
+        Dictionary of metric_name → mean (and optionally metric_name_std → std)
+    """
     from ..metrics import (
         compute_all_fc_metrics,
         compute_all_timeseries_metrics,
@@ -378,6 +394,7 @@ def evaluate_model_loader_metrics(
 
     sums: dict[str, float] = {}
     counts: dict[str, int] = {}
+    batch_values: dict[str, list[float]] = {}  # Store per-batch values for std
 
     for batch in loader:
         if len(batch) == 4:
@@ -418,13 +435,27 @@ def evaluate_model_loader_metrics(
                 continue
             sums[key] = sums.get(key, 0.0) + numeric
             counts[key] = counts.get(key, 0) + 1
+            if return_std:
+                if key not in batch_values:
+                    batch_values[key] = []
+                batch_values[key].append(numeric)
 
     # Return all computed metrics (use EVAL_METRIC_KEYS for formatted reports).
     all_keys = sorted(set(EVAL_METRIC_KEYS) | set(sums.keys()))
-    return {
+    result = {
         key: (sums[key] / counts[key]) if counts.get(key, 0) > 0 else float("nan")
         for key in all_keys
     }
+    
+    if return_std:
+        for key in all_keys:
+            if key in batch_values and len(batch_values[key]) > 1:
+                vals = torch.tensor(batch_values[key])
+                result[f"{key}_std"] = vals.std().item()
+            else:
+                result[f"{key}_std"] = float("nan")
+    
+    return result
 
 
 def evaluate_hopf_loader_metrics(

@@ -92,7 +92,7 @@ class TrainingConfig:
     loss_weight_phfcd: Optional[float] = 1.0
     loss_weight_metastability: Optional[float] = 1.0
     early_stopping_patience: int = 15
-    n_steps: int = 100
+    n_steps: int = 50
     dt_min: Optional[float] = 0.05  # Fixed solver sub-step (passed as torchsde `dt`)
     sde_type: str = "ito"  # SDE interpretation required by reversible_heun
     sde_method: str = "euler"  # Stable Stratonovich solver

@@ -190,9 +190,13 @@ def _format_metrics_mean_std(metrics: dict[str, object]) -> dict[str, str]:
 
 def _run_backprop(args: argparse.Namespace) -> dict[str, object]:
     cfg = _CONFIG_CLS[args.model]()
-    cfg.experiment_name = f"{args.model}_backprop"
     _apply_common_cfg_overrides(cfg, args)
     _apply_dataset_cfg_overrides(cfg, args)
+    # Include dataset type in experiment / run names so checkpoints are identifiable.
+    ds_tag = cfg.dataset_type
+    cfg.experiment_name = f"{args.model}_backprop_{ds_tag}"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    cfg.run_name = f"{cfg.experiment_name}_{timestamp}"
 
     print_section(f"{args.model.upper()} BACKPROP TRAINING")
     ensure_proxy_env()
@@ -236,8 +240,8 @@ def _run_backprop(args: argparse.Namespace) -> dict[str, object]:
 
         checkpoint_path = save_checkpoint(
             model,
-            checkpoint_name=f"{args.model}_backprop_best_{cfg.run_name}.pt",
-            artifact_name=f"{args.model}_backprop_model_{cfg.run_name}",
+            checkpoint_name=f"{args.model}_backprop_{ds_tag}_best_{cfg.run_name}.pt",
+            artifact_name=f"{args.model}_backprop_{ds_tag}_model_{cfg.run_name}",
             checkpoint_dir=cfg.checkpoint_dir,
             use_wandb=cfg.use_wandb,
         )
@@ -293,9 +297,14 @@ def _run_backprop(args: argparse.Namespace) -> dict[str, object]:
 
 
 def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
-    cfg = HopfConfig(experiment_name="hopf_grid")
+    cfg = HopfConfig()
     _apply_common_cfg_overrides(cfg, args)
     _apply_dataset_cfg_overrides(cfg, args)
+    # Include dataset type in experiment / run names so checkpoints are identifiable.
+    ds_tag = cfg.dataset_type
+    cfg.experiment_name = f"hopf_grid_{ds_tag}"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    cfg.run_name = f"{cfg.experiment_name}_{timestamp}"
 
     print_section("COUPLED HOPF MODEL TRAINING (GRID SEARCH)")
     ensure_proxy_env()
@@ -315,8 +324,9 @@ def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
     )
     structural_connectivity = dataset.fc_mean
 
-    train_idx, val_idx = split_subject_indices(cfg, dataset.n_subjects)
+    train_idx, val_idx, test_idx = split_subject_indices(cfg, dataset.n_subjects)
     val_loader = _create_validation_loader(dataset, cfg, device, val_idx)
+    test_loader = _create_validation_loader(dataset, cfg, device, test_idx)
 
     print_section("STEP 2: Training Coupled Hopf Model (Grid Search)")
     init_wandb_run(
@@ -346,7 +356,7 @@ def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
 
         n_combos = len(cfg.g_values) * len(cfg.a_values) * len(cfg.kappa_values)
         print(f"Grid search over {n_combos} parameter combinations")
-        print(f"  Train subjects: {len(train_idx)}, Val subjects: {len(val_idx)}")
+        print(f"  Train subjects: {len(train_idx)}, Val subjects: {len(val_idx)}, Test subjects: {len(test_idx)}")
 
         metric_weights = {}
         if cfg.weight_fc:
@@ -400,8 +410,8 @@ def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
         print_section("STEP 3: Saving Model and Generating Figures")
         checkpoint = save_checkpoint(
             hopf_model,
-            checkpoint_name=f"hopf_grid_best_{cfg.run_name}.pt",
-            artifact_name=f"hopf_model_grid_{cfg.run_name}",
+            checkpoint_name=f"hopf_grid_{ds_tag}_best_{cfg.run_name}.pt",
+            artifact_name=f"hopf_model_grid_{ds_tag}_{cfg.run_name}",
             checkpoint_dir=cfg.checkpoint_dir,
             use_wandb=cfg.use_wandb,
         )
@@ -428,6 +438,11 @@ def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
         final_metrics = evaluate_model_loader_metrics(hopf_model, val_loader, cfg, n_steps=val_window_size)
         wandb_summary_update({f"final_{k}": v for k, v in final_metrics.items()}, use_wandb=cfg.use_wandb)
         log_hopf_best_params(hopf_model, use_wandb=cfg.use_wandb)
+        
+        # Evaluate on test set with std for paper reporting
+        test_window_size = getattr(getattr(test_loader, "dataset", None), "window_size", None)
+        test_metrics = evaluate_model_loader_metrics(hopf_model, test_loader, cfg, n_steps=test_window_size, return_std=True)
+        print(f"Test metrics (mean ± std): {_format_metrics_mean_std(test_metrics)}")
     finally:
         finish_wandb_run()
 
@@ -437,12 +452,13 @@ def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
     print(f"\nBest params: {best_params}")
     print(f"Train metrics: {train_metrics}")
     print(f"Final metrics (full val loader): {final_metrics}")
+    print(f"Test metrics (mean ± std): {_format_metrics_mean_std(test_metrics)}")
     print(f"Checkpoint: {checkpoint}")
     print(f"Figures saved to: {FIGURES_DIR}")
 
     return {
         "run": "hopf_grid",
-        "paper_metrics": final_metrics,
+        "paper_metrics": _as_numeric(test_metrics),  # Use test_metrics for paper consistency
         "train_metrics": _as_numeric(train_metrics),
         "params": {k: float(v) for k, v in best_params.items()},
         "checkpoint": str(checkpoint) if checkpoint is not None else None,
@@ -471,13 +487,15 @@ def _print_paper_report(report: dict[str, dict[str, float]]) -> None:
         print(_line(row))
 
 
-def _save_paper_report(report: dict[str, dict[str, float]], output: Path | None) -> Path:
+def _save_paper_report(report: dict[str, dict[str, float]], output: Path | None, dataset_type: str = "ts_young") -> Path:
     if output is None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output = Path("results") / f"paper_metrics_{timestamp}.json"
+        output = Path("results") / f"{dataset_type}_paper_metrics_{timestamp}.json"
     output.parent.mkdir(parents=True, exist_ok=True)
+    # Include dataset_type in the JSON for table routing
+    report_with_meta = {"dataset_type": dataset_type, "metrics": report}
     with output.open("w", encoding="utf-8") as fh:
-        json.dump(report, fh, indent=2, sort_keys=True)
+        json.dump(report_with_meta, fh, indent=2, sort_keys=True)
     print(f"Paper metric report saved to: {output}")
     return output
 
@@ -488,16 +506,22 @@ def _run_paper_suite(args: argparse.Namespace) -> dict[str, object]:
 
     grid_result = _run_hopf_grid(args)
     report["hopf_grid"] = grid_result["paper_metrics"]
+    
+    # Get dataset_type from the grid config to use in filename
+    cfg_temp = HopfConfig()
+    _apply_dataset_cfg_overrides(cfg_temp, args)
+    dataset_type = cfg_temp.dataset_type
 
     for model_name in ("hopf", "nsde", "hybrid_hopf"):
         backprop_args = _make_backprop_namespace_from_paper_args(args, model_name)
         backprop_result = _run_backprop(backprop_args)
-        report[f"{model_name}_backprop"] = backprop_result["paper_metrics"]
+        # Use test_metrics (which include std) for paper reporting
+        report[f"{model_name}_backprop"] = backprop_result.get("test_metrics", backprop_result["paper_metrics"])
 
     _print_paper_report(report)
-    output_path = _save_paper_report(report, args.output_json)
+    output_path = _save_paper_report(report, args.output_json, dataset_type=dataset_type)
 
-    return {"paper_metrics": report, "output_json": str(output_path)}
+    return {"paper_metrics": report, "output_json": str(output_path), "dataset_type": dataset_type}
 
 
 def _add_dataset_args(parser: argparse.ArgumentParser) -> None:
