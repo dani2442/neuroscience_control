@@ -40,6 +40,12 @@ from .evaluation import (
     evaluate_model_loader_metrics,
     evaluate_hopf_loader_metrics,
 )
+from .paper_pipeline import (
+    run_paper_pipeline,
+    run_update_tables,
+    run_compare_models,
+    run_compare_conditions,
+)
 
 __all__ = [
     "plot_fc_comparison",
@@ -76,4 +82,8 @@ __all__ = [
     "evaluate_hopf_model",
     "evaluate_model_loader_metrics",
     "evaluate_hopf_loader_metrics",
+    "run_paper_pipeline",
+    "run_update_tables",
+    "run_compare_models",
+    "run_compare_conditions",
 ]

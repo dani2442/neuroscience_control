@@ -650,6 +650,10 @@ class Trainer:
     ) -> Dict[str, float]:
         """
         Evaluate on test set.
+
+        Metrics are computed **per sample** (not per batch) so that the
+        reported standard deviations reflect true cross-sample variability
+        rather than the much smaller variability between batch-level means.
         
         Args:
             test_loader: Test data loader
@@ -657,7 +661,7 @@ class Trainer:
             dt: Time step
             
         Returns:
-            Test metrics
+            Test metrics (mean and std across individual samples)
         """
         accumulator = _MetricAccumulator()
         for batch in test_loader:
@@ -686,21 +690,33 @@ class Trainer:
                 control=ctrl_arg,
             )
             fc_pred = self.model.compute_fc(simulated)
+
+            # --- per-sample metrics for proper std computation ---
+            B = simulated.shape[0]
+            for i in range(B):
+                sim_i = simulated[i : i + 1]          # (1, n_rois, T)
+                tgt_i = target_window[i : i + 1]      # (1, n_rois, T)
+                fc_p_i = fc_pred[i : i + 1]            # (1, n_rois, n_rois)
+                fc_t_i = fc_targets[i : i + 1]         # (1, n_rois, n_rois)
+
+                sample_metrics = compute_all_fc_metrics(fc_p_i, fc_t_i)
+                sample_metrics.update(compute_all_timeseries_metrics(sim_i, tgt_i))
+                sample_metrics.update(
+                    compute_dynamics_fit_metrics(
+                        sim_i, tgt_i, **self._dynamics_kwargs()
+                    )
+                )
+                accumulator.update(sample_metrics)
+
+            # Compute batch-level loss and loss components once (these are
+            # training-specific aggregates; per-sample breakdown is not needed).
             loss, loss_components = self._compute_loss(
-                fc_pred,
-                fc_targets,
-                simulated,
-                target_window,
+                fc_pred, fc_targets, simulated, target_window,
             )
-            batch_metrics = self._compute_batch_metrics(
-                fc_pred,
-                fc_targets,
-                simulated,
-                target_window,
-                loss,
-                loss_components,
-            )
-            accumulator.update(batch_metrics)
+            batch_loss_metrics: Dict[str, float] = {"loss": float(loss.item())}
+            for name, value in loss_components.items():
+                batch_loss_metrics[name] = float(value.item())
+            accumulator.update(batch_loss_metrics)
 
         metric_names = sorted(set(ALL_METRICS) | set(accumulator.sums.keys()))
         metrics = {name: accumulator.average(name) for name in metric_names}

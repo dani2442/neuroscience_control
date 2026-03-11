@@ -376,12 +376,18 @@ def evaluate_model_loader_metrics(
     """
     Evaluate a model on the provided data loader.
 
+    When *return_std* is True, metrics are computed **per sample** (not per
+    batch) so that the reported standard deviations reflect true cross-sample
+    variability rather than the much smaller variability between batch-level
+    means.
+
     Args:
         model: Model to evaluate
         loader: DataLoader
         cfg: Config containing simulation settings
         n_steps: Optional simulation length override
-        return_std: If True, also return <metric>_std keys computed across batches
+        return_std: If True, also return <metric>_std keys computed across
+                    individual samples
 
     Returns:
         Dictionary of metric_name → mean (and optionally metric_name_std → std)
@@ -394,7 +400,7 @@ def evaluate_model_loader_metrics(
 
     sums: dict[str, float] = {}
     counts: dict[str, int] = {}
-    batch_values: dict[str, list[float]] = {}  # Store per-batch values for std
+    sample_values: dict[str, list[float]] = {}  # per-sample values for std
 
     for batch in loader:
         if len(batch) == 4:
@@ -417,28 +423,54 @@ def evaluate_model_loader_metrics(
         with torch.no_grad():
             simulated = _forward_for_metrics(model, initial_state, n_sim_steps, cfg, control=control)
             fc_pred = model.compute_fc(simulated)
-            batch_metrics = compute_all_fc_metrics(fc_pred, fc_targets)
-            batch_metrics.update(compute_all_timeseries_metrics(simulated, target_window))
-            batch_metrics.update(
-                compute_dynamics_fit_metrics(
-                    simulated,
-                    target_window,
-                    tr=cfg.tr,
-                    fcd_win_sec=cfg.fcd_win_sec,
-                    fcd_step_sec=cfg.fcd_step_sec,
-                )
-            )
 
-        for key, value in batch_metrics.items():
-            numeric = to_float_metric(value)
-            if numeric is None or math.isnan(numeric):
-                continue
-            sums[key] = sums.get(key, 0.0) + numeric
-            counts[key] = counts.get(key, 0) + 1
             if return_std:
-                if key not in batch_values:
-                    batch_values[key] = []
-                batch_values[key].append(numeric)
+                # Per-sample metrics for proper std computation
+                B = simulated.shape[0]
+                for i in range(B):
+                    sim_i = simulated[i : i + 1]
+                    tgt_i = target_window[i : i + 1]
+                    fc_p_i = fc_pred[i : i + 1]
+                    fc_t_i = fc_targets[i : i + 1]
+
+                    sample_metrics = compute_all_fc_metrics(fc_p_i, fc_t_i)
+                    sample_metrics.update(compute_all_timeseries_metrics(sim_i, tgt_i))
+                    sample_metrics.update(
+                        compute_dynamics_fit_metrics(
+                            sim_i, tgt_i,
+                            tr=cfg.tr,
+                            fcd_win_sec=cfg.fcd_win_sec,
+                            fcd_step_sec=cfg.fcd_step_sec,
+                        )
+                    )
+                    for key, value in sample_metrics.items():
+                        numeric = to_float_metric(value)
+                        if numeric is None or math.isnan(numeric):
+                            continue
+                        sums[key] = sums.get(key, 0.0) + numeric
+                        counts[key] = counts.get(key, 0) + 1
+                        if key not in sample_values:
+                            sample_values[key] = []
+                        sample_values[key].append(numeric)
+            else:
+                # Batch-level aggregate (faster, no std needed)
+                batch_metrics = compute_all_fc_metrics(fc_pred, fc_targets)
+                batch_metrics.update(compute_all_timeseries_metrics(simulated, target_window))
+                batch_metrics.update(
+                    compute_dynamics_fit_metrics(
+                        simulated,
+                        target_window,
+                        tr=cfg.tr,
+                        fcd_win_sec=cfg.fcd_win_sec,
+                        fcd_step_sec=cfg.fcd_step_sec,
+                    )
+                )
+                for key, value in batch_metrics.items():
+                    numeric = to_float_metric(value)
+                    if numeric is None or math.isnan(numeric):
+                        continue
+                    sums[key] = sums.get(key, 0.0) + numeric
+                    counts[key] = counts.get(key, 0) + 1
 
     # Return all computed metrics (use EVAL_METRIC_KEYS for formatted reports).
     all_keys = sorted(set(EVAL_METRIC_KEYS) | set(sums.keys()))
@@ -449,8 +481,8 @@ def evaluate_model_loader_metrics(
     
     if return_std:
         for key in all_keys:
-            if key in batch_values and len(batch_values[key]) > 1:
-                vals = torch.tensor(batch_values[key])
+            if key in sample_values and len(sample_values[key]) > 1:
+                vals = torch.tensor(sample_values[key])
                 result[f"{key}_std"] = vals.std().item()
             else:
                 result[f"{key}_std"] = float("nan")

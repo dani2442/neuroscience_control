@@ -1,28 +1,39 @@
 #!/usr/bin/env python3
 """
-Unified training entry point for Hopf grid-search and backprop models.
+Unified entry point for training, evaluation, and paper artefact generation.
 
-Examples
+Training
 --------
 # Single model training:
     python examples/train_models.py backprop --model nsde
     python examples/train_models.py hopf-grid
 
-# Paper suite — trains all models and generates metrics JSON for table updates.
-#
-# LSD dataset:
-    python examples/train_models.py paper \
+# Paper suite — trains all models, generates metrics JSON, and runs
+# update-tables + compare + compare-conditions automatically:
+    python examples/train_models.py paper \\
         --dataset-type lsd --lsd-data-dir data/lsd
-#
-# ts_young dataset:
-    python examples/train_models.py paper \
+    python examples/train_models.py paper \\
         --dataset-type ts_young --data-path data/ts_young/ts_young_TR0.72.mat
 
-# After training, update paper LaTeX tables:
-    python examples/update_paper_tables.py \
+Post-training (standalone)
+--------------------------
+# Run the full post-training pipeline (tables + compare + conditions):
+    python examples/train_models.py pipeline \\
+        --dataset-type lsd --lsd-data-dir data/lsd
+
+# Update LaTeX tables from a metrics JSON:
+    python examples/train_models.py update-tables \\
         --metrics results/lsd_paper_metrics_<timestamp>.json
-    python examples/update_paper_tables.py \
-        --metrics results/ts_young_paper_metrics_<timestamp>.json
+
+# Compare Hopf vs Neural SDE (figures):
+    python examples/train_models.py compare \\
+        --hopf-checkpoint checkpoints/best_hopf_backprop_ts_young.pt \\
+        --nsde-checkpoint checkpoints/best_nsde_backprop_ts_young.pt \\
+        --data-path data/ts_young/ts_young_TR0.72.mat
+
+# Compare LSD control conditions (u=0, u=1, u=2):
+    python examples/train_models.py compare-conditions \\
+        --lsd-data-dir data/lsd
 """
 
 from __future__ import annotations
@@ -86,14 +97,14 @@ _CONFIG_CLS = {
     "nsde": NeuralSDEConfig,
     "hopf": HopfConfig,
     "hybrid_hopf": HybridHopfConfig,
-    "gnn_hopf": GNNHopfConfig,
+    #"gnn_hopf": GNNHopfConfig,
 }
 
 _MODEL_TITLES = {
     "nsde": "Neural SDE",
     "hopf": "Coupled Hopf",
     "hybrid_hopf": "Hybrid Hopf",
-    "gnn_hopf": "GNN Hopf",
+    #"gnn_hopf": "GNN Hopf",
 }
 
 _DATASET_ARG_NAMES = (
@@ -535,14 +546,37 @@ def _run_paper_suite(args: argparse.Namespace) -> dict[str, object]:
     _apply_dataset_cfg_overrides(cfg_temp, args)
     dataset_type = cfg_temp.dataset_type
 
-    for model_name in ("hopf", "nsde", "hybrid_hopf", "gnn_hopf"):
+    backprop_results: dict[str, dict[str, object]] = {}
+    for model_name in ("hopf", "nsde", "hybrid_hopf"):  # "gnn_hopf" disabled
         backprop_args = _make_backprop_namespace_from_paper_args(args, model_name)
         backprop_result = _run_backprop(backprop_args)
         # Use test_metrics (which include std) for paper reporting
         report[f"{model_name}_backprop"] = backprop_result.get("test_metrics", backprop_result["paper_metrics"])
+        backprop_results[model_name] = backprop_result
 
     _print_paper_report(report)
     output_path = _save_paper_report(report, args.output_json, dataset_type=dataset_type)
+
+    # Collect checkpoint paths from all training runs
+    all_checkpoints: dict[str, str] = {}
+    if grid_result.get("checkpoint"):
+        all_checkpoints["hopf_grid"] = grid_result["checkpoint"]
+    for mname in ("hopf", "nsde", "hybrid_hopf"):  # "gnn_hopf" disabled
+        ckpt = backprop_results.get(mname, {}).get("checkpoint")
+        if ckpt:
+            all_checkpoints[f"{mname}_backprop"] = ckpt
+
+    # Run post-training pipeline (update tables, compare models, etc.)
+    from src.utils.paper_pipeline import run_paper_pipeline
+    run_paper_pipeline(
+        metrics_json=output_path,
+        dataset_type=dataset_type,
+        device=args.device,
+        no_wandb=args.no_wandb,
+        explicit_checkpoints=all_checkpoints,
+        data_path=getattr(args, "data_path", None),
+        lsd_data_dir=getattr(args, "lsd_data_dir", None),
+    )
 
     return {"paper_metrics": report, "output_json": str(output_path), "dataset_type": dataset_type}
 
@@ -663,7 +697,119 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Optional output path for the aggregated paper metric report JSON",
     )
 
+    # --- Post-training subcommands (delegate to src.utils.paper_pipeline) ---
+
+    def _add_pipeline_args(p: argparse.ArgumentParser) -> None:
+        """Shared arguments for post-training pipeline subcommands."""
+        p.add_argument("--device", type=str, default=None, help="Device (auto, cuda, cpu)")
+        p.add_argument("--no-wandb", action="store_true", help="Disable wandb logging")
+        p.add_argument("--checkpoint-dir", type=str, default="checkpoints", help="Checkpoint directory")
+        _add_dataset_args(p)
+
+    # pipeline: run all 3 post-training steps
+    pipeline = subparsers.add_parser(
+        "pipeline",
+        help="Run post-training pipeline (update tables, compare models, compare conditions)",
+    )
+    _add_pipeline_args(pipeline)
+    pipeline.add_argument("--metrics", type=str, default=None, help="Path to paper metrics JSON")
+    pipeline.add_argument("--n-simulations", type=int, default=10, help="Simulations for compare_models")
+    pipeline.add_argument("--output-path", type=str, default="results/comparison_results.json", help="compare_models output")
+    pipeline.add_argument("--n-steps", type=int, default=240, help="Simulation length for compare_conditions")
+    pipeline.add_argument("--n-paths", type=int, default=10, help="Initial conditions for compare_conditions")
+
+    # update-tables
+    update_tables = subparsers.add_parser("update-tables", help="Patch LaTeX tables from metrics JSON")
+    update_tables.add_argument("--metrics", type=str, default=None, help="Path to paper metrics JSON")
+    update_tables.add_argument("--tex", type=str, default=None, help="Explicit .tex file to patch")
+    update_tables.add_argument("--table-label", type=str, default=None, help="LaTeX table label (e.g. tab:model_comparison)")
+    update_tables.add_argument("--dry-run", action="store_true", help="Preview without writing")
+
+    # compare
+    compare = subparsers.add_parser("compare", help="Compare Hopf and Neural SDE models (figures)")
+    compare.add_argument("--hopf-checkpoint", type=str, default=None, help="Hopf model checkpoint")
+    compare.add_argument("--nsde-checkpoint", type=str, default=None, help="Neural SDE model checkpoint")
+    compare.add_argument("--n-simulations", type=int, default=10, help="Number of simulations")
+    compare.add_argument("--output-path", type=str, default="results/comparison_results.json", help="Output JSON path")
+    compare.add_argument("--wandb-project", type=str, default="neuroscience-control", help="Wandb project")
+    compare.add_argument("--run-name", type=str, default="model_comparison", help="Wandb run name")
+    _add_pipeline_args(compare)
+
+    # compare-conditions
+    compare_cond = subparsers.add_parser("compare-conditions", help="Compare model FC under LSD control conditions")
+    compare_cond.add_argument("--checkpoints", nargs="+", type=str, default=None, help="Model checkpoints")
+    compare_cond.add_argument("--model-labels", nargs="+", type=str, default=None, help="Model display names")
+    compare_cond.add_argument("--n-steps", type=int, default=240, help="Simulation length")
+    compare_cond.add_argument("--n-paths", type=int, default=10, help="Number of initial conditions")
+    compare_cond.add_argument("--ctrl-values", nargs="+", type=int, default=None, help="Control values (default: 0 1 2)")
+    compare_cond.add_argument("--output-dir", type=str, default=None, help="Output directory for figures")
+    _add_pipeline_args(compare_cond)
+
     return parser
+
+
+def _run_pipeline(args: argparse.Namespace) -> dict[str, object]:
+    """Run the full post-training pipeline."""
+    from src.utils.paper_pipeline import run_paper_pipeline
+    result = run_paper_pipeline(
+        metrics_json=getattr(args, "metrics", None),
+        dataset_type=getattr(args, "dataset_type", None) or "ts_young",
+        device=args.device,
+        no_wandb=args.no_wandb,
+        checkpoint_dir=getattr(args, "checkpoint_dir", "checkpoints"),
+        data_path=getattr(args, "data_path", None),
+        lsd_data_dir=getattr(args, "lsd_data_dir", None),
+        n_simulations=getattr(args, "n_simulations", 10),
+        output_path=getattr(args, "output_path", "results/comparison_results.json"),
+        n_steps=getattr(args, "n_steps", 240),
+        n_paths=getattr(args, "n_paths", 10),
+    )
+    return {"pipeline_results": result}
+
+
+def _run_update_tables(args: argparse.Namespace) -> dict[str, object]:
+    """Run table update step."""
+    from src.utils.paper_pipeline import run_update_tables
+    run_update_tables(
+        metrics_json=getattr(args, "metrics", None),
+        tex_target=getattr(args, "tex", None),
+        table_label=getattr(args, "table_label", None),
+        dry_run=getattr(args, "dry_run", False),
+    )
+    return {"update_tables": "done"}
+
+
+def _run_compare(args: argparse.Namespace) -> dict[str, object]:
+    """Run model comparison step."""
+    from src.utils.paper_pipeline import run_compare_models
+    result = run_compare_models(
+        data_path=getattr(args, "data_path", None) or "data/ts_young/ts_young_TR0.72.mat",
+        hopf_checkpoint=getattr(args, "hopf_checkpoint", None),
+        nsde_checkpoint=getattr(args, "nsde_checkpoint", None),
+        device=args.device or "auto",
+        no_wandb=args.no_wandb,
+        wandb_project=getattr(args, "wandb_project", "neuroscience-control"),
+        run_name=getattr(args, "run_name", "model_comparison"),
+        n_simulations=getattr(args, "n_simulations", 10),
+        output_path=getattr(args, "output_path", "results/comparison_results.json"),
+    )
+    return {"compare_results": result}
+
+
+def _run_compare_conditions(args: argparse.Namespace) -> dict[str, object]:
+    """Run LSD control-condition comparison."""
+    from src.utils.paper_pipeline import run_compare_conditions
+    run_compare_conditions(
+        checkpoints=getattr(args, "checkpoints", None),
+        lsd_data_dir=getattr(args, "lsd_data_dir", None) or "data/lsd",
+        n_steps=getattr(args, "n_steps", 240),
+        n_paths=getattr(args, "n_paths", 10),
+        device=args.device,
+        model_labels=getattr(args, "model_labels", None),
+        ctrl_values=getattr(args, "ctrl_values", None),
+        output_dir=getattr(args, "output_dir", None),
+    )
+    return {"compare_conditions": "done"}
 
 
 def main(argv: list[str] | None = None) -> dict[str, object]:
@@ -676,6 +822,14 @@ def main(argv: list[str] | None = None) -> dict[str, object]:
         return _run_hopf_grid(args)
     if args.command == "paper":
         return _run_paper_suite(args)
+    if args.command == "pipeline":
+        return _run_pipeline(args)
+    if args.command == "update-tables":
+        return _run_update_tables(args)
+    if args.command == "compare":
+        return _run_compare(args)
+    if args.command == "compare-conditions":
+        return _run_compare_conditions(args)
     raise ValueError(f"Unsupported command: {args.command}")
 
 
