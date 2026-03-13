@@ -12,6 +12,11 @@ from .visualization import (
     FIGURES_DIR,
     _get_save_path
 )
+from .signal_pipeline import (
+    SignalPipelineResult,
+    prepare_signal_pipeline,
+    plot_signal_pipeline,
+)
 from .runtime import (
     ensure_proxy_env,
     resolve_device,
@@ -55,6 +60,9 @@ __all__ = [
     "plot_realizations",
     "plot_power_spectrum",
     "plot_simulation_multigrid",
+    "SignalPipelineResult",
+    "prepare_signal_pipeline",
+    "plot_signal_pipeline",
     "create_comparison_report",
     "FIGURES_DIR",
     "_get_save_path",
