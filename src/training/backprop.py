@@ -130,11 +130,11 @@ def create_windowed_loaders(
     dataset: NeuroscienceDataset,
     cfg: TrainingConfig,
     device: str,
-) -> tuple[DataLoader, DataLoader, DataLoader, int]:
-    """Build train/val/test data loaders from random-windowed timeseries."""
+) -> tuple[DataLoader, DataLoader, DataLoader, DataLoader, int]:
+    """Build train/val/test_inter/test_intra data loaders from random-windowed timeseries."""
     window_size = min(cfg.window_size, dataset.n_timepoints // 4)
 
-    train_loader, val_loader, test_loader = create_data_loaders(
+    train_loader, val_loader, test_inter_loader, test_intra_loader = create_data_loaders(
         dataset=dataset,
         window_size=window_size,
         batch_size=cfg.batch_size,
@@ -144,36 +144,35 @@ def create_windowed_loaders(
         seed=cfg.seed,
         device=device,
     )
-    return train_loader, val_loader, test_loader, window_size
+    return train_loader, val_loader, test_inter_loader, test_intra_loader, window_size
 
 
 def run_backprop_training(
     model: BaseNeuroscienceModel,
     train_loader: DataLoader,
     val_loader: DataLoader,
-    test_loader: DataLoader,
+    test_inter_loader: DataLoader,
+    test_intra_loader: DataLoader,
     window_size: int,
     cfg: TrainingConfig,
     device: str,
     experiment_name: str | None = None,
     extra_dyn_kwargs: dict[str, object] | None = None,
-) -> tuple[Trainer, MetricsStore, dict[str, float]]:
+) -> tuple[Trainer, MetricsStore, dict[str, float], dict[str, float]]:
     """
     Train and evaluate a model with the shared :class:`Trainer` workflow.
 
     Returns:
-        (trainer, metrics_store, test_metrics)
+        (trainer, metrics_store, test_inter_metrics, test_intra_metrics)
     """
     trainer = Trainer(
         model=model,
         lr=cfg.lr,
-        loss_fn=cfg.loss_fn,
         device=device,
         checkpoint_dir=cfg.checkpoint_dir,
         experiment_name=experiment_name or cfg.experiment_name,
         cfg=cfg,
         use_wandb=cfg.use_wandb,
-        extra_dyn_kwargs=extra_dyn_kwargs,
     )
 
     metrics_store = trainer.train(
@@ -186,9 +185,16 @@ def run_backprop_training(
         verbose=True,
     )
 
-    test_metrics = trainer.test(
-        test_loader=test_loader,
+    test_inter_metrics = trainer.test(
+        test_inter_loader,
         n_steps=window_size,
         dt=cfg.tr,
+        label="test_inter",
     )
-    return trainer, metrics_store, test_metrics
+    test_intra_metrics = trainer.test(
+        test_intra_loader,
+        n_steps=window_size,
+        dt=cfg.tr,
+        label="test_intra",
+    )
+    return trainer, metrics_store, test_inter_metrics, test_intra_metrics

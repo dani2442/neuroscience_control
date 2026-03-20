@@ -13,11 +13,12 @@ uniformly sampled data.
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 import torch
+import torch.nn as nn
 
-from ._utils import ensure_batch, to_real, upper_tri_vec, zscore
+from ._utils import align_batch_and_time, ensure_batch, to_real, upper_tri_vec, zscore
 
 
 # ---------------------------------------------------------------------------
@@ -63,8 +64,6 @@ def _windowed_fc_vectors(
     V = torch.stack(vecs, dim=0)  # (W, M)
     if V.shape[1] <= 1:
         return None
-    # Z-score each window vector across features so
-    # V V^T / (M-1) yields Pearson correlation between window vectors.
     return zscore(V, dim=1)
 
 
@@ -115,9 +114,6 @@ def phase_coherence_fc(ts: torch.Tensor) -> torch.Tensor:
     where :math:`\phi_i(t)` is the instantaneous phase extracted via
     ``torch.angle(z)`` from the complex analytic signal.
 
-    The result is the **time-averaged** instantaneous phase-coherence
-    matrix and is used in the EC optimisation delta-rule.
-
     Args:
         ts: ``(batch, n_rois, T)`` **complex** analytic-signal tensor.
             If ``(n_rois, T)`` it is auto-batched.
@@ -132,42 +128,40 @@ def phase_coherence_fc(ts: torch.Tensor) -> torch.Tensor:
             "phase_coherence_fc expects complex input; "
             "got real tensor.  Ensure data/model output is complex."
         )
-    # phases: (B, N, T)
     phases = torch.angle(ts)
-    # (B, N, 1, T) - (B, 1, N, T) -> (B, N, N, T)
     diff = phases.unsqueeze(2) - phases.unsqueeze(1)
-    # cos of phase differences, averaged over time
     return torch.cos(diff).mean(dim=-1)  # (B, N, N)
 
 
 def phase_coherence_fc_correlation(
     ts_pred: torch.Tensor,
     ts_target: torch.Tensor,
-) -> float:
+) -> torch.Tensor:
     r"""Pearson correlation between predicted and target phase-coherence FC.
 
     Computes grand-average phase-coherence FC for both tensors (mean over
     batch), then returns the Pearson correlation of their upper-triangular
-    entries — the same comparison strategy used for static (Pearson) FC.
+    entries.
 
     Args:
         ts_pred: ``(batch, n_rois, T)`` complex tensor.
         ts_target: ``(batch, n_rois, T)`` complex tensor.
 
     Returns:
-        Scalar Pearson correlation (float).
+        Scalar Pearson correlation as a Tensor (differentiable).
+        Returns NaN tensor when there are fewer than 2 ROI pairs.
     """
     fc_pred = phase_coherence_fc(ts_pred).mean(dim=0)    # (N, N)
     fc_target = phase_coherence_fc(ts_target).mean(dim=0)  # (N, N)
     v_pred = upper_tri_vec(fc_pred, k=1)
     v_target = upper_tri_vec(fc_target, k=1)
     if v_pred.numel() < 2:
-        return float("nan")
+        return torch.tensor(float("nan"), device=ts_pred.device, dtype=ts_pred.real.dtype)
     p = v_pred - v_pred.mean()
     t = v_target - v_target.mean()
     num = (p * t).sum()
     den = torch.sqrt((p ** 2).sum() * (t ** 2).sum()) + 1e-8
-    return float((num / den).item())
+    return num / den
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +183,6 @@ def phase_coherence_matrix(phases: torch.Tensor) -> torch.Tensor:
     Returns:
         ``(T, N, N)`` phase coherence matrices.
     """
-    # (T, N, 1) - (T, 1, N) -> (T, N, N)
     diff = phases.unsqueeze(2) - phases.unsqueeze(1)
     return torch.cos(diff)
 
@@ -200,7 +193,7 @@ def phfcd_matrix(phases: torch.Tensor) -> Optional[torch.Tensor]:
     Implements the time-varying FC assessment described in Deco et al. (2019):
 
     1. Compute phase coherence :math:`P_{nm}(t)` for every time point.
-    2. Vectorise the upper-triangular entries :
+    2. Vectorise the upper-triangular entries:
        :math:`\mathbf{p}(t) = \operatorname{vec}_{\triangle}(P(t)) \in \mathbb{R}^M`.
     3. Build a cosine-similarity matrix across time:
 
@@ -220,14 +213,11 @@ def phfcd_matrix(phases: torch.Tensor) -> Optional[torch.Tensor]:
     if N < 2:
         return None
 
-    # Phase coherence at each time: (T, N, N)
     P = phase_coherence_matrix(phases)
 
-    # Upper-triangle of each P(t): (T, M)  where M = N*(N-1)/2
     idx = torch.triu_indices(N, N, offset=1, device=phases.device)
     vecs = P[:, idx[0], idx[1]]  # (T, M)
 
-    # Cosine similarity
     norms = torch.linalg.norm(vecs, dim=1, keepdim=True).clamp(min=1e-12)
     vecs_normed = vecs / norms
     return vecs_normed @ vecs_normed.T
@@ -235,8 +225,6 @@ def phfcd_matrix(phases: torch.Tensor) -> Optional[torch.Tensor]:
 
 def phfcd_distribution(phases: torch.Tensor) -> torch.Tensor:
     """Upper-triangular distribution of the phFCD matrix.
-
-    This is the tv-FC summary distribution used by the paper.
 
     Args:
         phases: ``(T, N)`` phase angles in radians.
@@ -248,23 +236,6 @@ def phfcd_distribution(phases: torch.Tensor) -> torch.Tensor:
     if fcd is None:
         return torch.empty(0, device=phases.device, dtype=phases.dtype)
     return upper_tri_vec(fcd, k=1)
-
-
-# ---------------------------------------------------------------------------
-# KS distance
-# ---------------------------------------------------------------------------
-
-def ks_distance_2samp(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-    """Two-sample Kolmogorov-Smirnov statistic (torch-only, exact CDF)."""
-    if x.numel() == 0 or y.numel() == 0:
-        return torch.tensor(float("nan"), device=x.device, dtype=x.dtype)
-    x = torch.sort(x.flatten()).values
-    y = torch.sort(y.flatten()).values
-    n, m = x.numel(), y.numel()
-    z = torch.sort(torch.cat([x, y])).values
-    cdf_x = torch.searchsorted(x, z, right=True).to(z.dtype) / n
-    cdf_y = torch.searchsorted(y, z, right=True).to(z.dtype) / m
-    return torch.max(torch.abs(cdf_x - cdf_y))
 
 
 # ---------------------------------------------------------------------------
@@ -283,8 +254,6 @@ def symmetric_kl_divergence(
         D_{\mathrm{KL}}^{\mathrm{sym}}(P, Q)
         = \frac{1}{2}\sum_i P(i)\ln\frac{P(i)}{Q(i)}
         + \frac{1}{2}\sum_i Q(i)\ln\frac{Q(i)}{P(i)}
-
-    Used for PMS probability mismatch in the paper.
 
     Args:
         p: 1-D probability distribution (sums to 1).
@@ -324,15 +293,12 @@ def markov_entropy_rate(T_mat: torch.Tensor, eps: float = 1e-12) -> torch.Tensor
         Scalar tensor — entropy rate in nats.
     """
     T_mat = T_mat.clamp(min=eps)
-    # Stationary distribution via eigendecomposition of T^T
     eigenvalues, eigenvectors = torch.linalg.eig(T_mat.T.to(torch.float64))
-    # Find eigenvector closest to eigenvalue 1
     idx = torch.argmin(torch.abs(eigenvalues - 1.0))
     pi = eigenvectors[:, idx].real
-    pi = pi.abs()  # ensure positive
-    pi = pi / pi.sum()  # normalise
+    pi = pi.abs()
+    pi = pi / pi.sum()
     pi = pi.to(T_mat.dtype)
-    # Entropy rate: -sum_i pi(i) sum_j T_ij log T_ij
     row_entropies = -(T_mat * torch.log(T_mat)).sum(dim=1)  # (k,)
     return (pi * row_entropies).sum()
 
@@ -356,6 +322,23 @@ def tpm_entropy_distance(
         Scalar tensor — absolute entropy-rate difference.
     """
     return torch.abs(markov_entropy_rate(tpm_pred) - markov_entropy_rate(tpm_target))
+
+
+# ---------------------------------------------------------------------------
+# KS distance
+# ---------------------------------------------------------------------------
+
+def ks_distance_2samp(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    """Two-sample Kolmogorov-Smirnov statistic (torch-only, exact CDF)."""
+    if x.numel() == 0 or y.numel() == 0:
+        return torch.tensor(float("nan"), device=x.device, dtype=x.dtype)
+    x = torch.sort(x.flatten()).values
+    y = torch.sort(y.flatten()).values
+    n, m = x.numel(), y.numel()
+    z = torch.sort(torch.cat([x, y])).values
+    cdf_x = torch.searchsorted(x, z, right=True).to(z.dtype) / n
+    cdf_y = torch.searchsorted(y, z, right=True).to(z.dtype) / m
+    return torch.max(torch.abs(cdf_x - cdf_y))
 
 
 # ---------------------------------------------------------------------------
@@ -383,11 +366,6 @@ def metastability_value(ts: torch.Tensor) -> torch.Tensor:
     Phases are extracted directly via ``torch.angle(z)`` from the complex
     analytic signal -- no Hilbert transform or bandpass is needed.
 
-    The time-domain standard deviation of the Kuramoto order parameter is
-    the discrete approximation to
-    :math:`\sqrt{\frac{1}{T}\int_0^T (R(t) - \bar R)^2\,dt}`.
-    The result is averaged over the batch.
-
     Args:
         ts: ``(batch, n_rois, T)`` **complex** tensor.
 
@@ -400,41 +378,90 @@ def metastability_value(ts: torch.Tensor) -> torch.Tensor:
             "metastability_value expects complex input; "
             "got real tensor.  Ensure data/model output is complex."
         )
-    # phases: (B, N, T) -> (B, T, N) for kuramoto_metastability
     phases = torch.angle(ts).permute(0, 2, 1)
     vals = torch.stack([kuramoto_metastability(phases[b]) for b in range(phases.shape[0])])
     return vals.mean()
 
 
 # ---------------------------------------------------------------------------
-# Differentiable losses
+# Private helpers for KS evaluation
 # ---------------------------------------------------------------------------
 
-def metastability_l1_loss(
+def _fcd_ks(
     ts_pred: torch.Tensor,
     ts_target: torch.Tensor,
-) -> torch.Tensor:
-    """L1 loss between predicted and target metastability."""
-    return torch.abs(metastability_value(ts_pred) - metastability_value(ts_target))
+    tr: float,
+    fcd_win_sec: float,
+    fcd_step_sec: float,
+) -> float:
+    """FCD KS distance. Returns NaN when windowing is not feasible."""
+    ts_pred = ensure_batch(ts_pred)
+    ts_target = ensure_batch(ts_target)
+    B = min(ts_pred.shape[0], ts_target.shape[0])
+    T = min(ts_pred.shape[2], ts_target.shape[2])
+    pred_real = to_real(ts_pred[:B, :, :T])
+    targ_real = to_real(ts_target[:B, :, :T])
+
+    win_len = int(round(fcd_win_sec / tr))
+    win_step = int(round(fcd_step_sec / tr))
+
+    if win_len < 10 or (T - win_len) <= 10 or win_step <= 0:
+        return float("nan")
+
+    pred_dists: List[torch.Tensor] = []
+    targ_dists: List[torch.Tensor] = []
+    for b in range(B):
+        pd = fcd_distribution(pred_real[b].T, win_len, win_step)
+        td = fcd_distribution(targ_real[b].T, win_len, win_step)
+        if pd.numel() == 0 or td.numel() == 0:
+            return float("nan")
+        pred_dists.append(pd)
+        targ_dists.append(td)
+
+    if not pred_dists:
+        return float("nan")
+    return float(ks_distance_2samp(torch.cat(pred_dists), torch.cat(targ_dists)).item())
 
 
-def fcd_mse_loss(
+def _phfcd_ks(ts_pred: torch.Tensor, ts_target: torch.Tensor) -> float:
+    """phFCD KS distance. Returns NaN when inputs are real or have < 2 ROIs."""
+    pred = ensure_batch(ts_pred)
+    target = ensure_batch(ts_target)
+    B = min(pred.shape[0], target.shape[0])
+    T = min(pred.shape[2], target.shape[2])
+    pred = pred[:B, :, :T]
+    target = target[:B, :, :T]
+
+    if not torch.is_complex(pred) or not torch.is_complex(target):
+        return float("nan")
+
+    pred_ph_dists: List[torch.Tensor] = []
+    targ_ph_dists: List[torch.Tensor] = []
+    for b in range(B):
+        pred_phases = torch.angle(pred[b]).T   # (T, N)
+        targ_phases = torch.angle(target[b]).T
+        pd_ph = phfcd_distribution(pred_phases)
+        td_ph = phfcd_distribution(targ_phases)
+        if pd_ph.numel() == 0 or td_ph.numel() == 0:
+            return float("nan")
+        pred_ph_dists.append(pd_ph)
+        targ_ph_dists.append(td_ph)
+
+    if not pred_ph_dists:
+        return float("nan")
+    return float(ks_distance_2samp(torch.cat(pred_ph_dists), torch.cat(targ_ph_dists)).item())
+
+
+def _fcd_mse(
     ts_pred: torch.Tensor,
     ts_target: torch.Tensor,
-    tr: float = 0.72,
-    fcd_win_sec: float = 60.0,
-    fcd_step_sec: float = 2.0,
+    tr: float,
+    fcd_win_sec: float,
+    fcd_step_sec: float,
 ) -> torch.Tensor:
-    """Differentiable FCD surrogate: MSE between FCD matrices.
-
-    Operates on the **real part** of the complex analytic signal.  No
-    additional preprocessing (detrend / bandpass / zscore) is applied
-    because the data was already preprocessed at load time.
-
-    Returns ``0`` when the window configuration cannot produce a valid
-    FCD matrix (e.g. too-short series), so training proceeds without NaNs.
-    """
-    pred, target, batch, _ = _align_real(ts_pred, ts_target)
+    """Differentiable FCD surrogate: MSE between FCD matrices."""
+    pred, target, batch, _ = align_batch_and_time(ts_pred, ts_target)
+    pred, target = to_real(pred), to_real(target)
 
     win_len = int(round(fcd_win_sec / tr))
     win_step = int(round(fcd_step_sec / tr))
@@ -444,7 +471,6 @@ def fcd_mse_loss(
 
     losses: list[torch.Tensor] = []
     for b in range(batch):
-        # (N, T) -> (T, N) for windowed-FC helpers
         pred_fcd = fcd_matrix(pred[b].T, win_len, win_step)
         targ_fcd = fcd_matrix(target[b].T, win_len, win_step)
         if pred_fcd is None or targ_fcd is None:
@@ -459,18 +485,8 @@ def fcd_mse_loss(
     return torch.stack(losses).mean()
 
 
-def phfcd_mse_loss(
-    ts_pred: torch.Tensor,
-    ts_target: torch.Tensor,
-) -> torch.Tensor:
-    """Differentiable phFCD surrogate: MSE between phFCD matrices.
-
-    Uses the **complex** analytic signal to extract instantaneous phases
-    via ``torch.angle(z)``, then computes the phFCD matrix for each batch
-    element and returns the mean MSE.
-
-    Returns ``0`` when the input is real-valued or has fewer than 2 ROIs.
-    """
+def _phfcd_mse(ts_pred: torch.Tensor, ts_target: torch.Tensor) -> torch.Tensor:
+    """Differentiable phFCD surrogate: MSE between phFCD matrices."""
     pred = ensure_batch(ts_pred)
     target = ensure_batch(ts_target)
     B = min(pred.shape[0], target.shape[0])
@@ -484,7 +500,7 @@ def phfcd_mse_loss(
     losses: list[torch.Tensor] = []
     for b in range(B):
         pred_phases = torch.angle(pred[b]).T   # (T, N)
-        targ_phases = torch.angle(target[b]).T  # (T, N)
+        targ_phases = torch.angle(target[b]).T
         pred_phfcd = phfcd_matrix(pred_phases)
         targ_phfcd = phfcd_matrix(targ_phases)
         if pred_phfcd is None or targ_phfcd is None:
@@ -500,120 +516,82 @@ def phfcd_mse_loss(
 
 
 # ---------------------------------------------------------------------------
-# Evaluation metrics
+# nn.Module metric/loss classes
 # ---------------------------------------------------------------------------
 
-def compute_dynamics_fit_metrics(
-    ts_pred: torch.Tensor,
-    ts_target: torch.Tensor,
-    tr: float = 0.72,
-    fcd_win_sec: float = 60.0,
-    fcd_step_sec: float = 2.0,
-) -> Dict[str, float]:
-    """Compute FCD-KS and metastability-diff evaluation metrics.
+class FCD(nn.Module):
+    """FCD (Functional Connectivity Dynamics) MSE loss + KS evaluation metric.
 
-    All time-domain averages use ``.mean()`` -- the discrete approximation
-    to :math:`\\frac{1}{T}\\int_0^T f(t)\\,dt` for uniform sampling -- then
-    averaged over the batch and ROIs.
+    ``forward()`` returns the differentiable FCD MSE loss (surrogate for KS).
+    ``evaluate()`` returns ``{"fcd_mse": float, "fcd_ks": float}``.
 
     Args:
-        ts_pred: ``(batch, n_rois, T)`` complex.
-        ts_target: ``(batch, n_rois, T)`` complex.
-        tr: Repetition time (seconds), used only for FCD window sizing.
+        tr: Repetition time in seconds.
         fcd_win_sec: FCD window length in seconds.
-        fcd_step_sec: FCD window step in seconds.
-    Returns:
-        ``{"fcd_ks": float, "phfcd_ks": float, "phase_fc_correlation": float, "metastability_diff": float}``
-
-    Notes:
-        ``fcd_ks`` is reported as ``NaN`` when FCD windowing is not feasible.
+        fcd_step_sec: FCD step size in seconds.
     """
-    ts_pred = ensure_batch(ts_pred)
-    ts_target = ensure_batch(ts_target)
-    B = min(ts_pred.shape[0], ts_target.shape[0])
-    T = min(ts_pred.shape[2], ts_target.shape[2])
-    ts_pred = ts_pred[:B, :, :T]
-    ts_target = ts_target[:B, :, :T]
 
-    # Real parts for FCD
-    pred_real = to_real(ts_pred)
-    targ_real = to_real(ts_target)
+    def __init__(self, tr: float = 0.72, fcd_win_sec: float = 30.0, fcd_step_sec: float = 2.0):
+        super().__init__()
+        self.tr = tr
+        self.fcd_win_sec = fcd_win_sec
+        self.fcd_step_sec = fcd_step_sec
 
-    win_len = int(round(fcd_win_sec / tr))
-    win_step = int(round(fcd_step_sec / tr))
+    def forward(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> torch.Tensor:
+        return _fcd_mse(ts_pred, ts_target, self.tr, self.fcd_win_sec, self.fcd_step_sec)
 
-    # ---- FCD KS (windowed-correlation based) ----
-    fcd_ks = float("nan")
-    if win_len >= 10 and (T - win_len) > 10 and win_step > 0:
-        pred_dists: List[torch.Tensor] = []
-        targ_dists: List[torch.Tensor] = []
-        for b in range(B):
-            pd = fcd_distribution(pred_real[b].T, win_len, win_step)
-            td = fcd_distribution(targ_real[b].T, win_len, win_step)
-            if pd.numel() == 0 or td.numel() == 0:
-                pred_dists.clear()
-                targ_dists.clear()
-                break
-            pred_dists.append(pd)
-            targ_dists.append(td)
-        if pred_dists and targ_dists:
-            fcd_ks = float(
-                ks_distance_2samp(
-                    torch.cat(pred_dists), torch.cat(targ_dists),
-                ).item()
-            )
-
-    # ---- phFCD KS (phase-based FCD, the paper's main fitting metric) ----
-    phfcd_ks_val = float("nan")
-    if torch.is_complex(ts_pred) and torch.is_complex(ts_target):
-        pred_ph_dists: List[torch.Tensor] = []
-        targ_ph_dists: List[torch.Tensor] = []
-        for b in range(B):
-            pred_phases = torch.angle(ts_pred[b]).T   # (T, N)
-            targ_phases = torch.angle(ts_target[b]).T  # (T, N)
-            pd_ph = phfcd_distribution(pred_phases)
-            td_ph = phfcd_distribution(targ_phases)
-            if pd_ph.numel() == 0 or td_ph.numel() == 0:
-                pred_ph_dists.clear()
-                targ_ph_dists.clear()
-                break
-            pred_ph_dists.append(pd_ph)
-            targ_ph_dists.append(td_ph)
-        if pred_ph_dists and targ_ph_dists:
-            phfcd_ks_val = float(
-                ks_distance_2samp(
-                    torch.cat(pred_ph_dists), torch.cat(targ_ph_dists),
-                ).item()
-            )
-
-    # ---- Phase-coherence FC correlation ----
-    phase_fc_correlation_val = float("nan")
-    if torch.is_complex(ts_pred) and torch.is_complex(ts_target):
-        phase_fc_correlation_val = phase_coherence_fc_correlation(ts_pred, ts_target)
-
-    # ---- Metastability ----
-    meta_pred = metastability_value(ts_pred)
-    meta_targ = metastability_value(ts_target)
-    meta_diff = float(torch.abs(meta_pred - meta_targ).item())
-
-    return {
-        "fcd_ks": fcd_ks,
-        "phfcd_ks": phfcd_ks_val,
-        "phase_fc_correlation": phase_fc_correlation_val,
-        "metastability_diff": meta_diff,
-    }
+    @torch.no_grad()
+    def evaluate(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> dict:
+        return {
+            "fcd_mse": self(ts_pred, ts_target).item(),
+            "fcd_ks": _fcd_ks(ts_pred, ts_target, self.tr, self.fcd_win_sec, self.fcd_step_sec),
+        }
 
 
-# ---------------------------------------------------------------------------
-# Private helpers
-# ---------------------------------------------------------------------------
+class PhFCD(nn.Module):
+    """Phase FCD (phFCD) MSE loss + KS evaluation metric.
 
-def _align_real(
-    pred: torch.Tensor, target: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor, int, int]:
-    """Ensure batch dim, convert to real, align batch & time."""
-    pred = to_real(ensure_batch(pred))
-    target = to_real(ensure_batch(target))
-    B = min(pred.shape[0], target.shape[0])
-    T = min(pred.shape[2], target.shape[2])
-    return pred[:B, :, :T], target[:B, :, :T], B, T
+    ``forward()`` returns the differentiable phFCD MSE loss (surrogate for KS).
+    ``evaluate()`` returns ``{"phfcd_mse": float, "phfcd_ks": float}``.
+    """
+
+    def forward(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> torch.Tensor:
+        return _phfcd_mse(ts_pred, ts_target)
+
+    @torch.no_grad()
+    def evaluate(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> dict:
+        return {
+            "phfcd_mse": self(ts_pred, ts_target).item(),
+            "phfcd_ks": _phfcd_ks(ts_pred, ts_target),
+        }
+
+
+class Metastability(nn.Module):
+    """L1 difference between predicted and target Kuramoto metastability.
+
+    Metric and loss are the same value.
+    ``evaluate()`` returns ``{"metastability_diff": float}``.
+    """
+
+    def forward(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> torch.Tensor:
+        return torch.abs(metastability_value(ts_pred) - metastability_value(ts_target))
+
+    @torch.no_grad()
+    def evaluate(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> dict:
+        return {"metastability_diff": self(ts_pred, ts_target).item()}
+
+
+class PhaseFC(nn.Module):
+    """1 − Pearson correlation between phase-coherence FC matrices.
+
+    ``forward()`` returns the loss (lower is better).
+    ``evaluate()`` returns ``{"phase_fc_correlation": float}`` (higher is better).
+    """
+
+    def forward(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> torch.Tensor:
+        corr = phase_coherence_fc_correlation(ts_pred, ts_target)
+        return 1.0 - corr
+
+    @torch.no_grad()
+    def evaluate(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> dict:
+        return {"phase_fc_correlation": 1.0 - self(ts_pred, ts_target).item()}

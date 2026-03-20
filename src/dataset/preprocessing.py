@@ -98,8 +98,13 @@ def create_data_loaders(
     val_ratio: float = 0.15,
     seed: int = 42,
     device: str = "cpu",
-) -> Tuple[DataLoader, DataLoader, DataLoader]:
-    """Create train/val/test loaders with random windowing and subject-level split."""
+) -> Tuple[DataLoader, DataLoader, DataLoader, DataLoader]:
+    """Create train/val/test_inter/test_intra loaders with random windowing.
+
+    Subject-level inter-patient split (train_idx vs test_idx) plus a temporal
+    intra-patient split: first half of training-subject timeseries → training,
+    second half → intra-patient test loader.
+    """
     rng = np.random.RandomState(seed)
     n_subjects = dataset.n_subjects
     indices = rng.permutation(n_subjects)
@@ -125,11 +130,27 @@ def create_data_loaders(
         )
         return DataLoader(ds, batch_size=batch_size, shuffle=shuffle, drop_last=True)
 
+    def _loader_from_tensors(ts, fc, subj_ctrl, n_win, shuffle=True):
+        ds = RandomWindowDataset(ts, fc, window_size, n_win, device, control=subj_ctrl)
+        return DataLoader(ds, batch_size=batch_size, shuffle=shuffle, drop_last=True)
+
     n_val_win = max(batch_size, n_windows_per_epoch // 4)
     n_test_win = max(batch_size, n_windows_per_epoch // 4)
 
+    # Temporal split for intra-patient test set
+    T_split = dataset.n_timepoints // 2
+    train_ts  = dataset.timeseries[train_idx, :, :T_split]
+    intra_ts  = dataset.timeseries[train_idx, :, T_split:]
+    train_fc  = dataset.fc_matrices[train_idx]
+    if ctrl is not None:
+        train_ctrl = ctrl[train_idx, :T_split]
+        intra_ctrl = ctrl[train_idx, T_split:]
+    else:
+        train_ctrl = intra_ctrl = None
+
     return (
-        _loader(train_idx, n_windows_per_epoch),
+        _loader_from_tensors(train_ts, train_fc, train_ctrl, n_windows_per_epoch),
         _loader(val_idx, n_val_win, shuffle=False),
-        _loader(test_idx, n_test_win, shuffle=False),
+        _loader(test_idx, n_test_win, shuffle=False),                                      # inter-patient
+        _loader_from_tensors(intra_ts, train_fc, intra_ctrl, n_test_win, shuffle=False),   # intra-patient
     )

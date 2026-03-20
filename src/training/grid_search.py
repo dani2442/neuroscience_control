@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 from ..models.hopf_model import CoupledHopfModel
 from ..models.base_model import BaseNeuroscienceModel
-from ..metrics import fc_correlation, fc_mse, fcd_mse_loss, metastability_l1_loss, phfcd_mse_loss
+from ..metrics import fc_correlation, fc_mse, FCD, Metastability, PhFCD
 from ..dataset import NeuroscienceDataset
 from ..dataset.preprocessing import compute_omega_from_timeseries
 
@@ -116,22 +116,11 @@ class GridSearch:
         if target_timeseries is not None:
             target_ts = target_timeseries[:batch_size, :, :n_timepoints]
 
-            fcd_val = fcd_mse_loss(
-                timeseries, target_ts,
-                tr=tr,
-                fcd_win_sec=fcd_win_sec, fcd_step_sec=fcd_step_sec,
-            ).item()
-            metrics["fcd_mse"] = fcd_val
-
-            meta_val = metastability_l1_loss(
-                timeseries, target_ts,
-            ).item()
-            metrics["metastability_diff"] = meta_val
-
-            phfcd_val = phfcd_mse_loss(
-                timeseries, target_ts,
-            ).item()
-            metrics["phfcd_mse"] = phfcd_val
+            metrics["fcd_mse"] = FCD(
+                tr=tr, fcd_win_sec=fcd_win_sec, fcd_step_sec=fcd_step_sec,
+            )(timeseries, target_ts).item()
+            metrics["metastability_diff"] = Metastability()(timeseries, target_ts).item()
+            metrics["phfcd_mse"] = PhFCD()(timeseries, target_ts).item()
 
         return metrics
 

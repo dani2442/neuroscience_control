@@ -4,9 +4,8 @@ FC matrices are real-valued ``(batch, n_rois, n_rois)`` tensors.  If a
 complex tensor is passed the real part is used automatically.
 """
 
-from typing import Dict
-
 import torch
+import torch.nn as nn
 
 from ._utils import ensure_batch, to_real, upper_tri_vec
 
@@ -30,26 +29,10 @@ def compute_static_fc(ts: torch.Tensor) -> torch.Tensor:
         ``(batch, n_rois, n_rois)`` FC matrices.
     """
     ts = to_real(ensure_batch(ts))
-    # z-score each ROI over time
     ts_c = ts - ts.mean(dim=2, keepdim=True)
     ts_n = ts_c / (ts_c.std(dim=2, keepdim=True) + 1e-8)
     T = ts.shape[2]
     return torch.bmm(ts_n, ts_n.transpose(1, 2)) / max(T - 1, 1)
-
-
-def _extract_upper_tri(
-    fc: torch.Tensor, n_rois: int,
-) -> torch.Tensor:
-    """Flatten the strict upper triangle of a batch of FC matrices.
-
-    Args:
-        fc: ``(batch, n_rois, n_rois)``
-
-    Returns:
-        ``(batch, M)`` where ``M = n_rois*(n_rois-1)/2``.
-    """
-    idx = torch.triu_indices(n_rois, n_rois, offset=1, device=fc.device)
-    return fc[:, idx[0], idx[1]]
 
 
 def fc_correlation(
@@ -70,13 +53,12 @@ def fc_correlation(
         fc_target = fc_target.unsqueeze(0)
 
     if use_upper_triangle:
-        pred_flat = _extract_upper_tri(fc_pred, fc_pred.shape[1])
-        targ_flat = _extract_upper_tri(fc_target, fc_target.shape[1])
+        pred_flat = upper_tri_vec(fc_pred, k=1)   # (B, M)
+        targ_flat = upper_tri_vec(fc_target, k=1)
     else:
         pred_flat = fc_pred.reshape(fc_pred.shape[0], -1)
         targ_flat = fc_target.reshape(fc_target.shape[0], -1)
 
-    # Vectorised Pearson correlation across batch
     pred_c = pred_flat - pred_flat.mean(dim=1, keepdim=True)
     targ_c = targ_flat - targ_flat.mean(dim=1, keepdim=True)
     num = (pred_c * targ_c).sum(dim=1)
@@ -98,8 +80,8 @@ def fc_mse(
         fc_target = fc_target.unsqueeze(0)
 
     if use_upper_triangle:
-        pred_flat = _extract_upper_tri(fc_pred, fc_pred.shape[1])
-        targ_flat = _extract_upper_tri(fc_target, fc_target.shape[1])
+        pred_flat = upper_tri_vec(fc_pred, k=1)   # (B, M)
+        targ_flat = upper_tri_vec(fc_target, k=1)
     else:
         pred_flat = fc_pred.reshape(fc_pred.shape[0], -1)
         targ_flat = fc_target.reshape(fc_target.shape[0], -1)
@@ -107,34 +89,38 @@ def fc_mse(
     return ((pred_flat - targ_flat) ** 2).mean()
 
 
-def compute_all_fc_metrics(
-    fc_pred: torch.Tensor,
-    fc_target: torch.Tensor,
-) -> Dict[str, float]:
-    """Compute all FC metrics. Returns dict of metric name -> value."""
-    return {
-        "fc_correlation": fc_correlation(fc_pred, fc_target).item(),
-        "fc_mse": fc_mse(fc_pred, fc_target).item(),
-    }
+# ---------------------------------------------------------------------------
+# nn.Module metric/loss classes
+# ---------------------------------------------------------------------------
 
+class FCCorrelation(nn.Module):
+    """1 − Pearson correlation between FC matrices.
 
-def compute_fc_from_timeseries_and_compare(
-    ts_pred: torch.Tensor,
-    ts_target: torch.Tensor,
-) -> Dict[str, float]:
-    """Compute static FC from timeseries and return all FC metrics.
-
-    A convenience wrapper that combines :func:`compute_static_fc` with
-    :func:`compute_all_fc_metrics`.  Mean FC is computed across the batch
-    before comparison.
-
-    Args:
-        ts_pred: ``(batch, n_rois, T)`` complex or real.
-        ts_target: ``(batch, n_rois, T)`` complex or real.
-
-    Returns:
-        ``{"fc_correlation": float, "fc_mse": float}``
+    ``forward()`` returns the loss (lower is better).
+    ``evaluate()`` returns ``{"fc_correlation": float}`` (higher is better).
     """
-    fc_pred = compute_static_fc(ts_pred).mean(dim=0, keepdim=True)
-    fc_target = compute_static_fc(ts_target).mean(dim=0, keepdim=True)
-    return compute_all_fc_metrics(fc_pred, fc_target)
+
+    def forward(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> torch.Tensor:
+        fc_pred = compute_static_fc(ts_pred)
+        fc_target = compute_static_fc(ts_target)
+        return 1.0 - fc_correlation(fc_pred, fc_target)
+
+    @torch.no_grad()
+    def evaluate(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> dict:
+        return {"fc_correlation": 1.0 - self(ts_pred, ts_target).item()}
+
+
+class FCMSE(nn.Module):
+    """MSE between FC matrices. Metric and loss are the same value.
+
+    ``forward()`` returns the loss. ``evaluate()`` returns ``{"fc_mse": float}``.
+    """
+
+    def forward(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> torch.Tensor:
+        fc_pred = compute_static_fc(ts_pred)
+        fc_target = compute_static_fc(ts_target)
+        return fc_mse(fc_pred, fc_target)
+
+    @torch.no_grad()
+    def evaluate(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> dict:
+        return {"fc_mse": self(ts_pred, ts_target).item()}

@@ -4,34 +4,30 @@ import dataclasses
 import math
 import time
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import wandb
 
+from ..dataset import fft_bandpass_3d
 from ..models.base_model import BaseNeuroscienceModel
 from ..metrics import (
-    compute_all_fc_metrics,
-    compute_all_timeseries_metrics,
-    compute_dynamics_fit_metrics,
+    FCCorrelation, FCMSE,
+    PowerSpectrumDistance, TemporalCorrelation, AutocorrelationDistance,
+    FCD, PhFCD, Metastability, PhaseFC,
 )
 from ..metrics.metrics_store import MetricsStore
 from .config import TrainingConfig
-from .losses import CompositeLoss, build_loss
+from .losses import CompositeLoss
 
-FC_METRICS = ("loss", "fc_correlation", "fc_mse")
-TS_METRICS = ("power_spectrum_distance", "temporal_correlation", "autocorr_distance")
-DYN_METRICS = ("fcd_ks", "phfcd_ks", "phase_fc_correlation", "metastability_diff")
-LOSS_COMPONENT_METRICS = (
-    "loss_fc_mse", "loss_fc_correlation",
-    "loss_l2",
-    "loss_amplitude", "loss_omega",
-    "loss_fcd", "loss_phfcd", "loss_phase_fc_correlation", "loss_metastability",
+# Evaluation metric keys produced by each module's evaluate() call
+_EVAL_METRIC_KEYS = (
+    "fc_correlation", "fc_mse",
+    "power_spectrum_distance", "temporal_correlation", "autocorr_distance",
+    "fcd_ks", "fcd_mse", "phfcd_ks", "phfcd_mse", "phase_fc_correlation", "metastability_diff",
 )
-ALL_METRICS = FC_METRICS + TS_METRICS + DYN_METRICS + LOSS_COMPONENT_METRICS
-WANDB_EPOCH_METRICS = ALL_METRICS
 
 
 class _MetricAccumulator:
@@ -72,46 +68,28 @@ class _MetricAccumulator:
 class Trainer:
     """
     Trainer for neuroscience models using backpropagation.
-    
+
     Supports:
     - Mini-batch training with windowed data
-    - Multiple loss functions
-    - Early stopping
-    - Checkpointing
+    - Composite loss built from config loss_weights
+    - Early stopping and checkpointing
     - Fine-tuning from pretrained models
     """
-    
+
     def __init__(
         self,
         model: BaseNeuroscienceModel,
         optimizer: Optional[torch.optim.Optimizer] = None,
         lr: float = 1e-3,
-        loss_fn: str = "mse",
         device: str = "cpu",
         checkpoint_dir: str = "checkpoints",
         experiment_name: str = "experiment",
         cfg: Optional[TrainingConfig] = None,
         use_wandb: bool = True,
-        extra_dyn_kwargs: Optional[Dict[str, object]] = None,
     ):
-        """
-        Initialize trainer.
-        
-        Args:
-            model: Model to train
-            optimizer: Optional optimizer (Adam by default)
-            lr: Learning rate
-            loss_fn: Loss function ("mse", "correlation", "combined", "fc_fcd_meta")
-            device: Device to train on
-            checkpoint_dir: Directory for checkpoints
-            experiment_name: Name for experiment
-            cfg: Optional TrainingConfig for wandb logging
-            use_wandb: Whether to use wandb logging
-        """
         self.model = model.to(device)
         self.device = device
         self.lr = lr
-        self.loss_fn_name = loss_fn
         self.cfg = cfg
         self.use_wandb = use_wandb
         self.sde_type = cfg.sde_type if cfg is not None else "stratonovich"
@@ -121,65 +99,76 @@ class Trainer:
         if cfg is not None and cfg.adjoint_method is not None:
             self.adjoint_method = cfg.adjoint_method
         else:
-            self.adjoint_method = "adjoint_reversible_heun" if self.sde_method == "reversible_heun" else self.sde_method
+            self.adjoint_method = (
+                "adjoint_reversible_heun"
+                if self.sde_method == "reversible_heun"
+                else self.sde_method
+            )
 
-        # Build composite loss from config weights.
-        dyn_kwargs = self._dynamics_kwargs_from_cfg(cfg)
-        if extra_dyn_kwargs:
-            dyn_kwargs.update(extra_dyn_kwargs)
-        weight_overrides = self._weight_overrides_from_cfg(cfg)
-        self.loss_obj = build_loss(
-            name=loss_fn,
-            weight_overrides=weight_overrides,
-            dyn_kwargs=dyn_kwargs,
+        # Dynamics parameters for FCD windowing
+        tr = cfg.tr if cfg is not None else 0.72
+        fcd_win_sec = cfg.fcd_win_sec if cfg is not None else 30.0
+        fcd_step_sec = cfg.fcd_step_sec if cfg is not None else 2.0
+
+        # Build composite loss from config loss_weights
+        loss_weights = cfg.loss_weights if cfg is not None else {"fc_mse": 1.0}
+        self.loss_fn = CompositeLoss(
+            weights=loss_weights,
+            tr=tr,
+            fcd_win_sec=fcd_win_sec,
+            fcd_step_sec=fcd_step_sec,
         )
-        self.active_loss_component_metrics = tuple(
-            f"loss_{name}" for name in self.loss_obj.weights.keys()
-        )
-        
+
+        # Evaluation metric modules (always compute all, for logging)
+        self.eval_metrics: List[torch.nn.Module] = [
+            FCCorrelation(), FCMSE(),
+            PowerSpectrumDistance(), TemporalCorrelation(), AutocorrelationDistance(),
+            FCD(tr=tr, fcd_win_sec=fcd_win_sec, fcd_step_sec=fcd_step_sec),
+            PhFCD(), Metastability(), PhaseFC(),
+        ]
+
         # Set up optimizer
         if optimizer is None:
             self.optimizer = torch.optim.Adam(model.parameters(), lr=lr)
         else:
             self.optimizer = optimizer
-        
-        # (validation happens inside build_loss)
-        
+
         # Checkpointing
         self.checkpoint_dir = Path(checkpoint_dir)
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         self.experiment_name = experiment_name
-        
+
         # Metrics storage
         self.metrics_store = MetricsStore(
             experiment_name=experiment_name,
             save_dir=f"results/metrics/{experiment_name}"
         )
-        
+
         # Best model tracking
         self.best_val_loss = float('inf')
         self.best_epoch = 0
-        
+
         # Initialize wandb if config provided
         self.wandb_run = None
         if self.use_wandb and cfg is not None:
             self._init_wandb(cfg)
-    
+
+    def _denoise_pred(self, simulated: torch.Tensor, dt: float) -> torch.Tensor:
+        """Apply the same FFT bandpass filter used on real data to the predicted signal."""
+        if self.cfg is None or not self.cfg.fourier_denoise:
+            return simulated
+        f_lo, f_hi = self.cfg.denoise_f_lo, self.cfg.denoise_f_hi
+        if torch.is_complex(simulated):
+            filtered_real = fft_bandpass_3d(simulated.real, dt, f_lo, f_hi)
+            return torch.complex(filtered_real, simulated.imag)
+        return fft_bandpass_3d(simulated, dt, f_lo, f_hi)
+
     def _init_wandb(self, cfg: TrainingConfig):
         """Initialize wandb with proxy settings."""
-                
-        # Set proxy environment variables
-        # os.environ["HTTP_PROXY"] = "http://proxy.nhr.fau.de:80"
-        # os.environ["HTTPS_PROXY"] = "http://proxy.nhr.fau.de:80"
-        
-        # Configure wandb settings with proxy
         settings = wandb.Settings(
             _service_transport="http",
         )
-        
-        # Get run name from config or generate
         run_name = getattr(cfg, 'run_name', None) or self.experiment_name
-        
         self.wandb_run = wandb.init(
             project=cfg.wandb_project,
             entity=getattr(cfg, 'wandb_entity', None),
@@ -187,29 +176,21 @@ class Trainer:
             config=dataclasses.asdict(cfg),
             settings=settings
         )
-
-        # Ensure all epoch metrics are tracked against epoch
         wandb.define_metric("epoch")
         wandb.define_metric("train/*", step_metric="epoch")
         wandb.define_metric("validation/*", step_metric="epoch")
         wandb.define_metric("best/*", step_metric="epoch")
         wandb.define_metric("test/*", step_metric="epoch")
         wandb.define_metric("params/*", step_metric="epoch")
-        
-        # Watch model for gradient / parameter histogram logging.
-        # wandb.watch does not support complex-valued parameters — it casts
-        # tensors to FloatTensor, silently discarding imaginary parts and
-        # emitting a noisy UserWarning.  Skip watching when the model
-        # contains complex parameters; scalar metrics are still logged
-        # normally via _log_wandb.
+
         has_complex = any(p.is_complex() for p in self.model.parameters())
         if has_complex:
             print("  (skipping wandb.watch – model has complex parameters)")
         else:
             wandb.watch(self.model, log="all", log_freq=100)
-        
+
         print(f"Wandb initialized: {cfg.wandb_project}/{run_name}")
-    
+
     def _log_wandb(self, metrics: Dict[str, float], step: int, prefix: str = ""):
         """Log metrics to wandb."""
         if self.wandb_run is not None:
@@ -219,10 +200,8 @@ class Trainer:
 
     def _normalize_epoch_metrics(self, metrics: Dict[str, float]) -> Dict[str, float]:
         """Ensure a consistent set of epoch metrics for wandb logging."""
-        expected_keys = tuple(
-            dict.fromkeys(WANDB_EPOCH_METRICS + self.active_loss_component_metrics)
-        )
-        normalized = {key: metrics.get(key, float("nan")) for key in expected_keys}
+        all_keys = ("loss",) + _EVAL_METRIC_KEYS + tuple(self.loss_fn.component_names)
+        normalized = {key: metrics.get(key, float("nan")) for key in dict.fromkeys(all_keys)}
         for key, value in metrics.items():
             if key not in normalized:
                 normalized[key] = value
@@ -244,12 +223,11 @@ class Trainer:
             **{f"validation/{k}": v for k, v in val_metrics.items()},
             "epoch": step
         }
-        # Log Hopf learnable parameters (a, G, kappa) per epoch when available.
         hopf_params = self._get_hopf_params()
         if hopf_params:
             log_dict.update({f"params/{k}": v for k, v in hopf_params.items()})
         wandb.log(log_dict)
-    
+
     def _get_hopf_params(self) -> Dict[str, float]:
         """Extract current Hopf learnable parameters from the model (if any)."""
         params: Dict[str, float] = {}
@@ -274,83 +252,24 @@ class Trainer:
             artifact = wandb.Artifact(name, type=artifact_type)
             artifact.add_file(filepath)
             wandb.log_artifact(artifact)
-    
+
     def _log_wandb_figure(self, fig, name: str, step: Optional[int] = None):
         """Log matplotlib figure to wandb."""
         if self.wandb_run is not None:
             wandb.log({name: wandb.Image(fig)}, step=step)
-    
-    # -- static helpers for building CompositeLoss from config -----------
-
-    @staticmethod
-    def _dynamics_kwargs_from_cfg(cfg: Optional[TrainingConfig]) -> Dict[str, float]:
-        """Extract dynamics parameters forwarded to loss terms."""
-        if cfg is None:
-            return {"tr": 0.72, "fcd_win_sec": 60.0, "fcd_step_sec": 2.0}
-        return {
-            "tr": cfg.tr,
-            "fcd_win_sec": cfg.fcd_win_sec, "fcd_step_sec": cfg.fcd_step_sec,
-        }
-
-    @staticmethod
-    def _weight_overrides_from_cfg(cfg: Optional[TrainingConfig]) -> Dict[str, float]:
-        """Collect per-term weight overrides from config."""
-        if cfg is None:
-            return {}
-        overrides: Dict[str, float] = {}
-        _MAP = {
-            "loss_weight_fc": "fc_correlation",
-            "loss_weight_fc_mse": "fc_mse",
-            "loss_weight_l2": "l2",
-            "loss_weight_amplitude": "amplitude",
-            "loss_weight_omega": "omega",
-            "loss_weight_fcd": "fcd",
-            "loss_weight_phfcd": "phfcd",
-            "loss_weight_phase_fc_correlation": "phase_fc_correlation",
-            "loss_weight_metastability": "metastability",
-        }
-        for attr, term in _MAP.items():
-            val = getattr(cfg, attr, None)
-            if val is not None:
-                overrides[term] = val
-        return overrides
-
-    def _dynamics_kwargs(self) -> Dict[str, float]:
-        """Convenience accessor used by metrics computation."""
-        return self._dynamics_kwargs_from_cfg(self.cfg)
-
-    def _compute_loss(
-        self,
-        fc_pred: torch.Tensor,
-        fc_targets: torch.Tensor,
-        ts_pred: torch.Tensor,
-        ts_target: torch.Tensor,
-    ) -> tuple[torch.Tensor, Dict[str, torch.Tensor]]:
-        """Delegate to the :class:`CompositeLoss` object."""
-        return self.loss_obj(fc_pred, fc_targets, ts_pred, ts_target)
 
     def _compute_batch_metrics(
         self,
-        fc_pred: torch.Tensor,
-        fc_targets: torch.Tensor,
         ts_pred: torch.Tensor,
         ts_target: torch.Tensor,
         loss: torch.Tensor,
         loss_components: Dict[str, torch.Tensor],
     ) -> Dict[str, float]:
-        metrics = compute_all_fc_metrics(fc_pred, fc_targets)
-        metrics["loss"] = float(loss.item())
+        metrics: Dict[str, float] = {"loss": float(loss.item())}
         for name, value in loss_components.items():
             metrics[name] = float(value.item())
-
-        metrics.update(compute_all_timeseries_metrics(ts_pred, ts_target))
-        dyn_metrics = compute_dynamics_fit_metrics(
-            ts_pred,
-            ts_target,
-            **self._dynamics_kwargs()
-        )
-        metrics.update(dyn_metrics)
-
+        for module in self.eval_metrics:
+            metrics.update(module.evaluate(ts_pred, ts_target))
         return metrics
 
     def _run_epoch(
@@ -384,7 +303,6 @@ class Trainer:
             windows = windows.to(self.device)
             fc_targets = fc_targets.to(self.device)
             control = control.to(self.device)
-            # Treat empty control (n_control_dims==0) as None
             ctrl_arg = control if control.shape[-1] > 0 else None
 
             n_timepoints = windows.shape[2]
@@ -392,9 +310,8 @@ class Trainer:
             if n_sim_steps <= 0:
                 raise ValueError(f"n_steps must be >= 1, got {n_steps}")
 
-            # Keep simulation horizon, loss window, and initial condition aligned.
             target_window = windows[:, :, :n_sim_steps]
-            initial_state = target_window[:, :, 0]  # (batch, n_rois)
+            initial_state = target_window[:, :, 0]
 
             if train:
                 self.optimizer.zero_grad()
@@ -411,13 +328,8 @@ class Trainer:
                     adjoint_method=self.adjoint_method,
                     control=ctrl_arg,
                 )
-                fc_pred = self.model.compute_fc(simulated)
-                loss, loss_components = self._compute_loss(
-                    fc_pred,
-                    fc_targets,
-                    simulated,
-                    target_window
-                )
+                simulated = self._denoise_pred(simulated, dt)
+                loss, loss_components = self.loss_fn(simulated, target_window)
             else:
                 with torch.no_grad():
                     simulated = self.model.forward(
@@ -431,13 +343,8 @@ class Trainer:
                         adjoint_method=self.adjoint_method,
                         control=ctrl_arg,
                     )
-                    fc_pred = self.model.compute_fc(simulated)
-                    loss, loss_components = self._compute_loss(
-                        fc_pred,
-                        fc_targets,
-                        simulated,
-                        target_window
-                    )
+                    simulated = self._denoise_pred(simulated, dt)
+                    loss, loss_components = self.loss_fn(simulated, target_window)
 
             if not torch.isfinite(simulated.real).all():
                 raise RuntimeError(
@@ -457,8 +364,6 @@ class Trainer:
 
             with torch.no_grad():
                 metrics = self._compute_batch_metrics(
-                    fc_pred.detach(),
-                    fc_targets,
                     simulated.detach(),
                     target_window,
                     loss,
@@ -473,9 +378,9 @@ class Trainer:
                 }
                 iterable.set_postfix(postfix)
 
-        metric_names = sorted(set(ALL_METRICS) | set(accumulator.sums.keys()))
-        metrics = {name: accumulator.average(name) for name in metric_names}
-        return metrics
+        all_keys = sorted(set(("loss",) + _EVAL_METRIC_KEYS + tuple(self.loss_fn.component_names))
+                          | set(accumulator.sums.keys()))
+        return {name: accumulator.average(name) for name in all_keys}
 
     def train_epoch(
         self,
@@ -513,7 +418,7 @@ class Trainer:
             train=False,
             verbose=verbose
         )
-    
+
     def train(
         self,
         train_loader: DataLoader,
@@ -525,27 +430,10 @@ class Trainer:
         save_best: bool = True,
         verbose: bool = True
     ) -> MetricsStore:
-        """
-        Full training loop.
-        
-        Args:
-            train_loader: Training data loader
-            val_loader: Validation data loader
-            n_epochs: Number of epochs
-            n_steps: Simulation steps per sample
-            dt: Time step
-            early_stopping_patience: Patience for early stopping
-            save_best: Whether to save best model
-            verbose: Print progress
-            
-        Returns:
-            MetricsStore with training history
-        """
-        # Store hyperparameters
+        """Full training loop."""
         self.metrics_store.set_hyperparameters({
             'lr': self.lr,
-            'loss_fn': self.loss_fn_name,
-            'loss_weights': self.loss_obj.weights,
+            'loss_weights': self.loss_fn.weights,
             'n_epochs': n_epochs,
             'n_steps': n_steps,
             'dt': dt,
@@ -556,12 +444,11 @@ class Trainer:
             'adjoint_method': self.adjoint_method,
             'model_class': self.model.__class__.__name__
         })
-        
+
         patience_counter = 0
         start_time = time.time()
-        
+
         for epoch in range(n_epochs):
-            # Train
             train_metrics = self._run_epoch(
                 loader=train_loader,
                 n_steps=n_steps,
@@ -572,8 +459,7 @@ class Trainer:
                 verbose=verbose
             )
             self.metrics_store.log_train(epoch, train_metrics)
-            
-            # Validate
+
             val_metrics = self._run_epoch(
                 loader=val_loader,
                 n_steps=n_steps,
@@ -584,27 +470,23 @@ class Trainer:
                 verbose=verbose
             )
             self.metrics_store.log_val(epoch, val_metrics)
-            
-            # Log to wandb
+
             self._log_wandb_epoch(train_metrics, val_metrics, epoch)
             self._log_wandb({"best_val_loss": self.best_val_loss}, epoch, prefix="best")
-            
-            # Check for best model
+
             if val_metrics['loss'] < self.best_val_loss:
                 self.best_val_loss = val_metrics['loss']
                 self.best_epoch = epoch
                 patience_counter = 0
-                
+
                 if save_best:
                     checkpoint_path = f"best_{self.experiment_name}.pt"
                     self.save_checkpoint(checkpoint_path)
-                    # Log best model as artifact to wandb
                     self._log_wandb_artifact(
                         str(self.checkpoint_dir / checkpoint_path),
                         name=f"best_model_{self.experiment_name}",
                         artifact_type="model"
                     )
-                    # Log best metrics
                     self._log_wandb({
                         "best_epoch": epoch,
                         "best_val_loss": self.best_val_loss,
@@ -612,8 +494,7 @@ class Trainer:
                     }, epoch, prefix="best")
             else:
                 patience_counter += 1
-            
-            # Print progress
+
             if verbose and epoch % 10 == 0:
                 elapsed = time.time() - start_time
                 print(f"Epoch {epoch:4d} | "
@@ -621,47 +502,34 @@ class Trainer:
                       f"Val Loss: {val_metrics['loss']:.4f} | "
                       f"Val fc_correlation: {val_metrics['fc_correlation']:.4f} | "
                       f"Time: {elapsed:.1f}s")
-            
-            # Early stopping
+
             if patience_counter >= early_stopping_patience:
                 if verbose:
                     print(f"Early stopping at epoch {epoch}")
-                # Log early stopping to wandb
                 self._log_wandb({"early_stopped": True, "final_epoch": epoch}, epoch)
                 break
-        
-        # Save final metrics
+
         self.metrics_store.save()
-        
-        # Log final summary to wandb
+
         if self.wandb_run is not None:
             wandb.summary["best_epoch"] = self.best_epoch
             wandb.summary["best_val_loss"] = self.best_val_loss
             wandb.summary["total_epochs"] = epoch + 1
-        
+
         return self.metrics_store
-    
+
     @torch.no_grad()
     def test(
         self,
         test_loader: DataLoader,
         n_steps: int = 100,
-        dt: float = 0.72
+        dt: float = 0.72,
+        label: str = "test",
     ) -> Dict[str, float]:
-        """
-        Evaluate on test set.
+        """Evaluate on test set.
 
-        Metrics are computed **per sample** (not per batch) so that the
-        reported standard deviations reflect true cross-sample variability
-        rather than the much smaller variability between batch-level means.
-        
-        Args:
-            test_loader: Test data loader
-            n_steps: Simulation steps
-            dt: Time step
-            
-        Returns:
-            Test metrics (mean and std across individual samples)
+        Metrics are computed **per sample** so that reported standard
+        deviations reflect true cross-sample variability.
         """
         accumulator = _MetricAccumulator()
         for batch in test_loader:
@@ -689,54 +557,47 @@ class Trainer:
                 adjoint_method=self.adjoint_method,
                 control=ctrl_arg,
             )
-            fc_pred = self.model.compute_fc(simulated)
+            simulated = self._denoise_pred(simulated, dt)
 
-            # --- per-sample metrics for proper std computation ---
+            # Per-sample metrics for proper std computation
             B = simulated.shape[0]
             for i in range(B):
-                sim_i = simulated[i : i + 1]          # (1, n_rois, T)
-                tgt_i = target_window[i : i + 1]      # (1, n_rois, T)
-                fc_p_i = fc_pred[i : i + 1]            # (1, n_rois, n_rois)
-                fc_t_i = fc_targets[i : i + 1]         # (1, n_rois, n_rois)
-
-                sample_metrics = compute_all_fc_metrics(fc_p_i, fc_t_i)
-                sample_metrics.update(compute_all_timeseries_metrics(sim_i, tgt_i))
-                sample_metrics.update(
-                    compute_dynamics_fit_metrics(
-                        sim_i, tgt_i, **self._dynamics_kwargs()
-                    )
-                )
+                sim_i = simulated[i : i + 1]
+                tgt_i = target_window[i : i + 1]
+                sample_metrics: Dict[str, float] = {}
+                for module in self.eval_metrics:
+                    sample_metrics.update(module.evaluate(sim_i, tgt_i))
                 accumulator.update(sample_metrics)
 
-            # Compute batch-level loss and loss components once (these are
-            # training-specific aggregates; per-sample breakdown is not needed).
-            loss, loss_components = self._compute_loss(
-                fc_pred, fc_targets, simulated, target_window,
-            )
+            # Batch-level loss and components
+            loss, loss_components = self.loss_fn(simulated, target_window)
             batch_loss_metrics: Dict[str, float] = {"loss": float(loss.item())}
             for name, value in loss_components.items():
                 batch_loss_metrics[name] = float(value.item())
             accumulator.update(batch_loss_metrics)
 
-        metric_names = sorted(set(ALL_METRICS) | set(accumulator.sums.keys()))
-        metrics = {name: accumulator.average(name) for name in metric_names}
-        metrics.update({f"{name}_std": accumulator.std(name) for name in metric_names})
-        self.metrics_store.log_test(metrics)
-        
-        # Log test metrics to wandb
-        self._log_wandb(metrics, step=0, prefix="test")
+        all_keys = sorted(
+            set(("loss",) + _EVAL_METRIC_KEYS + tuple(self.loss_fn.component_names))
+            | set(accumulator.sums.keys())
+        )
+        metrics = {name: accumulator.average(name) for name in all_keys}
+        metrics.update({f"{name}_std": accumulator.std(name) for name in all_keys})
+        if label == "test":
+            self.metrics_store.log_test(metrics)
+
+        self._log_wandb(metrics, step=0, prefix=label)
         if self.wandb_run is not None:
             for k, v in metrics.items():
-                wandb.summary[f"test_{k}"] = v
-        
+                wandb.summary[f"{label}_{k}"] = v
+
         return metrics
-    
+
     def finish(self):
         """Finish training and cleanup wandb."""
         if self.wandb_run is not None:
             wandb.finish()
             self.wandb_run = None
-    
+
     def save_checkpoint(self, filename: str):
         """Save model checkpoint."""
         filepath = self.checkpoint_dir / filename
@@ -748,4 +609,3 @@ class Trainer:
                 'best_epoch': self.best_epoch
             }
         )
-    

@@ -237,8 +237,8 @@ def _run_backprop(args: argparse.Namespace) -> dict[str, object]:
 
     print_section("STEP 1: Loading and Processing Data")
     dataset = load_dataset(cfg, device)
-    train_loader, val_loader, test_loader, window_size = create_windowed_loaders(dataset, cfg, device)
-    print(f"  window_size={window_size}  train={len(train_loader)}  val={len(val_loader)}  test={len(test_loader)}")
+    train_loader, val_loader, test_inter_loader, test_intra_loader, window_size = create_windowed_loaders(dataset, cfg, device)
+    print(f"  window_size={window_size}  train={len(train_loader)}  val={len(val_loader)}  test_inter={len(test_inter_loader)}  test_intra={len(test_intra_loader)}")
 
     print_section("STEP 2: Training Model (Backpropagation)")
     model = build_model(args.model, dataset, cfg, device, structural_connectivity=dataset.fc_mean,
@@ -251,18 +251,19 @@ def _run_backprop(args: argparse.Namespace) -> dict[str, object]:
     trainer = None
     final_metrics: dict[str, float] = {}
     checkpoint_path: Path | None = None
-    test_metrics: dict[str, float] = {}
+    test_inter_metrics: dict[str, float] = {}
+    test_intra_metrics: dict[str, float] = {}
     try:
-        trainer, _metrics_store, test_metrics = run_backprop_training(
+        trainer, _metrics_store, test_inter_metrics, test_intra_metrics = run_backprop_training(
             model=model,
             train_loader=train_loader,
             val_loader=val_loader,
-            test_loader=test_loader,
+            test_inter_loader=test_inter_loader,
+            test_intra_loader=test_intra_loader,
             window_size=window_size,
             cfg=cfg,
             device=device,
             experiment_name=cfg.experiment_name,
-            extra_dyn_kwargs={"ref_amplitude": ref_amplitude, "ref_omega": ref_omega},
         )
 
         print_section("STEP 3: Saving Model and Generating Figures")
@@ -314,7 +315,8 @@ def _run_backprop(args: argparse.Namespace) -> dict[str, object]:
     print("\n" + "=" * 60)
     print(f"{args.model.upper()} BACKPROP TRAINING COMPLETED SUCCESSFULLY")
     print("=" * 60)
-    print(f"\nTest metrics (mean ± std): {_format_metrics_mean_std(test_metrics)}")
+    print(f"\nTest inter-patient metrics (mean ± std): {_format_metrics_mean_std(test_inter_metrics)}")
+    print(f"Test intra-patient metrics (mean ± std): {_format_metrics_mean_std(test_intra_metrics)}")
     print(f"Final metrics: {final_metrics}")
     print(f"Model saved to: {checkpoint_path}")
     print(f"Figures saved to: {FIGURES_DIR / ds_tag}")
@@ -323,7 +325,8 @@ def _run_backprop(args: argparse.Namespace) -> dict[str, object]:
         "run": f"{args.model}_backprop",
         "model": model,
         "paper_metrics": final_metrics,
-        "test_metrics": _as_numeric(test_metrics),
+        "test_inter_metrics": _as_numeric(test_inter_metrics),
+        "test_intra_metrics": _as_numeric(test_intra_metrics),
         "checkpoint": str(checkpoint_path) if checkpoint_path is not None else None,
     }
 

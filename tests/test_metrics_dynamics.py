@@ -5,7 +5,7 @@ import unittest
 
 import torch
 
-from src.metrics.dynamics_metrics import compute_dynamics_fit_metrics
+from src.metrics import FCD, PhFCD, Metastability
 
 
 class TestDynamicsMetrics(unittest.TestCase):
@@ -17,13 +17,10 @@ class TestDynamicsMetrics(unittest.TestCase):
         ts_pred = torch.randn(2, 10, 240, dtype=torch.complex64)
         ts_targ = ts_pred + 0.05 * torch.randn(2, 10, 240, dtype=torch.complex64)
 
-        metrics = compute_dynamics_fit_metrics(
-            ts_pred,
-            ts_targ,
-            tr=0.72,
-            fcd_win_sec=60.0,
-            fcd_step_sec=2.0,
-        )
+        metrics = {}
+        metrics.update(FCD(tr=0.72, fcd_win_sec=60.0, fcd_step_sec=2.0).evaluate(ts_pred, ts_targ))
+        metrics.update(PhFCD().evaluate(ts_pred, ts_targ))
+        metrics.update(Metastability().evaluate(ts_pred, ts_targ))
 
         self.assertIn("fcd_ks", metrics)
         self.assertIn("phfcd_ks", metrics)
@@ -40,13 +37,10 @@ class TestDynamicsMetrics(unittest.TestCase):
         ts_pred = torch.randn(2, 10, 80, dtype=torch.complex64)
         ts_targ = torch.randn(2, 10, 80, dtype=torch.complex64)
 
-        metrics = compute_dynamics_fit_metrics(
-            ts_pred,
-            ts_targ,
-            tr=0.72,
-            fcd_win_sec=60.0,  # win_len ~83 > 80 -> FCD unavailable
-            fcd_step_sec=2.0,
-        )
+        metrics = {}
+        metrics.update(FCD(tr=0.72, fcd_win_sec=60.0, fcd_step_sec=2.0).evaluate(ts_pred, ts_targ))
+        metrics.update(PhFCD().evaluate(ts_pred, ts_targ))
+        metrics.update(Metastability().evaluate(ts_pred, ts_targ))
 
         self.assertTrue(math.isnan(metrics["fcd_ks"]))
         # phfcd_ks should still be valid (no window dependency)

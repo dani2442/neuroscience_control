@@ -82,15 +82,13 @@ class TrainingConfig:
     # Training settings
     n_epochs: int = 20
     lr: float = 1e-3
-    loss_fn: str = "combined"
-    loss_weight_fc: Optional[float] = None
-    loss_weight_fc_mse: Optional[float] = 1.0
-    loss_weight_l2: Optional[float] = 0.0
-    loss_weight_amplitude: Optional[float] = 1.0
-    loss_weight_omega: Optional[float] = 1.0
-    loss_weight_fcd: Optional[float] = 1.0
-    loss_weight_phfcd: Optional[float] = 1.0
-    loss_weight_metastability: Optional[float] = 1.0
+    loss_weights: dict = field(default_factory=lambda: {
+        "fc_correlation": 1.0, "fc_mse": 1.0, "l2": 1.0,
+        "amplitude": 1.0, "omega": 1.0, "power_spectrum": 1.0,
+        "temporal_correlation": 1.0, "autocorrelation": 1.0,
+        "fcd": 1.0, "phfcd": 1.0, "phase_fc_correlation": 1.0,
+        "metastability": 1.0,
+    })
     early_stopping_patience: int = 15
     n_steps: int = 50
     dt_min: Optional[float] = 0.05  # Fixed solver sub-step (passed as torchsde `dt`)

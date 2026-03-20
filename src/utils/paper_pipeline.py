@@ -366,7 +366,7 @@ def _load_models(hopf_checkpoint: str | None, nsde_checkpoint: str | None, n_roi
 
 def _evaluate_models(models: dict, dataset, target_fc, n_timepoints: int, n_simulations: int = 10):
     """Evaluate all models and compute FC metrics."""
-    from src.metrics import compute_all_fc_metrics
+    from src.metrics import fc_correlation, fc_mse
 
     print_section("Evaluating Models")
     all_results: dict[str, dict[str, float]] = {}
@@ -380,9 +380,8 @@ def _evaluate_models(models: dict, dataset, target_fc, n_timepoints: int, n_simu
             fc_pred = model.compute_fc(ts)
             all_fc_corrs, all_fc_mses = [], []
             for i in range(n_eval):
-                m = compute_all_fc_metrics(fc_pred[i:i+1], target_fc.unsqueeze(0))
-                all_fc_corrs.append(m["fc_correlation"])
-                all_fc_mses.append(m["fc_mse"])
+                all_fc_corrs.append(fc_correlation(fc_pred[i:i+1], target_fc.unsqueeze(0)).item())
+                all_fc_mses.append(fc_mse(fc_pred[i:i+1], target_fc.unsqueeze(0)).item())
 
         results = {
             "fc_correlation": float(np.mean(all_fc_corrs)),

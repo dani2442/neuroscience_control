@@ -7,7 +7,7 @@ from matplotlib.gridspec import GridSpec
 from typing import Dict, List, Optional, Tuple, Any
 from pathlib import Path
 
-from ..metrics import fc_correlation, compute_all_fc_metrics
+from ..metrics import fc_correlation, fc_mse
 from ..metrics.metrics_store import MetricsStore
 
 # Default figures directory for paper
@@ -629,9 +629,12 @@ def create_comparison_report(
         im = ax_fc.imshow(fc_pred_np, cmap='coolwarm', vmin=-1, vmax=1)
         
         # Compute metrics
-        metrics = compute_all_fc_metrics(fc_pred, target_fc.unsqueeze(0))
+        metrics = {
+            "fc_correlation": fc_correlation(fc_pred, target_fc.unsqueeze(0)).item(),
+            "fc_mse": fc_mse(fc_pred, target_fc.unsqueeze(0)).item(),
+        }
         all_metrics[name] = metrics
-        
+
         ax_fc.set_title(f'{name}\n(r={metrics["fc_correlation"]:.3f})')
         plt.colorbar(im, ax=ax_fc, fraction=0.046)
         

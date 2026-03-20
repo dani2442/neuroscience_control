@@ -1,94 +1,109 @@
-"""Smoke tests for script-style metric dictionaries."""
+"""Smoke tests for metric nn.Module classes."""
 
 import unittest
 
 import torch
 
 from src.metrics import (
-    compute_all_fc_metrics,
-    compute_all_timeseries_metrics,
-    compute_dynamics_fit_metrics,
+    FCCorrelation, FCMSE,
+    PowerSpectrumDistance, TemporalCorrelation, AutocorrelationDistance,
+    FCD, PhFCD, Metastability, PhaseFC,
 )
 
 
-def _compute_fc(timeseries: torch.Tensor) -> torch.Tensor:
-    ts = timeseries.real if torch.is_complex(timeseries) else timeseries
-    t = ts.shape[2]
-    ts_c = ts - ts.mean(dim=2, keepdim=True)
-    ts_n = ts_c / (ts_c.std(dim=2, keepdim=True) + 1e-8)
-    return torch.bmm(ts_n, ts_n.transpose(1, 2)) / (t - 1)
-
-
-class TestScriptMetricSmoke(unittest.TestCase):
+class TestMetricModules(unittest.TestCase):
     def setUp(self) -> None:
         torch.manual_seed(23)
+        self.n_rois = 12
+        self.n_time = 200
+        self.ts_pred = torch.randn(6, self.n_rois, self.n_time, dtype=torch.complex64)
+        self.ts_target = torch.randn(6, self.n_rois, self.n_time, dtype=torch.complex64)
 
-    def _final_metrics_like_train_scripts(self, n_paths: int) -> dict[str, float]:
-        n_rois, n_time = 12, 200
-        simulated_ts = torch.randn(n_paths, n_rois, n_time, dtype=torch.complex64)
-        target_ts = torch.randn(n_paths, n_rois, n_time, dtype=torch.complex64)
-        target_fc = _compute_fc(target_ts).mean(dim=0)
-        simulated_fc_mean = _compute_fc(simulated_ts).mean(dim=0)
+    def _check_evaluate_keys(self, module, expected_keys):
+        result = module.evaluate(self.ts_pred, self.ts_target)
+        self.assertEqual(set(result.keys()), set(expected_keys))
 
-        metrics = compute_all_fc_metrics(simulated_fc_mean.unsqueeze(0), target_fc.unsqueeze(0))
-        metrics.update(
-            compute_dynamics_fit_metrics(
-                simulated_ts,
-                target_ts,
-                tr=0.72,
-                fcd_win_sec=60.0,
-                fcd_step_sec=2.0,
-            )
+    def test_fc_correlation_keys(self):
+        self._check_evaluate_keys(FCCorrelation(), {"fc_correlation"})
+
+    def test_fc_mse_keys(self):
+        self._check_evaluate_keys(FCMSE(), {"fc_mse"})
+
+    def test_power_spectrum_distance_keys(self):
+        self._check_evaluate_keys(PowerSpectrumDistance(), {"power_spectrum_distance"})
+
+    def test_temporal_correlation_keys(self):
+        self._check_evaluate_keys(TemporalCorrelation(), {"temporal_correlation"})
+
+    def test_autocorrelation_distance_keys(self):
+        self._check_evaluate_keys(AutocorrelationDistance(), {"autocorr_distance"})
+
+    def test_fcd_keys(self):
+        self._check_evaluate_keys(
+            FCD(tr=0.72, fcd_win_sec=60.0, fcd_step_sec=2.0),
+            {"fcd_mse", "fcd_ks"},
         )
-        return metrics
 
-    def test_train_hopf_final_metric_keys(self) -> None:
-        metrics = self._final_metrics_like_train_scripts(n_paths=6)
+    def test_phfcd_keys(self):
+        self._check_evaluate_keys(PhFCD(), {"phfcd_mse", "phfcd_ks"})
+
+    def test_metastability_keys(self):
+        self._check_evaluate_keys(Metastability(), {"metastability_diff"})
+
+    def test_phase_fc_keys(self):
+        self._check_evaluate_keys(PhaseFC(), {"phase_fc_correlation"})
+
+    def test_fc_and_dynamics_combined(self):
+        """Combined FC + dynamics evaluate keys match expected set (like train scripts)."""
+        metrics = {}
+        metrics.update(FCCorrelation().evaluate(self.ts_pred, self.ts_target))
+        metrics.update(FCMSE().evaluate(self.ts_pred, self.ts_target))
+        metrics.update(FCD(tr=0.72, fcd_win_sec=60.0, fcd_step_sec=2.0).evaluate(
+            self.ts_pred, self.ts_target
+        ))
+        metrics.update(PhFCD().evaluate(self.ts_pred, self.ts_target))
+        metrics.update(PhaseFC().evaluate(self.ts_pred, self.ts_target))
+        metrics.update(Metastability().evaluate(self.ts_pred, self.ts_target))
         self.assertEqual(
             set(metrics.keys()),
-            {"fc_correlation", "fc_mse", "fcd_ks", "phfcd_ks", "phase_fc_correlation", "metastability_diff"},
+            {"fc_correlation", "fc_mse", "fcd_ks", "fcd_mse",
+             "phfcd_ks", "phfcd_mse", "phase_fc_correlation", "metastability_diff"},
         )
 
-    def test_train_nsde_finetune_final_metric_keys(self) -> None:
-        metrics = self._final_metrics_like_train_scripts(n_paths=5)
-        self.assertEqual(
-            set(metrics.keys()),
-            {"fc_correlation", "fc_mse", "fcd_ks", "phfcd_ks", "phase_fc_correlation", "metastability_diff"},
-        )
-
-    def test_checkpoint_eval_per_run_metric_keys(self) -> None:
-        n_rois, n_time = 10, 200
-        sim_run = torch.randn(1, n_rois, n_time, dtype=torch.complex64)
-        real_ts = torch.randn(1, n_rois, n_time, dtype=torch.complex64)
-        real_fc_single = _compute_fc(real_ts)
-        sim_fc_run = _compute_fc(sim_run)
-
-        metrics = {
-            **compute_all_fc_metrics(sim_fc_run, real_fc_single),
-            **compute_all_timeseries_metrics(sim_run, real_ts),
-            **compute_dynamics_fit_metrics(
-                sim_run,
-                real_ts,
-                tr=0.72,
-                fcd_win_sec=60.0,
-                fcd_step_sec=2.0,
-            ),
-        }
-
+    def test_all_eval_metrics_combined(self):
+        """All evaluation metrics combined (like checkpoint eval scripts)."""
+        ts_pred = torch.randn(1, 10, self.n_time, dtype=torch.complex64)
+        ts_target = torch.randn(1, 10, self.n_time, dtype=torch.complex64)
+        metrics = {}
+        for module in [
+            FCCorrelation(), FCMSE(),
+            PowerSpectrumDistance(), TemporalCorrelation(), AutocorrelationDistance(),
+            FCD(tr=0.72, fcd_win_sec=60.0, fcd_step_sec=2.0),
+            PhFCD(), Metastability(), PhaseFC(),
+        ]:
+            metrics.update(module.evaluate(ts_pred, ts_target))
         self.assertEqual(
             set(metrics.keys()),
             {
-                "fc_correlation",
-                "fc_mse",
-                "power_spectrum_distance",
-                "temporal_correlation",
-                "autocorr_distance",
-                "fcd_ks",
-                "phfcd_ks",
-                "phase_fc_correlation",
-                "metastability_diff",
+                "fc_correlation", "fc_mse",
+                "power_spectrum_distance", "temporal_correlation", "autocorr_distance",
+                "fcd_ks", "fcd_mse", "phfcd_ks", "phfcd_mse",
+                "phase_fc_correlation", "metastability_diff",
             },
         )
+
+    def test_forward_returns_scalar_tensor(self):
+        """forward() returns a differentiable scalar tensor for each module."""
+        modules = [
+            FCCorrelation(), FCMSE(),
+            PowerSpectrumDistance(), TemporalCorrelation(), AutocorrelationDistance(),
+            FCD(tr=0.72, fcd_win_sec=60.0, fcd_step_sec=2.0),
+            PhFCD(), Metastability(), PhaseFC(),
+        ]
+        for module in modules:
+            out = module(self.ts_pred, self.ts_target)
+            self.assertEqual(out.ndim, 0, f"{module.__class__.__name__} forward() should return scalar")
+            self.assertFalse(torch.isnan(out), f"{module.__class__.__name__} forward() returned NaN")
 
 
 if __name__ == "__main__":

@@ -282,11 +282,8 @@ def evaluate_hopf_model(
     subject_indices: torch.Tensor | None = None,
 ) -> dict[str, float]:
     """Evaluate FC/FCD/metastability for a trained Hopf model."""
-    from ..metrics import (
-        compute_all_fc_metrics,
-        compute_all_timeseries_metrics,
-        compute_dynamics_fit_metrics,
-    )
+    from ..metrics import fc_correlation, fc_mse, FCD, PhFCD, Metastability, PhaseFC
+    from ..metrics import PowerSpectrumDistance, TemporalCorrelation, AutocorrelationDistance
 
     if subject_indices is None:
         subject_indices = torch.arange(dataset.n_subjects, device=dataset.timeseries.device)
@@ -314,18 +311,16 @@ def evaluate_hopf_model(
         hopf_fc = hopf_model.compute_fc(hopf_ts)
         hopf_fc_mean = hopf_fc.mean(dim=0)
 
-    metrics = compute_all_fc_metrics(hopf_fc_mean.unsqueeze(0), target_fc.unsqueeze(0))
+    metrics: dict[str, float] = {
+        "fc_correlation": fc_correlation(hopf_fc_mean.unsqueeze(0), target_fc.unsqueeze(0)).item(),
+        "fc_mse": fc_mse(hopf_fc_mean.unsqueeze(0), target_fc.unsqueeze(0)).item(),
+    }
     target_ts = dataset.timeseries[eval_indices[: hopf_ts.shape[0]], :, :n_timepoints]
-    dyn_metrics = compute_dynamics_fit_metrics(
-        hopf_ts,
-        target_ts,
-        tr=cfg.tr,
-        fcd_win_sec=cfg.fcd_win_sec,
-        fcd_step_sec=cfg.fcd_step_sec,
-    )
-    ts_metrics = compute_all_timeseries_metrics(hopf_ts, target_ts)
-    metrics.update(ts_metrics)
-    metrics.update(dyn_metrics)
+    for module in [PowerSpectrumDistance(), TemporalCorrelation(), AutocorrelationDistance()]:
+        metrics.update(module.evaluate(hopf_ts, target_ts))
+    fcd_module = FCD(tr=cfg.tr, fcd_win_sec=cfg.fcd_win_sec, fcd_step_sec=cfg.fcd_step_sec)
+    for module in [fcd_module, PhFCD(), Metastability(), PhaseFC()]:
+        metrics.update(module.evaluate(hopf_ts, target_ts))
     return metrics
 
 
@@ -392,11 +387,12 @@ def evaluate_model_loader_metrics(
     Returns:
         Dictionary of metric_name → mean (and optionally metric_name_std → std)
     """
-    from ..metrics import (
-        compute_all_fc_metrics,
-        compute_all_timeseries_metrics,
-        compute_dynamics_fit_metrics,
-    )
+    from ..metrics import fc_correlation, fc_mse, FCD, PhFCD, Metastability, PhaseFC
+    from ..metrics import PowerSpectrumDistance, TemporalCorrelation, AutocorrelationDistance
+
+    _fcd_module = FCD(tr=cfg.tr, fcd_win_sec=cfg.fcd_win_sec, fcd_step_sec=cfg.fcd_step_sec)
+    _ts_modules = [PowerSpectrumDistance(), TemporalCorrelation(), AutocorrelationDistance()]
+    _dyn_modules = [_fcd_module, PhFCD(), Metastability(), PhaseFC()]
 
     sums: dict[str, float] = {}
     counts: dict[str, int] = {}
@@ -433,16 +429,12 @@ def evaluate_model_loader_metrics(
                     fc_p_i = fc_pred[i : i + 1]
                     fc_t_i = fc_targets[i : i + 1]
 
-                    sample_metrics = compute_all_fc_metrics(fc_p_i, fc_t_i)
-                    sample_metrics.update(compute_all_timeseries_metrics(sim_i, tgt_i))
-                    sample_metrics.update(
-                        compute_dynamics_fit_metrics(
-                            sim_i, tgt_i,
-                            tr=cfg.tr,
-                            fcd_win_sec=cfg.fcd_win_sec,
-                            fcd_step_sec=cfg.fcd_step_sec,
-                        )
-                    )
+                    sample_metrics = {
+                        "fc_correlation": fc_correlation(fc_p_i, fc_t_i).item(),
+                        "fc_mse": fc_mse(fc_p_i, fc_t_i).item(),
+                    }
+                    for module in _ts_modules + _dyn_modules:
+                        sample_metrics.update(module.evaluate(sim_i, tgt_i))
                     for key, value in sample_metrics.items():
                         numeric = to_float_metric(value)
                         if numeric is None or math.isnan(numeric):
@@ -454,17 +446,12 @@ def evaluate_model_loader_metrics(
                         sample_values[key].append(numeric)
             else:
                 # Batch-level aggregate (faster, no std needed)
-                batch_metrics = compute_all_fc_metrics(fc_pred, fc_targets)
-                batch_metrics.update(compute_all_timeseries_metrics(simulated, target_window))
-                batch_metrics.update(
-                    compute_dynamics_fit_metrics(
-                        simulated,
-                        target_window,
-                        tr=cfg.tr,
-                        fcd_win_sec=cfg.fcd_win_sec,
-                        fcd_step_sec=cfg.fcd_step_sec,
-                    )
-                )
+                batch_metrics = {
+                    "fc_correlation": fc_correlation(fc_pred, fc_targets).item(),
+                    "fc_mse": fc_mse(fc_pred, fc_targets).item(),
+                }
+                for module in _ts_modules + _dyn_modules:
+                    batch_metrics.update(module.evaluate(simulated, target_window))
                 for key, value in batch_metrics.items():
                     numeric = to_float_metric(value)
                     if numeric is None or math.isnan(numeric):

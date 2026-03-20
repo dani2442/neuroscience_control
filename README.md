@@ -219,16 +219,41 @@ timeseries = model.forward(
 
 ## Metrics
 
-All evaluation metrics are defined in `EVAL_METRIC_KEYS` and reported by every training and evaluation script. Metrics operate on complex analytic signals produced by the preprocessing pipeline (z-score → optional bandpass → Hilbert transform).
+Each metric and differentiable loss is a `nn.Module` subclass living in `src/metrics/`.
+All classes accept `(ts_pred, ts_target)` complex analytic signals `(batch, n_rois, T)`.
 
-### Evaluation Metrics
+- `forward(ts_pred, ts_target)` → differentiable scalar loss tensor (for training)
+- `evaluate(ts_pred, ts_target)` → `dict[str, float]` (for logging)
 
-| Metric | Range | Direction | Description |
-|--------|-------|-----------|-------------|
+### Metric / Loss Classes
+
+| Class | Module | `forward()` loss | `evaluate()` keys |
+|-------|--------|-----------------|-------------------|
+| `FCCorrelation` | `src/metrics/fc_metrics.py` | `1 − FC correlation` | `fc_correlation` |
+| `FCMSE` | `src/metrics/fc_metrics.py` | FC MSE | `fc_mse` |
+| `PowerSpectrumDistance` | `src/metrics/timeseries_metrics.py` | power spectrum MSE | `power_spectrum_distance` |
+| `TemporalCorrelation` | `src/metrics/timeseries_metrics.py` | `1 − temporal correlation` | `temporal_correlation` |
+| `AutocorrelationDistance` | `src/metrics/timeseries_metrics.py` | autocorrelation MSE | `autocorr_distance` |
+| `FCD(tr, fcd_win_sec, fcd_step_sec)` | `src/metrics/dynamics_metrics.py` | FCD MSE (surrogate) | `fcd_mse`, `fcd_ks` |
+| `PhFCD` | `src/metrics/dynamics_metrics.py` | phFCD MSE (surrogate) | `phfcd_mse`, `phfcd_ks` |
+| `Metastability` | `src/metrics/dynamics_metrics.py` | metastability L1 diff | `metastability_diff` |
+| `PhaseFC` | `src/metrics/dynamics_metrics.py` | `1 − phase-coherence FC corr` | `phase_fc_correlation` |
+| `L2Timeseries` | `src/training/losses.py` | L² timeseries error | — |
+| `AmplitudeLoss(ref_amplitude, tr)` | `src/training/losses.py` | amplitude L² | — |
+| `OmegaLoss(ref_omega, tr)` | `src/training/losses.py` | frequency L² | — |
+
+> **Note:** `FCD` and `PhFCD` use differentiable MSE surrogates for training; the non-differentiable KS distances are only computed in `evaluate()`.
+
+### Evaluation Metrics (evaluate() keys)
+
+| Key | Range | Direction | Description |
+|-----|-------|-----------|-------------|
 | `fc_correlation` | $[-1, 1]$ | Higher ↑ | Pearson correlation of upper-triangular FC |
 | `fc_mse` | $[0, \infty)$ | Lower ↓ | MSE of upper-triangular FC |
 | `fcd_ks` | $[0, 1]$ | Lower ↓ | KS distance between FCD distributions (sliding-window) |
+| `fcd_mse` | $[0, \infty)$ | Lower ↓ | MSE between FCD matrices |
 | `phfcd_ks` | $[0, 1]$ | Lower ↓ | KS distance between phase-FCD distributions |
+| `phfcd_mse` | $[0, \infty)$ | Lower ↓ | MSE between phFCD matrices |
 | `phase_fc_correlation` | $[-1, 1]$ | Higher ↑ | Pearson correlation of phase-coherence FC |
 | `metastability_diff` | $[0, \infty)$ | Lower ↓ | Absolute difference in metastability (Kuramoto) |
 | `temporal_correlation` | $[-1, 1]$ | Higher ↑ | Mean per-ROI Pearson correlation over time |
@@ -253,25 +278,28 @@ instead of windowed Pearson FC. The phFCD matrix is built from cosine similarity
 
 $$R(t) = \left\lvert \frac{1}{N} \sum_{n=1}^{N} e^{i\phi_n(t)} \right\rvert, \qquad \text{Metastability} = \text{std}_t\bigl(R(t)\bigr)$$
 
-### Loss Presets
+### Composite Loss
 
-Losses are composable via `CompositeLoss`. Preset names can be passed to the training config's `loss_fn` field:
-
-| Preset | Terms (default weights) |
-|--------|------------------------|
-| `mse` | `fc_mse: 1.0` |
-| `correlation` | `fc_correlation: 1.0` |
-| `combined` | `fc_mse: 1.0`, `fc_correlation: 0.5` |
-| `fc_fcd_meta` | `fc_correlation: 1.0`, `fcd: 1.0`, `metastability: 1.0` |
-| `fc_phfcd_meta` | `fc_correlation: 1.0`, `phfcd: 1.0`, `metastability: 1.0` |
-| `full` | `fc_correlation: 1.0`, `l2: 1.0`, `amplitude: 1.0`, `omega: 1.0`, `fcd: 1.0`, `phfcd: 1.0`, `metastability: 1.0` |
-| `custom` | Requires explicit `weight_overrides` dict |
+Losses are configured via `loss_weights` in `TrainingConfig` — a plain dict mapping term names to scalar weights. Zero-weight terms are never computed. The `CompositeLoss` nn.Module assembles the active terms automatically.
 
 ```python
-from neuroscience_control.training import build_loss
+from src.training.losses import CompositeLoss
 
-loss_fn = build_loss("fc_phfcd_meta", dyn_kwargs={"tr": 0.72, "fcd_win_sec": 30.0})
-total, components = loss_fn(fc_pred, fc_target, ts_pred, ts_target)
+# Explicit weight dict — no preset lookup needed
+loss_fn = CompositeLoss(
+    weights={"fc_correlation": 1.0, "phfcd": 1.0, "metastability": 1.0},
+    tr=0.72, fcd_win_sec=30.0, fcd_step_sec=2.0,
+)
+total, components = loss_fn(ts_pred, ts_target)
+# components: {"loss_fc_correlation": ..., "loss_phfcd": ..., "loss_metastability": ...}
+```
+
+Available term names: `fc_correlation`, `fc_mse`, `l2`, `amplitude`, `omega`, `power_spectrum`, `temporal_correlation`, `autocorrelation`, `fcd`, `phfcd`, `phase_fc_correlation`, `metastability`.
+
+Configure via `TrainingConfig`:
+
+```python
+cfg = HopfConfig(loss_weights={"fc_correlation": 1.0, "phfcd": 1.0, "metastability": 1.0})
 ```
 
 ---
@@ -385,7 +413,7 @@ Use the public namespace in new code:
 
 ```python
 from neuroscience_control.models import CoupledHopfModel, NeuralSDE
-from neuroscience_control.metrics import compute_all_fc_metrics
+from neuroscience_control.metrics import FCCorrelation, FCMSE, FCD, PhFCD
 from neuroscience_control.training import Trainer, TrainingConfig
 ```
 
@@ -412,16 +440,16 @@ neuroscience_control/
 │   │   ├── neural_sde.py          # Neural SDE (drift + diffusion MLPs)
 │   │   ├── factory.py             # build_model() dispatcher
 │   │   └── checkpointing.py       # Checkpoint loading with version migration
-│   ├── metrics/                   # Evaluation metrics
-│   │   ├── fc_metrics.py          # FC correlation, MSE
-│   │   ├── dynamics_metrics.py    # FCD, phFCD, metastability, KS distance
-│   │   ├── timeseries_metrics.py  # Power spectrum, autocorrelation, temporal corr.
+│   ├── metrics/                   # nn.Module metric/loss classes
+│   │   ├── fc_metrics.py          # FCCorrelation, FCMSE
+│   │   ├── dynamics_metrics.py    # FCD, PhFCD, Metastability, PhaseFC
+│   │   ├── timeseries_metrics.py  # PowerSpectrumDistance, TemporalCorrelation, AutocorrelationDistance
 │   │   └── metrics_store.py       # MetricsStore JSON-backed accumulator
 │   ├── training/                  # Training utilities
 │   │   ├── trainer.py             # Backprop trainer (train/val/test loops)
 │   │   ├── grid_search.py         # Hopf grid search over (G, a, κ)
 │   │   ├── fine_tuning.py         # Fine-tuning pipeline
-│   │   ├── losses.py              # CompositeLoss, build_loss(), LOSS_REGISTRY
+│   │   ├── losses.py              # CompositeLoss, L2Timeseries, AmplitudeLoss, OmegaLoss
 │   │   ├── backprop.py            # run_backprop_training() orchestration
 │   │   └── config.py              # TrainingConfig / HopfConfig / NeuralSDEConfig
 │   └── utils/                     # Visualization, evaluation, runtime

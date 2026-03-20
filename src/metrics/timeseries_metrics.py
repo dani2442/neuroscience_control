@@ -8,67 +8,73 @@ approximation to :math:`\\frac{1}{T}\\int_0^T f(t)\\,dt` for uniform
 sampling, then averaged over batch and ROIs.
 """
 
-from typing import Dict
-
 import torch
+import torch.nn as nn
 
 from ._utils import align_batch_and_time, to_real
 
 
-def power_spectrum_distance(
-    ts_pred: torch.Tensor,
-    ts_target: torch.Tensor,
-) -> torch.Tensor:
-    """MSE between normalised power spectra.
+# ---------------------------------------------------------------------------
+# nn.Module metric/loss classes
+# ---------------------------------------------------------------------------
 
-    Result is averaged over batch and ROIs.
+class PowerSpectrumDistance(nn.Module):
+    """MSE between normalised power spectra. Metric and loss are the same value.
+
+    ``forward()`` returns the loss. ``evaluate()`` returns ``{"power_spectrum_distance": float}``.
     """
-    pred, target, _, _ = align_batch_and_time(ts_pred, ts_target)
-    pred, target = to_real(pred), to_real(target)
 
-    pp = torch.abs(torch.fft.rfft(pred, dim=2)) ** 2
-    pt = torch.abs(torch.fft.rfft(target, dim=2)) ** 2
-    pp = pp / (pp.sum(dim=2, keepdim=True) + 1e-8)
-    pt = pt / (pt.sum(dim=2, keepdim=True) + 1e-8)
-    return ((pp - pt) ** 2).mean()
+    def forward(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> torch.Tensor:
+        pred, target, _, _ = align_batch_and_time(ts_pred, ts_target)
+        pred, target = to_real(pred), to_real(target)
 
+        pp = torch.abs(torch.fft.rfft(pred, dim=2)) ** 2
+        pt = torch.abs(torch.fft.rfft(target, dim=2)) ** 2
+        pp = pp / (pp.sum(dim=2, keepdim=True) + 1e-8)
+        pt = pt / (pt.sum(dim=2, keepdim=True) + 1e-8)
+        return ((pp - pt) ** 2).mean()
 
-def temporal_correlation(
-    ts_pred: torch.Tensor,
-    ts_target: torch.Tensor,
-) -> torch.Tensor:
-    """Mean per-ROI Pearson correlation over time, averaged over batch."""
-    pred, target, _, _ = align_batch_and_time(ts_pred, ts_target)
-    pred, target = to_real(pred), to_real(target)
-
-    p = pred - pred.mean(dim=2, keepdim=True)
-    t = target - target.mean(dim=2, keepdim=True)
-    num = (p * t).sum(dim=2)
-    den = torch.sqrt((p ** 2).sum(dim=2) * (t ** 2).sum(dim=2)) + 1e-8
-    return (num / den).mean()
+    @torch.no_grad()
+    def evaluate(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> dict:
+        return {"power_spectrum_distance": self(ts_pred, ts_target).item()}
 
 
-def autocorrelation_distance(
-    ts_pred: torch.Tensor,
-    ts_target: torch.Tensor,
-    max_lag: int = 50,
-) -> torch.Tensor:
-    """MSE between autocorrelation functions up to *max_lag*."""
-    pred, target, _, _ = align_batch_and_time(ts_pred, ts_target)
-    pred, target = to_real(pred), to_real(target)
-    return ((_autocorr(pred, max_lag) - _autocorr(target, max_lag)) ** 2).mean()
+class TemporalCorrelation(nn.Module):
+    """1 − mean per-ROI Pearson temporal correlation.
+
+    ``forward()`` returns the loss (lower is better).
+    ``evaluate()`` returns ``{"temporal_correlation": float}`` (higher is better).
+    """
+
+    def forward(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> torch.Tensor:
+        pred, target, _, _ = align_batch_and_time(ts_pred, ts_target)
+        pred, target = to_real(pred), to_real(target)
+
+        p = pred - pred.mean(dim=2, keepdim=True)
+        t = target - target.mean(dim=2, keepdim=True)
+        num = (p * t).sum(dim=2)
+        den = torch.sqrt((p ** 2).sum(dim=2) * (t ** 2).sum(dim=2)) + 1e-8
+        return 1.0 - (num / den).mean()
+
+    @torch.no_grad()
+    def evaluate(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> dict:
+        return {"temporal_correlation": 1.0 - self(ts_pred, ts_target).item()}
 
 
-def compute_all_timeseries_metrics(
-    ts_pred: torch.Tensor,
-    ts_target: torch.Tensor,
-) -> Dict[str, float]:
-    """Compute all timeseries metrics. Returns dict of name -> value."""
-    return {
-        "power_spectrum_distance": power_spectrum_distance(ts_pred, ts_target).item(),
-        "temporal_correlation": temporal_correlation(ts_pred, ts_target).item(),
-        "autocorr_distance": autocorrelation_distance(ts_pred, ts_target).item(),
-    }
+class AutocorrelationDistance(nn.Module):
+    """MSE between autocorrelation functions. Metric and loss are the same value.
+
+    ``forward()`` returns the loss. ``evaluate()`` returns ``{"autocorr_distance": float}``.
+    """
+
+    def forward(self, ts_pred: torch.Tensor, ts_target: torch.Tensor, max_lag: int = 50) -> torch.Tensor:
+        pred, target, _, _ = align_batch_and_time(ts_pred, ts_target)
+        pred, target = to_real(pred), to_real(target)
+        return (_autocorr(pred, max_lag) - _autocorr(target, max_lag)).pow(2).mean()
+
+    @torch.no_grad()
+    def evaluate(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> dict:
+        return {"autocorr_distance": self(ts_pred, ts_target).item()}
 
 
 # ---------------------------------------------------------------------------

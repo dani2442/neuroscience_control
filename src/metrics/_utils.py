@@ -70,14 +70,21 @@ def zscore(x: torch.Tensor, dim: int = 0, eps: float = 1e-12) -> torch.Tensor:
 # ---------------------------------------------------------------------------
 
 def upper_tri_vec(M: torch.Tensor, k: int = 1) -> torch.Tensor:
-    """Extract the upper-triangular elements of a 2-D matrix as a flat vector.
+    """Extract the upper-triangular elements as a flat vector.
+
+    Handles both 2-D ``(N, N)`` and batched 3-D ``(B, N, N)`` inputs.
 
     Args:
-        M: ``(n, n)`` matrix.
+        M: ``(N, N)`` or ``(B, N, N)`` matrix.
         k: Diagonal offset (default ``1`` excludes the main diagonal).
+
+    Returns:
+        ``(M_elems,)`` for 2-D input or ``(B, M_elems)`` for 3-D input.
     """
     n = M.shape[-1]
     if n < 2:
         return torch.empty(0, device=M.device, dtype=M.dtype)
     idx = torch.triu_indices(n, n, offset=k, device=M.device)
-    return M[idx[0], idx[1]]
+    if M.dim() == 2:
+        return M[idx[0], idx[1]]
+    return M[:, idx[0], idx[1]]  # batched (B, N, N) -> (B, M_elems)

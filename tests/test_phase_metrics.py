@@ -11,10 +11,8 @@ from src.metrics.dynamics_metrics import (
     phfcd_distribution,
     phfcd_matrix,
 )
-from src.metrics.fc_metrics import (
-    compute_fc_from_timeseries_and_compare,
-    compute_static_fc,
-)
+from src.metrics.fc_metrics import compute_static_fc
+from src.metrics import FCCorrelation, FCMSE, PhFCD
 
 
 class TestPhaseCoherence(unittest.TestCase):
@@ -132,15 +130,10 @@ class TestPhFCDKSD(unittest.TestCase):
         self.assertLessEqual(ksd.item(), 1.0)
 
     def test_compute_dynamics_includes_phfcd_ks(self) -> None:
-        """Integration: compute_dynamics_fit_metrics returns phfcd_ks."""
-        from src.metrics.dynamics_metrics import compute_dynamics_fit_metrics
-
+        """Integration: PhFCD.evaluate returns phfcd_ks."""
         ts_pred = torch.randn(2, 8, 200, dtype=torch.complex64)
         ts_targ = torch.randn(2, 8, 200, dtype=torch.complex64)
-        metrics = compute_dynamics_fit_metrics(
-            ts_pred, ts_targ, tr=0.72,
-            fcd_win_sec=60.0, fcd_step_sec=2.0,
-        )
+        metrics = PhFCD().evaluate(ts_pred, ts_targ)
         self.assertIn("phfcd_ks", metrics)
         self.assertFalse(math.isnan(metrics["phfcd_ks"]))
         self.assertGreaterEqual(metrics["phfcd_ks"], 0.0)
@@ -180,7 +173,7 @@ class TestStaticFC(unittest.TestCase):
     def test_fc_from_timeseries_and_compare(self) -> None:
         ts1 = torch.randn(3, 8, 150, dtype=torch.complex64)
         ts2 = torch.randn(3, 8, 150, dtype=torch.complex64)
-        metrics = compute_fc_from_timeseries_and_compare(ts1, ts2)
+        metrics = {**FCCorrelation().evaluate(ts1, ts2), **FCMSE().evaluate(ts1, ts2)}
         self.assertIn("fc_correlation", metrics)
         self.assertIn("fc_mse", metrics)
         self.assertIsInstance(metrics["fc_correlation"], float)

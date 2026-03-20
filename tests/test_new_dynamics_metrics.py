@@ -17,8 +17,8 @@ from src.metrics.dynamics_metrics import (
     phase_coherence_fc_correlation,
     symmetric_kl_divergence,
     tpm_entropy_distance,
-    compute_dynamics_fit_metrics,
 )
+from src.metrics import PhaseFC
 
 
 # ---------------------------------------------------------------------------
@@ -98,18 +98,18 @@ class TestPhaseCoherenceFCCorrelation(unittest.TestCase):
     def test_identical_signals_give_corr_one(self) -> None:
         ts = torch.randn(2, 8, 150, dtype=torch.complex64)
         corr = phase_coherence_fc_correlation(ts, ts)
-        self.assertAlmostEqual(corr, 1.0, places=4)
+        self.assertAlmostEqual(corr.item(), 1.0, places=4)
 
-    def test_returns_float(self) -> None:
+    def test_returns_tensor(self) -> None:
         ts1 = torch.randn(2, 6, 100, dtype=torch.complex64)
         ts2 = torch.randn(2, 6, 100, dtype=torch.complex64)
         corr = phase_coherence_fc_correlation(ts1, ts2)
-        self.assertIsInstance(corr, float)
+        self.assertIsInstance(corr, torch.Tensor)
 
-    def test_in_dynamics_fit_metrics(self) -> None:
-        """compute_dynamics_fit_metrics should include phase_fc_correlation."""
+    def test_in_phase_fc_evaluate(self) -> None:
+        """PhaseFC.evaluate should include phase_fc_correlation."""
         ts = torch.randn(2, 8, 200, dtype=torch.complex64)
-        metrics = compute_dynamics_fit_metrics(ts, ts, tr=0.72)
+        metrics = PhaseFC().evaluate(ts, ts)
         self.assertIn("phase_fc_correlation", metrics)
         self.assertFalse(math.isnan(metrics["phase_fc_correlation"]))
 
