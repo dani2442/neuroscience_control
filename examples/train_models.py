@@ -269,8 +269,8 @@ def _run_backprop(args: argparse.Namespace) -> dict[str, object]:
         print_section("STEP 3: Saving Model and Generating Figures")
         checkpoint_path = save_checkpoint(
             model,
-            checkpoint_name=f"{args.model}_backprop_{ds_tag}_best_{cfg.run_name}.pt",
-            artifact_name=f"{args.model}_backprop_{ds_tag}_model_{cfg.run_name}",
+            checkpoint_name=f"{ds_tag}_{args.model}.pt",
+            artifact_name=f"{ds_tag}_{args.model}",
             checkpoint_dir=cfg.checkpoint_dir,
             use_wandb=cfg.use_wandb,
         )
@@ -286,6 +286,8 @@ def _run_backprop(args: argparse.Namespace) -> dict[str, object]:
         if trainer is not None:
             trainer.finish()
 
+    _save_individual_metrics(args.model, test_inter_metrics, test_intra_metrics, ds_tag)
+
     print(f"\n{'='*60}\n{args.model.upper()} BACKPROP TRAINING COMPLETED SUCCESSFULLY\n{'='*60}")
     print(f"\nTest inter metrics: {_format_metrics_mean_std(test_inter_metrics)}")
     print(f"Test intra metrics: {_format_metrics_mean_std(test_intra_metrics)}")
@@ -295,7 +297,6 @@ def _run_backprop(args: argparse.Namespace) -> dict[str, object]:
     return {
         "run": f"{args.model}_backprop",
         "model": model,
-        "paper_metrics": final_metrics,
         "test_inter_metrics": _as_numeric(test_inter_metrics),
         "test_intra_metrics": _as_numeric(test_intra_metrics),
         "checkpoint": str(checkpoint_path) if checkpoint_path is not None else None,
@@ -399,8 +400,8 @@ def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
         print_section("STEP 3: Saving Model and Generating Figures")
         checkpoint = save_checkpoint(
             hopf_model,
-            checkpoint_name=f"hopf_grid_{ds_tag}_best_{cfg.run_name}.pt",
-            artifact_name=f"hopf_model_grid_{ds_tag}_{cfg.run_name}",
+            checkpoint_name=f"{ds_tag}_hopf_grid.pt",
+            artifact_name=f"{ds_tag}_hopf_grid",
             checkpoint_dir=cfg.checkpoint_dir,
             use_wandb=cfg.use_wandb,
         )
@@ -415,6 +416,8 @@ def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
         print(f"Test metrics (mean ± std): {_format_metrics_mean_std(test_metrics)}")
     finally:
         finish_wandb_run()
+
+    _save_individual_metrics("hopf_grid", _as_numeric(test_metrics), {}, ds_tag)
 
     print(f"\n{'='*60}\nHOPF GRID SEARCH COMPLETED SUCCESSFULLY\n{'='*60}")
     print(f"\nBest params: {best_params}")
@@ -456,14 +459,26 @@ def _print_paper_report(report: dict[str, dict[str, float]]) -> None:
         print(_line(row))
 
 
-def _save_paper_report(report: dict[str, dict[str, float]], output: Path | None, dataset_type: str = "ts_young") -> Path:
-    if output is None:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output = Path("results") / f"{dataset_type}_paper_metrics_{timestamp}.json"
+def _save_individual_metrics(
+    model_key: str,
+    test_inter: dict[str, object],
+    test_intra: dict[str, object],
+    ds_tag: str,
+) -> Path:
+    """Save both test split metrics to results/{ds_tag}_{model_key}.json."""
+    output = Path("results") / f"{ds_tag}_{model_key}.json"
     output.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "dataset_type": ds_tag,
+        "model": model_key,
+        "metrics": {
+            "test_inter": {k: float(v) for k, v in _as_numeric(test_inter).items()},
+            "test_intra": {k: float(v) for k, v in _as_numeric(test_intra).items()},
+        },
+    }
     with output.open("w", encoding="utf-8") as fh:
-        json.dump({"dataset_type": dataset_type, "metrics": report}, fh, indent=2, sort_keys=True)
-    print(f"Paper metric report saved to: {output}")
+        json.dump(data, fh, indent=2, sort_keys=True)
+    print(f"Metrics saved to: {output}")
     return output
 
 
@@ -478,23 +493,13 @@ def _run_paper_suite(args: argparse.Namespace) -> dict[str, object]:
     _apply_dataset_cfg_overrides(cfg_temp, args)
     dataset_type = cfg_temp.dataset_type
 
-    all_checkpoints: dict[str, str] = {}
-    if grid_result.get("checkpoint"):
-        all_checkpoints["hopf_grid"] = grid_result["checkpoint"]
-
-    backprop_results: dict[str, dict[str, object]] = {}
     for model_name in ("hopf", "nsde", "hybrid_hopf", "gnn_hopf", "hybrid_neural"):
         backprop_args = _make_backprop_namespace_from_paper_args(args, model_name)
         result = _run_backprop(backprop_args)
-        report[model_name] = result.get("test_inter_metrics", result["paper_metrics"])
-        backprop_results[model_name] = result
-        if result.get("checkpoint"):
-            all_checkpoints[model_name] = result["checkpoint"]
+        report[model_name] = result["test_inter_metrics"]
 
     _print_paper_report(report)
-    output_path = _save_paper_report(report, args.output_json, dataset_type=dataset_type)
-
-    return {"paper_metrics": report, "output_json": str(output_path), "dataset_type": dataset_type}
+    return {"paper_metrics": report, "dataset_type": dataset_type}
 
 
 # ---------------------------------------------------------------------------
@@ -523,8 +528,6 @@ def _build_parser() -> argparse.ArgumentParser:
 
     paper = subparsers.add_parser("paper", help="Run Hopf-grid + all backprop models and report paper metrics")
     _add_common(paper)
-    paper.add_argument("--output-json", type=Path, default=None,
-                       help="Optional output path for the aggregated paper metric report JSON")
 
     return parser
 

@@ -58,7 +58,7 @@ class TrainingConfig:
     atlas_resolution_mm: int = 1
     atlas_smoothing_fwhm: Optional[float] = None
     max_subjects: Optional[int] = None  # None means use all subjects
-    window_size: int = 100
+    window_size: int = 50
     n_windows_per_epoch: int = 1024
     batch_size: int = 128
     train_ratio: float = 0.7
@@ -73,7 +73,7 @@ class TrainingConfig:
     tr: float = 0.72
     f_lo: float = 0.04
     f_hi: float = 0.07
-    fcd_win_sec: float = 30.0
+    fcd_win_sec: float = 20.0
     fcd_step_sec: float = 2.0
     
     # Model settings
@@ -87,7 +87,7 @@ class TrainingConfig:
         "amplitude": 1.0, "omega": 1.0, "power_spectrum": 1.0,
         "temporal_correlation": 1.0, "autocorrelation": 1.0,
         "fcd": 1.0, "phfcd": 1.0, "phase_fc_correlation": 1.0,
-        "metastability": 1.0, "fdm": 0.0,
+        "metastability": 1.0, "fdm": 0.25,
     })
     early_stopping_patience: int = 15
     n_steps: int = 50

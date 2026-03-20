@@ -77,23 +77,23 @@ from src.utils.visualization import (
 # Checkpoint discovery
 # ===================================================================
 
-#: Canonical "best" checkpoint patterns per dataset tag.
+#: Canonical checkpoint patterns per dataset tag.
 _BEST_CKPT_PATTERNS: dict[str, list[str]] = {
     "ts_young": [
-        "best_hopf_grid_ts_young.pt",
-        "best_hopf_backprop_ts_young.pt",
-        "best_nsde_backprop_ts_young.pt",
-        "best_hybrid_hopf_backprop_ts_young.pt",
-        "best_gnn_hopf_backprop_ts_young.pt",
-        "best_hybrid_neural_backprop_ts_young.pt",
+        "ts_young_hopf_grid.pt",
+        "ts_young_hopf.pt",
+        "ts_young_nsde.pt",
+        "ts_young_hybrid_hopf.pt",
+        "ts_young_gnn_hopf.pt",
+        "ts_young_hybrid_neural.pt",
     ],
     "lsd": [
-        "best_hopf_grid_lsd.pt",
-        "best_hopf_backprop_lsd.pt",
-        "best_nsde_backprop_lsd.pt",
-        "best_hybrid_hopf_backprop_lsd.pt",
-        "best_gnn_hopf_backprop_lsd.pt",
-        "best_hybrid_neural_backprop_lsd.pt",
+        "lsd_hopf_grid.pt",
+        "lsd_hopf.pt",
+        "lsd_nsde.pt",
+        "lsd_hybrid_hopf.pt",
+        "lsd_gnn_hopf.pt",
+        "lsd_hybrid_neural.pt",
     ],
 }
 
@@ -242,6 +242,37 @@ def _patch_tabular_body(tex: str, new_body: str) -> str:
     return patched
 
 
+def _aggregate_individual_metrics(results_dir: Path) -> tuple[str | None, dict | None]:
+    """Aggregate per-model metrics files written by individual training runs.
+
+    Each file has the shape::
+
+        {"dataset_type": "ts_young", "model": "nsde",
+         "metrics": {"test_inter": {<metric_key>: <value>, ...},
+                     "test_intra": {<metric_key>: <value>, ...}}}
+
+    Returns the inferred dataset_type and a combined metrics dict keyed by
+    model name (using test_inter metrics), or ``(None, None)`` when no
+    matching files are found.
+    """
+    combined: dict[str, dict] = {}
+    dataset_type: str | None = None
+    for f in sorted(results_dir.glob("*.json")):
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        model_key = data.get("model")
+        test_inter = data.get("metrics", {}).get("test_inter")
+        if not model_key or not test_inter:
+            continue
+        combined[model_key] = test_inter
+        if dataset_type is None:
+            dataset_type = data.get("dataset_type")
+
+    return dataset_type, combined or None
+
+
 def run_update_tables(
     metrics_json: str | Path | None = None,
     tex_target: str | Path | None = None,
@@ -250,36 +281,21 @@ def run_update_tables(
 ) -> None:
     """Patch paper LaTeX tables with fresh metrics."""
     if metrics_json is None:
-        results_dir = Path("results")
-        candidates = sorted(
-            results_dir.glob("*_paper_metrics_*.json"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-        if not candidates:
-            print("No metrics JSON found in results/. Please specify --metrics or run training first.")
+        dataset_type, metrics = _aggregate_individual_metrics(Path("results"))
+        if not metrics:
+            print("No metrics found in results/. Please run training first.")
             return
-        metrics_json = candidates[0]
-        print(f"Auto-detected latest metrics file: {metrics_json}")
-
-    metrics_json = Path(metrics_json)
-    if not metrics_json.exists():
-        print(f"Metrics file not found: {metrics_json}")
-        return
-
-    with metrics_json.open(encoding="utf-8") as fh:
-        data = json.load(fh)
-
-    if "metrics" in data and "dataset_type" in data:
-        metrics = data["metrics"]
-        dataset_type = data["dataset_type"]
-        print(f"Dataset type: {dataset_type}")
+        dataset_type = dataset_type or "ts_young"
+        print(f"Aggregated metrics for {len(metrics)} models (dataset: {dataset_type})")
     else:
-        metrics = data
-        dataset_type = None
-        print("Warning: Old JSON format detected (no dataset_type metadata)")
-
-    print(f"Loaded metrics for: {list(metrics.keys())}")
+        metrics_json = Path(metrics_json)
+        if not metrics_json.exists():
+            print(f"Metrics file not found: {metrics_json}")
+            return
+        data = json.loads(metrics_json.read_text(encoding="utf-8"))
+        metrics = data.get("metrics", data)
+        dataset_type = data.get("dataset_type") or "ts_young"
+        print(f"Loaded metrics for: {list(metrics.keys())} (dataset: {dataset_type})")
 
     if table_label:
         pass
