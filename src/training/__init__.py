@@ -2,7 +2,7 @@
 
 from .trainer import Trainer
 from .grid_search import GridSearch, grid_search_hopf
-from .train_utils import load_dataset, run_backprop_training
+from .train_utils import load_dataset
 from .config import TrainingConfig, HopfConfig, HybridHopfConfig, GNNHopfConfig, NeuralSDEConfig
 from .losses import CompositeLoss
 
@@ -11,7 +11,6 @@ __all__ = [
     "GridSearch",
     "grid_search_hopf",
     "load_dataset",
-    "run_backprop_training",
     "TrainingConfig",
     "HopfConfig",
     "HybridHopfConfig",

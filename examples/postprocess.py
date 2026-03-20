@@ -1,36 +1,41 @@
+#!/usr/bin/env python3
 """
-Post-training paper pipeline.
+Post-training pipeline entry point.
 
 Consolidates all post-training steps that produce publication artefacts:
 
-1. **update_paper_tables** – patches LaTeX model-comparison tables from a
+1. **update-tables** – patches LaTeX model-comparison tables from a
    metrics JSON produced by ``train_models.py paper``.
-2. **compare_models** – generates FC/timeseries comparison figures for the
+2. **compare** – generates FC/timeseries comparison figures for the
    best Hopf and Neural SDE checkpoints.
-3. **compare_control_conditions** *(LSD only)* – simulates all trained models
-   under pharmacological conditions (u=0 Placebo, u=1 LSD+Ketanserin, u=2 LSD)
-   and produces FC grids, ΔFC plots, bar charts, a metrics JSON and a LaTeX
-   table fragment.
+3. **compare-conditions** *(LSD only)* – simulates all trained models
+   under pharmacological conditions (u=0 Placebo, u=1 LSD+Ketanserin,
+   u=2 LSD) and produces FC grids, ΔFC plots, bar charts, a metrics
+   JSON and a LaTeX table fragment.
+4. **pipeline** – runs all three steps above in sequence.
 
-All logic lives here; standalone example scripts delegate to this module.
+# Run the full post-training pipeline (tables + compare + conditions):
+    python examples/postprocess.py pipeline \\
+        --dataset-type lsd --lsd-data-dir data/lsd
 
-Usage from Python
------------------
->>> from src.utils import run_paper_pipeline
->>> run_paper_pipeline(
-...     metrics_json="results/lsd_paper_metrics_20260311.json",
-...     dataset_type="lsd",
-...     device="cuda",
-...     lsd_data_dir="data/lsd",
-... )
+# Update LaTeX tables from a metrics JSON:
+    python examples/postprocess.py update-tables \\
+        --metrics results/lsd_paper_metrics_<timestamp>.json
 
-Called automatically at the end of ``train_models.py paper``, or via the
-``pipeline``, ``update-tables``, ``compare``, ``compare-conditions``
-sub-commands.
+# Compare Hopf vs Neural SDE (figures):
+    python examples/postprocess.py compare \\
+        --hopf-checkpoint checkpoints/best_hopf_backprop_ts_young.pt \\
+        --nsde-checkpoint checkpoints/best_nsde_backprop_ts_young.pt \\
+        --data-path data/ts_young/ts_young_TR0.72.mat
+
+# Compare LSD control conditions (u=0, u=1, u=2):
+    python examples/postprocess.py compare-conditions \\
+        --lsd-data-dir data/lsd
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import math
 import re
@@ -44,25 +49,27 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-# Ensure project root is importable when called from any CWD.
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
-if str(_PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT))
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.utils.runtime import print_section, resolve_device, seed_all
-from src.utils.visualization import (
-    FIGURES_DIR,
-    plot_fc_comparison,
-    plot_model_comparison,
-    plot_timeseries,
-    create_comparison_report,
-)
+from examples.cli_args import add_dataset_args
 from src.utils.runtime import (
     ensure_proxy_env,
     managed_wandb_run,
+    print_section,
+    resolve_device,
+    seed_all,
     wandb_log,
     wandb_log_figure,
     wandb_summary_update,
+)
+from src.utils.visualization import (
+    FIGURES_DIR,
+    create_comparison_report,
+    plot_fc_comparison,
+    plot_model_comparison,
+    plot_timeseries,
 )
 
 
@@ -102,13 +109,11 @@ def _discover_checkpoints(
     ckpt_dir = Path(checkpoint_dir)
     found: list[str] = []
 
-    # Prefer explicitly provided paths (from the training run).
     if explicit_checkpoints:
         for _tag, path in explicit_checkpoints.items():
             if path and Path(path).exists():
                 found.append(str(path))
 
-    # Fall back to well-known best checkpoint names.
     if not found:
         patterns = _BEST_CKPT_PATTERNS.get(dataset_type, [])
         for name in patterns:
@@ -116,7 +121,6 @@ def _discover_checkpoints(
             if p.exists():
                 found.append(str(p))
 
-    # Last resort: glob for any matching checkpoint.
     if not found and ckpt_dir.exists():
         globbed = sorted(ckpt_dir.glob(f"*{dataset_type}*.pt"))
         found = [str(p) for p in globbed]
@@ -237,21 +241,7 @@ def run_update_tables(
     table_label: str | None = None,
     dry_run: bool = False,
 ) -> None:
-    """Patch paper LaTeX tables with fresh metrics.
-
-    Parameters
-    ----------
-    metrics_json
-        Path to the paper metrics JSON.  If *None*, auto-discovers the latest
-        ``results/*_paper_metrics_*.json``.
-    tex_target
-        Explicit ``.tex`` file to patch.  Inferred from *table_label* or
-        *dataset_type* in the JSON if not given.
-    table_label
-        E.g. ``"tab:model_comparison"`` or ``"tab:lsd_model_comparison"``.
-    dry_run
-        Print the generated rows without writing to disk.
-    """
+    """Patch paper LaTeX tables with fresh metrics."""
     if metrics_json is None:
         results_dir = Path("results")
         candidates = sorted(
@@ -506,10 +496,7 @@ def run_compare_models(
     n_simulations: int = 10,
     output_path: str = "results/comparison_results.json",
 ) -> dict | None:
-    """Compare trained Hopf and Neural SDE models.
-
-    Returns the results dict or *None* if no models were loaded.
-    """
+    """Compare trained Hopf and Neural SDE models."""
     print_section("MODEL COMPARISON")
     ensure_proxy_env()
     device = resolve_device(device)
@@ -756,7 +743,6 @@ def run_compare_conditions(
     results_dir = Path("results")
     latex_dir = Path("paper/sections")
 
-    # 1. Load LSD dataset
     print_section("Loading LSD dataset")
     dataset = NeuroscienceDataset.from_lsd(data_dir=lsd_data_dir, normalize=True, device=device)
     print(f"  subjects={dataset.n_subjects}  ROIs={dataset.n_rois}  T={dataset.n_timepoints}")
@@ -773,7 +759,6 @@ def run_compare_conditions(
     n_p = min(n_paths, dataset.n_subjects)
     initial_states = dataset.timeseries[:n_p, :, 0]
 
-    # 2. Load checkpoints
     print_section("Loading model checkpoints")
     if not checkpoints:
         ckpt_dir = Path("checkpoints")
@@ -805,7 +790,6 @@ def run_compare_conditions(
         print("No models loaded. Exiting.")
         return
 
-    # 3. Simulate FC per condition
     print_section("Simulating FC per condition")
     fc_per_model: dict[str, dict[int, torch.Tensor]] = {}
     cond_metrics: dict[str, dict[int, dict[str, float]]] = {}
@@ -824,7 +808,6 @@ def run_compare_conditions(
             cond_metrics[mname][cv] = {"fc_corr": corr, "fc_mse": mse}
             print(f"FC corr={corr:.3f}  MSE={mse:.4f}")
 
-    # 4. Figures
     print_section("Generating figures")
     _plot_fc_grid(fc_per_model, empirical_fc_per_ctrl, save_path=figures_dir / "lsd" / "control_fc_grid.pdf")
     for mname in models:
@@ -834,7 +817,6 @@ def run_compare_conditions(
         )
     _plot_fc_corr_bar(cond_metrics, save_path=figures_dir / "lsd" / "control_fc_corr.pdf")
 
-    # 5. Save metrics JSON and LaTeX table
     print_section("Saving metrics and LaTeX table")
     results_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = results_dir / "lsd_control_metrics.json"
@@ -848,7 +830,6 @@ def run_compare_conditions(
     latex_path.write_text(latex, encoding="utf-8")
     print(f"  LaTeX table → {latex_path}")
 
-    # Summary
     print_section("Results summary")
     ctrl_short = {0: "Placebo", 1: "LSD+Ket.", 2: "LSD"}
     header = f"{'Model':<35}" + "".join(
@@ -867,7 +848,7 @@ def run_compare_conditions(
 
 
 # ===================================================================
-# Orchestrator: run_paper_pipeline
+# Orchestrator: pipeline
 # ===================================================================
 
 def run_paper_pipeline(
@@ -877,60 +858,17 @@ def run_paper_pipeline(
     no_wandb: bool = True,
     checkpoint_dir: str = "checkpoints",
     explicit_checkpoints: dict[str, str] | None = None,
-    # ts_young-specific
     data_path: str | None = None,
-    # LSD-specific
     lsd_data_dir: str | None = None,
-    # compare_models options
     n_simulations: int = 10,
     output_path: str = "results/comparison_results.json",
-    # compare_control_conditions options
     n_steps: int = 240,
     n_paths: int = 10,
 ) -> dict[str, Any]:
-    """Run the full post-training paper pipeline.
-
-    Parameters
-    ----------
-    metrics_json
-        Path to the paper metrics JSON (output of ``train_models.py paper``).
-        If *None*, the latest file in ``results/`` matching
-        ``*_paper_metrics_*.json`` is used.
-    dataset_type
-        ``"ts_young"`` or ``"lsd"``.
-    device
-        Compute device (``"auto"``, ``"cuda"``, ``"cpu"``).
-    no_wandb
-        Disable wandb logging for the comparison steps.
-    checkpoint_dir
-        Directory containing trained model checkpoints.
-    explicit_checkpoints
-        Dict mapping model tag → checkpoint path.  Overrides auto-discovery.
-    data_path
-        Path to the ``.mat`` data file (ts_young).
-    lsd_data_dir
-        Directory with LSD ``.mat`` files.
-    n_simulations
-        Number of simulations for ``compare_models``.
-    output_path
-        Where ``compare_models`` saves its JSON results.
-    n_steps
-        Simulation length for ``compare_control_conditions``.
-    n_paths
-        Number of initial conditions for ``compare_control_conditions``.
-
-    Returns
-    -------
-    dict
-        Summary with keys ``"update_tables"``, ``"compare_models"``,
-        ``"compare_control_conditions"`` indicating success / skipped status.
-    """
+    """Run the full post-training paper pipeline."""
     print_section("POST-TRAINING PAPER PIPELINE")
     results: dict[str, Any] = {}
 
-    # ------------------------------------------------------------------
-    # 1. Update LaTeX tables
-    # ------------------------------------------------------------------
     print_section("Step 1/3: Updating LaTeX tables")
     try:
         run_update_tables(metrics_json=metrics_json)
@@ -939,9 +877,6 @@ def run_paper_pipeline(
         print(f"  Warning: update_paper_tables failed: {exc}")
         results["update_tables"] = f"error: {exc}"
 
-    # ------------------------------------------------------------------
-    # 2. Compare models (FC / timeseries figures)
-    # ------------------------------------------------------------------
     print_section("Step 2/3: Comparing models (figures)")
     checkpoints = _discover_checkpoints(dataset_type, checkpoint_dir, explicit_checkpoints)
 
@@ -982,9 +917,6 @@ def run_paper_pipeline(
         print("  Skipped: no Hopf or Neural SDE checkpoints found.")
         results["compare_models"] = "skipped"
 
-    # ------------------------------------------------------------------
-    # 3. Compare control conditions (LSD only)
-    # ------------------------------------------------------------------
     if dataset_type == "lsd":
         print_section("Step 3/3: Comparing control conditions (LSD)")
         if checkpoints:
@@ -1012,3 +944,137 @@ def run_paper_pipeline(
         print(f"  {step}: {status}")
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# Handlers
+# ---------------------------------------------------------------------------
+
+def _run_pipeline(args: argparse.Namespace) -> dict[str, object]:
+    result = run_paper_pipeline(
+        metrics_json=getattr(args, "metrics", None),
+        dataset_type=getattr(args, "dataset_type", None) or "ts_young",
+        device=args.device,
+        no_wandb=args.no_wandb,
+        checkpoint_dir=getattr(args, "checkpoint_dir", "checkpoints"),
+        data_path=getattr(args, "data_path", None),
+        lsd_data_dir=getattr(args, "lsd_data_dir", None),
+        n_simulations=getattr(args, "n_simulations", 10),
+        output_path=getattr(args, "output_path", "results/comparison_results.json"),
+        n_steps=getattr(args, "n_steps", 240),
+        n_paths=getattr(args, "n_paths", 10),
+    )
+    return {"pipeline_results": result}
+
+
+def _run_update_tables(args: argparse.Namespace) -> dict[str, object]:
+    run_update_tables(
+        metrics_json=getattr(args, "metrics", None),
+        tex_target=getattr(args, "tex", None),
+        table_label=getattr(args, "table_label", None),
+        dry_run=getattr(args, "dry_run", False),
+    )
+    return {"update_tables": "done"}
+
+
+def _run_compare(args: argparse.Namespace) -> dict[str, object]:
+    result = run_compare_models(
+        data_path=getattr(args, "data_path", None) or "data/ts_young/ts_young_TR0.72.mat",
+        hopf_checkpoint=getattr(args, "hopf_checkpoint", None),
+        nsde_checkpoint=getattr(args, "nsde_checkpoint", None),
+        device=args.device or "auto",
+        no_wandb=args.no_wandb,
+        wandb_project=getattr(args, "wandb_project", "neuroscience-control"),
+        run_name=getattr(args, "run_name", "model_comparison"),
+        n_simulations=getattr(args, "n_simulations", 10),
+        output_path=getattr(args, "output_path", "results/comparison_results.json"),
+    )
+    return {"compare_results": result}
+
+
+def _run_compare_conditions(args: argparse.Namespace) -> dict[str, object]:
+    run_compare_conditions(
+        checkpoints=getattr(args, "checkpoints", None),
+        lsd_data_dir=getattr(args, "lsd_data_dir", None) or "data/lsd",
+        n_steps=getattr(args, "n_steps", 240),
+        n_paths=getattr(args, "n_paths", 10),
+        device=args.device,
+        model_labels=getattr(args, "model_labels", None),
+        ctrl_values=getattr(args, "ctrl_values", None),
+        output_dir=getattr(args, "output_dir", None),
+    )
+    return {"compare_conditions": "done"}
+
+
+# ---------------------------------------------------------------------------
+# Argument parser
+# ---------------------------------------------------------------------------
+
+def _add_pipeline_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--device", type=str, default=None, help="Device (auto, cuda, cpu)")
+    p.add_argument("--no-wandb", action="store_true", help="Disable wandb logging")
+    p.add_argument("--checkpoint-dir", type=str, default="checkpoints", help="Checkpoint directory")
+    add_dataset_args(p)
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Post-training pipeline for paper artefact generation.")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # pipeline: run all post-training steps
+    pipeline = subparsers.add_parser(
+        "pipeline",
+        help="Run post-training pipeline (update tables, compare models, compare conditions)",
+    )
+    _add_pipeline_args(pipeline)
+    pipeline.add_argument("--metrics", type=str, default=None, help="Path to paper metrics JSON")
+    pipeline.add_argument("--n-simulations", type=int, default=10, help="Simulations for compare_models")
+    pipeline.add_argument("--output-path", type=str, default="results/comparison_results.json")
+    pipeline.add_argument("--n-steps", type=int, default=240, help="Simulation length for compare_conditions")
+    pipeline.add_argument("--n-paths", type=int, default=10, help="Initial conditions for compare_conditions")
+
+    # update-tables
+    update_tables = subparsers.add_parser("update-tables", help="Patch LaTeX tables from metrics JSON")
+    update_tables.add_argument("--metrics", type=str, default=None, help="Path to paper metrics JSON")
+    update_tables.add_argument("--tex", type=str, default=None, help="Explicit .tex file to patch")
+    update_tables.add_argument("--table-label", type=str, default=None, help="LaTeX table label")
+    update_tables.add_argument("--dry-run", action="store_true", help="Preview without writing")
+
+    # compare
+    compare = subparsers.add_parser("compare", help="Compare Hopf and Neural SDE models (figures)")
+    compare.add_argument("--hopf-checkpoint", type=str, default=None)
+    compare.add_argument("--nsde-checkpoint", type=str, default=None)
+    compare.add_argument("--n-simulations", type=int, default=10)
+    compare.add_argument("--output-path", type=str, default="results/comparison_results.json")
+    compare.add_argument("--wandb-project", type=str, default="neuroscience-control")
+    compare.add_argument("--run-name", type=str, default="model_comparison")
+    _add_pipeline_args(compare)
+
+    # compare-conditions
+    compare_cond = subparsers.add_parser("compare-conditions", help="Compare model FC under LSD control conditions")
+    compare_cond.add_argument("--checkpoints", nargs="+", type=str, default=None)
+    compare_cond.add_argument("--model-labels", nargs="+", type=str, default=None)
+    compare_cond.add_argument("--n-steps", type=int, default=240)
+    compare_cond.add_argument("--n-paths", type=int, default=10)
+    compare_cond.add_argument("--ctrl-values", nargs="+", type=int, default=None)
+    compare_cond.add_argument("--output-dir", type=str, default=None)
+    _add_pipeline_args(compare_cond)
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> dict[str, object]:
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+
+    dispatch = {
+        "pipeline": _run_pipeline,
+        "update-tables": _run_update_tables,
+        "compare": _run_compare,
+        "compare-conditions": _run_compare_conditions,
+    }
+    return dispatch[args.command](args)
+
+
+if __name__ == "__main__":
+    main()

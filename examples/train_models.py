@@ -1,39 +1,19 @@
 #!/usr/bin/env python3
 """
-Unified entry point for training, evaluation, and paper artefact generation.
+Training entry point for Hopf grid-search and backprop models.
 
-Training
---------
 # Single model training:
     python examples/train_models.py backprop --model nsde
     python examples/train_models.py hopf-grid
 
-# Paper suite — trains all models, generates metrics JSON, and runs
-# update-tables + compare + compare-conditions automatically:
+# Paper suite — trains all models and runs the post-training pipeline:
     python examples/train_models.py paper \\
         --dataset-type lsd --lsd-data-dir data/lsd
     python examples/train_models.py paper \\
         --dataset-type ts_young --data-path data/ts_young/ts_young_TR0.72.mat
 
-Post-training (standalone)
---------------------------
-# Run the full post-training pipeline (tables + compare + conditions):
-    python examples/train_models.py pipeline \\
-        --dataset-type lsd --lsd-data-dir data/lsd
-
-# Update LaTeX tables from a metrics JSON:
-    python examples/train_models.py update-tables \\
-        --metrics results/lsd_paper_metrics_<timestamp>.json
-
-# Compare Hopf vs Neural SDE (figures):
-    python examples/train_models.py compare \\
-        --hopf-checkpoint checkpoints/best_hopf_backprop_ts_young.pt \\
-        --nsde-checkpoint checkpoints/best_nsde_backprop_ts_young.pt \\
-        --data-path data/ts_young/ts_young_TR0.72.mat
-
-# Compare LSD control conditions (u=0, u=1, u=2):
-    python examples/train_models.py compare-conditions \\
-        --lsd-data-dir data/lsd
+Post-training commands (update tables, compare models, compare conditions)
+are in examples/postprocess.py.
 """
 
 from __future__ import annotations
@@ -51,22 +31,21 @@ import torch
 import wandb
 from torch.utils.data import DataLoader
 
-# Ensure imports work when running this file directly.
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.dataset import NeuroscienceDataset, RandomWindowDataset, compute_omega_from_timeseries
-from src.models import build_model
+from examples.cli_args import add_dataset_args, DATASET_ARG_NAMES
+from src.dataset import NeuroscienceDataset, RandomWindowDataset, compute_omega_from_timeseries, load_dataset
 from src.dataset import create_data_loaders
+from src.models import build_model
 from src.training import (
     GNNHopfConfig,
     HopfConfig,
     HybridHopfConfig,
     NeuralSDEConfig,
     grid_search_hopf,
-    load_dataset,
-    Trainer
+    Trainer,
 )
 from src.training.losses import compute_ref_amplitude, compute_ref_omega
 from src.utils import (
@@ -91,51 +70,22 @@ from src.utils import (
     wandb_summary_update,
 )
 
-# Map model name → config class
 _CONFIG_CLS = {
     "nsde": NeuralSDEConfig,
     "hopf": HopfConfig,
     "hybrid_hopf": HybridHopfConfig,
-    #"gnn_hopf": GNNHopfConfig,
 }
 
 _MODEL_TITLES = {
     "nsde": "Neural SDE",
     "hopf": "Coupled Hopf",
     "hybrid_hopf": "Hybrid Hopf",
-    #"gnn_hopf": "GNN Hopf",
 }
 
-_DATASET_ARG_NAMES = (
-    "dataset_type",
-    "data_path",
-    "lsd_data_dir",
-    "max_subjects",
-    "nilearn_dataset",
-    "nilearn_data_dir",
-    "nilearn_n_subjects",
-    "openneuro_dataset",
-    "openneuro_tag",
-    "openneuro_target_dir",
-    "openneuro_include",
-    "openneuro_exclude",
-    "datalad_source",
-    "datalad_dataset_dir",
-    "datalad_get_paths",
-    "bids_root",
-    "bids_relative_path",
-    "bids_derivatives_dir",
-    "bids_task",
-    "bids_space",
-    "bids_desc",
-    "bids_subject_ids",
-    "bids_runs_per_subject",
-    "atlas_n_rois",
-    "atlas_yeo_networks",
-    "atlas_resolution_mm",
-    "atlas_smoothing_fwhm",
-)
 
+# ---------------------------------------------------------------------------
+# Config helpers
+# ---------------------------------------------------------------------------
 
 def _apply_common_cfg_overrides(cfg, args: argparse.Namespace) -> None:
     if args.no_wandb:
@@ -147,12 +97,27 @@ def _apply_common_cfg_overrides(cfg, args: argparse.Namespace) -> None:
 
 
 def _apply_dataset_cfg_overrides(cfg, args: argparse.Namespace) -> None:
-    for name in _DATASET_ARG_NAMES:
+    for name in DATASET_ARG_NAMES:
         value = getattr(args, name, None)
         if value is not None:
             setattr(cfg, name, value)
     if getattr(args, "no_nilearn_reduce_confounds", False):
         cfg.nilearn_reduce_confounds = False
+
+
+def _setup_run(cfg_cls, args: argparse.Namespace, exp_prefix: str):
+    """Create config, apply overrides, set names, resolve device and seed."""
+    cfg = cfg_cls()
+    _apply_common_cfg_overrides(cfg, args)
+    _apply_dataset_cfg_overrides(cfg, args)
+    ds_tag = cfg.dataset_type
+    cfg.experiment_name = f"{exp_prefix}_{ds_tag}"
+    cfg.run_name = f"{cfg.experiment_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    ensure_proxy_env()
+    print(f"Config: {dataclasses.asdict(cfg)}")
+    device = resolve_device(cfg.device)
+    seed_all(cfg.seed)
+    return cfg, device, ds_tag
 
 
 def _make_backprop_namespace_from_paper_args(args: argparse.Namespace, model_name: str) -> argparse.Namespace:
@@ -164,10 +129,14 @@ def _make_backprop_namespace_from_paper_args(args: argparse.Namespace, model_nam
         "n_epochs": args.n_epochs,
         "no_nilearn_reduce_confounds": getattr(args, "no_nilearn_reduce_confounds", False),
     }
-    for name in _DATASET_ARG_NAMES:
+    for name in DATASET_ARG_NAMES:
         payload[name] = getattr(args, name, None)
     return argparse.Namespace(**payload)
 
+
+# ---------------------------------------------------------------------------
+# Shared training helpers
+# ---------------------------------------------------------------------------
 
 def _create_validation_loader(
     dataset: NeuroscienceDataset,
@@ -175,7 +144,6 @@ def _create_validation_loader(
     device: str,
     val_idx: torch.Tensor,
 ) -> DataLoader:
-    """Build a validation loader from the deterministic validation subject split."""
     window_size = min(cfg.window_size, dataset.n_timepoints // 4)
     n_val_win = max(cfg.batch_size, cfg.n_windows_per_epoch // 4)
     val_idx = torch.as_tensor(val_idx, device=dataset.timeseries.device, dtype=torch.long)
@@ -192,18 +160,37 @@ def _create_validation_loader(
     return DataLoader(val_dataset, batch_size=cfg.batch_size, shuffle=False, drop_last=True)
 
 
+def _save_figures(model, val_loader, cfg, ds_tag: str, name_prefix: str, title: str,
+                  args: argparse.Namespace, **sde_kwargs) -> None:
+    """Generate and save FC + timeseries figures (no-op when --skip-figures)."""
+    if args.skip_figures:
+        print("Skipping figure generation (--skip-figures).")
+        return
+    val_timeseries, _, target_fc, n_tp = extract_val_data(val_loader)
+    generate_fc_figure(
+        model, val_timeseries, target_fc, n_tp, cfg.tr,
+        title=f"{title} - FC Comparison",
+        default_name=f"{ds_tag}/{name_prefix}_fc",
+        use_wandb=cfg.use_wandb,
+        wandb_key=f"figures/{ds_tag}/{name_prefix}_fc",
+        **sde_kwargs,
+    )
+    generate_multigrid_figure(
+        model, val_timeseries, n_tp, cfg.tr,
+        n_simulations=3, n_rois=3, n_cols=3,
+        title=f"{title} - Real vs Simulated",
+        default_name=f"{ds_tag}/{name_prefix}_timeseries",
+        use_wandb=cfg.use_wandb,
+        wandb_key=f"figures/{ds_tag}/{name_prefix}_timeseries",
+        **sde_kwargs,
+    )
+
+
 def _as_numeric(metrics: dict[str, object]) -> dict[str, float]:
-    """Keep only scalar numeric metrics."""
-    numeric: dict[str, float] = {}
-    for key, value in metrics.items():
-        cast = to_float_metric(value)
-        if cast is not None:
-            numeric[key] = cast
-    return numeric
+    return {k: v for k, v in ((k, to_float_metric(v)) for k, v in metrics.items()) if v is not None}
 
 
 def _format_metrics_mean_std(metrics: dict[str, object]) -> dict[str, str]:
-    """Format metrics as `mean ± std` when `<metric>_std` is present."""
     numeric = _as_numeric(metrics)
     formatted: dict[str, str] = {}
     for key in sorted(numeric):
@@ -217,22 +204,13 @@ def _format_metrics_mean_std(metrics: dict[str, object]) -> dict[str, str]:
     return formatted
 
 
+# ---------------------------------------------------------------------------
+# Training runners
+# ---------------------------------------------------------------------------
+
 def _run_backprop(args: argparse.Namespace) -> dict[str, object]:
-    cfg = _CONFIG_CLS[args.model]()
-    _apply_common_cfg_overrides(cfg, args)
-    _apply_dataset_cfg_overrides(cfg, args)
-    # Include dataset type in experiment / run names so checkpoints are identifiable.
-    ds_tag = cfg.dataset_type
-    cfg.experiment_name = f"{args.model}_backprop_{ds_tag}"
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    cfg.run_name = f"{cfg.experiment_name}_{timestamp}"
-
     print_section(f"{args.model.upper()} BACKPROP TRAINING")
-    ensure_proxy_env()
-    print(f"Config: {dataclasses.asdict(cfg)}")
-
-    device = resolve_device(cfg.device)
-    seed_all(cfg.seed)
+    cfg, device, ds_tag = _setup_run(_CONFIG_CLS[args.model], args, f"{args.model}_backprop")
 
     print_section("STEP 1: Loading and Processing Data")
     dataset = load_dataset(cfg, device)
@@ -247,58 +225,38 @@ def _run_backprop(args: argparse.Namespace) -> dict[str, object]:
         seed=cfg.seed,
         device=device,
     )
-    print(f"  window_size={window_size}  train={len(train_loader)}  val={len(val_loader)}  test_inter={len(test_inter_loader)}  test_intra={len(test_intra_loader)}")
+    print(f"  window_size={window_size}  train={len(train_loader)}  val={len(val_loader)}"
+          f"  test_inter={len(test_inter_loader)}  test_intra={len(test_intra_loader)}")
 
     print_section("STEP 2: Training Model (Backpropagation)")
-    model = build_model(args.model, dataset, cfg, device, structural_connectivity=dataset.fc_mean,
+    model = build_model(args.model, dataset, cfg, device,
+                        structural_connectivity=dataset.fc_mean,
                         n_control_dims=dataset.n_control_dims)
     ref_amplitude = compute_ref_amplitude(dataset.timeseries)
     ref_omega = compute_ref_omega(dataset.timeseries, tr=cfg.tr, f_lo=cfg.f_lo, f_hi=cfg.f_hi)
     print(f"  ref_amplitude=[{ref_amplitude.min():.4f}, {ref_amplitude.max():.4f}]")
     print(f"  ref_omega=[{ref_omega.min() / 6.2832:.4f}, {ref_omega.max() / 6.2832:.4f}] Hz")
 
-    trainer = None
-    final_metrics: dict[str, float] = {}
     checkpoint_path: Path | None = None
+    final_metrics: dict[str, float] = {}
     test_inter_metrics: dict[str, float] = {}
     test_intra_metrics: dict[str, float] = {}
+    trainer = None
     try:
         trainer = Trainer(
-            model=model,
-            lr=cfg.lr,
-            device=device,
-            checkpoint_dir=cfg.checkpoint_dir,
-            experiment_name=cfg.experiment_name or cfg.experiment_name,
-            cfg=cfg,
-            use_wandb=cfg.use_wandb,
+            model=model, lr=cfg.lr, device=device,
+            checkpoint_dir=cfg.checkpoint_dir, experiment_name=cfg.experiment_name,
+            cfg=cfg, use_wandb=cfg.use_wandb,
         )
-
-        metrics_store = trainer.train(
-            train_loader=train_loader,
-            val_loader=val_loader,
-            n_epochs=cfg.n_epochs,
-            n_steps=window_size,
-            dt=cfg.tr,
-            early_stopping_patience=cfg.early_stopping_patience,
-            verbose=True,
+        trainer.train(
+            train_loader=train_loader, val_loader=val_loader,
+            n_epochs=cfg.n_epochs, n_steps=window_size, dt=cfg.tr,
+            early_stopping_patience=cfg.early_stopping_patience, verbose=True,
         )
-
-        test_inter_metrics = trainer.test(
-            test_inter_loader,
-            n_steps=window_size,
-            dt=cfg.tr,
-            label="test_inter",
-        )
-        test_intra_metrics = trainer.test(
-            test_intra_loader,
-            n_steps=window_size,
-            dt=cfg.tr,
-            label="test_intra",
-        )
+        test_inter_metrics = trainer.test(test_inter_loader, n_steps=window_size, dt=cfg.tr, label="test_inter")
+        test_intra_metrics = trainer.test(test_intra_loader, n_steps=window_size, dt=cfg.tr, label="test_intra")
 
         print_section("STEP 3: Saving Model and Generating Figures")
-        val_timeseries, _, target_fc, n_timepoints = extract_val_data(val_loader)
-
         checkpoint_path = save_checkpoint(
             model,
             checkpoint_name=f"{args.model}_backprop_{ds_tag}_best_{cfg.run_name}.pt",
@@ -306,50 +264,23 @@ def _run_backprop(args: argparse.Namespace) -> dict[str, object]:
             checkpoint_dir=cfg.checkpoint_dir,
             use_wandb=cfg.use_wandb,
         )
-
         final_metrics = evaluate_model_loader_metrics(model, val_loader, cfg, n_steps=window_size)
-        print(f"Final metrics (full val loader): {final_metrics}")
-        wandb_summary_update(
-            {f"final_{k}": v for k, v in final_metrics.items()},
-            use_wandb=cfg.use_wandb,
-        )
+        wandb_summary_update({f"final_{k}": v for k, v in final_metrics.items()}, use_wandb=cfg.use_wandb)
 
-        if not args.skip_figures:
-            title = _MODEL_TITLES.get(args.model, args.model)
-            generate_fc_figure(
-                model, val_timeseries, target_fc, n_timepoints, cfg.tr,
-                sde_type=cfg.sde_type, method=cfg.sde_method, dt_min=cfg.dt_min,
-                title=f"{title} (Backprop) - FC Comparison",
-                default_name=f"{ds_tag}/{args.model}_fc",
-                use_wandb=cfg.use_wandb,
-                wandb_key=f"figures/{ds_tag}/{args.model}_fc",
-            )
-            generate_multigrid_figure(
-                model, val_timeseries, n_timepoints, cfg.tr,
-                n_simulations=3, n_rois=3, n_cols=3,
-                sde_type=cfg.sde_type, method=cfg.sde_method, dt_min=cfg.dt_min,
-                title=f"{title} (Backprop) - Real vs Simulated",
-                default_name=f"{ds_tag}/{args.model}_timeseries",
-                use_wandb=cfg.use_wandb,
-                wandb_key=f"figures/{ds_tag}/{args.model}_timeseries",
-            )
-        else:
-            print("Skipping figure generation (--skip-figures).")
-
+        title = _MODEL_TITLES.get(args.model, args.model)
+        _save_figures(model, val_loader, cfg, ds_tag, args.model, f"{title} (Backprop)", args,
+                      sde_type=cfg.sde_type, method=cfg.sde_method, dt_min=cfg.dt_min)
         if args.model in ("hopf", "hybrid_hopf"):
             log_hopf_best_params(model, use_wandb=cfg.use_wandb)
     finally:
         if trainer is not None:
             trainer.finish()
 
-    print("\n" + "=" * 60)
-    print(f"{args.model.upper()} BACKPROP TRAINING COMPLETED SUCCESSFULLY")
-    print("=" * 60)
-    print(f"\nTest inter-patient metrics (mean ± std): {_format_metrics_mean_std(test_inter_metrics)}")
-    print(f"Test intra-patient metrics (mean ± std): {_format_metrics_mean_std(test_intra_metrics)}")
+    print(f"\n{'='*60}\n{args.model.upper()} BACKPROP TRAINING COMPLETED SUCCESSFULLY\n{'='*60}")
+    print(f"\nTest inter metrics: {_format_metrics_mean_std(test_inter_metrics)}")
+    print(f"Test intra metrics: {_format_metrics_mean_std(test_intra_metrics)}")
     print(f"Final metrics: {final_metrics}")
-    print(f"Model saved to: {checkpoint_path}")
-    print(f"Figures saved to: {FIGURES_DIR / ds_tag}")
+    print(f"Model saved to: {checkpoint_path}  |  Figures: {FIGURES_DIR / ds_tag}")
 
     return {
         "run": f"{args.model}_backprop",
@@ -362,32 +293,16 @@ def _run_backprop(args: argparse.Namespace) -> dict[str, object]:
 
 
 def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
-    cfg = HopfConfig()
-    _apply_common_cfg_overrides(cfg, args)
-    _apply_dataset_cfg_overrides(cfg, args)
-    # Include dataset type in experiment / run names so checkpoints are identifiable.
-    ds_tag = cfg.dataset_type
-    cfg.experiment_name = f"hopf_grid_{ds_tag}"
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    cfg.run_name = f"{cfg.experiment_name}_{timestamp}"
-
     print_section("COUPLED HOPF MODEL TRAINING (GRID SEARCH)")
-    ensure_proxy_env()
-    print(f"Config: {dataclasses.asdict(cfg)}")
-
-    device = resolve_device(cfg.device)
-    seed_all(cfg.seed)
+    cfg, device, ds_tag = _setup_run(HopfConfig, args, "hopf_grid")
 
     print_section("STEP 1: Loading and Processing Data")
     dataset = load_dataset(cfg, device)
     omega = compute_omega_from_timeseries(
         dataset.timeseries, dt=dataset.dt, f_lo=cfg.f_lo, f_hi=cfg.f_hi, method="peak",
     )
-    print(
-        f"  omega: shape={omega.shape}, "
-        f"range=[{omega.min().item() / 6.2832:.4f}, {omega.max().item() / 6.2832:.4f}] Hz"
-    )
-    structural_connectivity = dataset.fc_mean
+    print(f"  omega: shape={omega.shape}, "
+          f"range=[{omega.min().item() / 6.2832:.4f}, {omega.max().item() / 6.2832:.4f}] Hz")
 
     train_idx, val_idx, test_idx = split_subject_indices(cfg, dataset.n_subjects)
     val_loader = _create_validation_loader(dataset, cfg, device, val_idx)
@@ -411,33 +326,30 @@ def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
     best_params: dict[str, float] = {}
     final_metrics: dict[str, float] = {}
     train_metrics: dict[str, float] = {}
+    test_metrics: dict[str, float] = {}
     try:
         n_timepoints = min(dataset.n_timepoints, 200)
         train_fc = dataset.fc_matrices[train_idx].mean(dim=0)
-        n_eval = min(cfg.n_simulations, len(train_idx))
-        eval_train_idx = train_idx[:n_eval]
+        eval_train_idx = train_idx[:min(cfg.n_simulations, len(train_idx))]
         initial_states = dataset.timeseries[eval_train_idx, :, 0]
         target_ts = dataset.timeseries[eval_train_idx, :, :n_timepoints]
 
-        n_combos = len(cfg.g_values) * len(cfg.a_values) * len(cfg.kappa_values)
-        print(f"Grid search over {n_combos} parameter combinations")
-        print(f"  Train subjects: {len(train_idx)}, Val subjects: {len(val_idx)}, Test subjects: {len(test_idx)}")
+        metric_weights = {k: v for k, v in [
+            ("fc_correlation", cfg.weight_fc),
+            ("fcd_mse", cfg.weight_fcd),
+            ("metastability_diff", cfg.weight_meta),
+            ("phfcd_mse", cfg.weight_phfcd),
+        ] if v}
 
-        metric_weights = {}
-        if cfg.weight_fc:
-            metric_weights["fc_correlation"] = cfg.weight_fc
-        if cfg.weight_fcd:
-            metric_weights["fcd_mse"] = cfg.weight_fcd
-        if cfg.weight_meta:
-            metric_weights["metastability_diff"] = cfg.weight_meta
-        if cfg.weight_phfcd:
-            metric_weights["phfcd_mse"] = cfg.weight_phfcd
+        n_combos = len(cfg.g_values) * len(cfg.a_values) * len(cfg.kappa_values)
+        print(f"Grid search over {n_combos} combinations  "
+              f"(train={len(train_idx)}, val={len(val_idx)}, test={len(test_idx)})")
 
         best_params, hopf_model = grid_search_hopf(
             target_fc=train_fc,
             n_rois=dataset.n_rois,
             initial_states=initial_states,
-            structural_connectivity=structural_connectivity,
+            structural_connectivity=dataset.fc_mean,
             omega=omega,
             g_values=cfg.g_values,
             a_values=cfg.a_values,
@@ -455,10 +367,10 @@ def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
         )
 
         train_loader_eval = _create_validation_loader(dataset, cfg, device, train_idx)
-        train_window_size = getattr(getattr(train_loader_eval, "dataset", None), "window_size", None)
-        val_window_size = getattr(getattr(val_loader, "dataset", None), "window_size", None)
-        train_metrics = evaluate_model_loader_metrics(hopf_model, train_loader_eval, cfg, n_steps=train_window_size)
-        val_metrics = evaluate_model_loader_metrics(hopf_model, val_loader, cfg, n_steps=val_window_size)
+        train_win = getattr(getattr(train_loader_eval, "dataset", None), "window_size", None)
+        val_win = getattr(getattr(val_loader, "dataset", None), "window_size", None)
+        train_metrics = evaluate_model_loader_metrics(hopf_model, train_loader_eval, cfg, n_steps=train_win)
+        val_metrics = evaluate_model_loader_metrics(hopf_model, val_loader, cfg, n_steps=val_win)
         print(f"Train metrics: {train_metrics}")
         print(f"Validation metrics: {val_metrics}")
 
@@ -482,76 +394,55 @@ def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
             checkpoint_dir=cfg.checkpoint_dir,
             use_wandb=cfg.use_wandb,
         )
-
-        val_timeseries, _, target_fc, n_tp = extract_val_data(val_loader)
-        if not args.skip_figures:
-            generate_fc_figure(
-                hopf_model, val_timeseries, target_fc, n_tp, cfg.tr,
-                title="Coupled Hopf (Grid) - FC Comparison",
-                default_name=f"{ds_tag}/hopf_grid_fc",
-                use_wandb=cfg.use_wandb,
-                wandb_key=f"figures/{ds_tag}/hopf_grid_fc",
-            )
-            generate_multigrid_figure(
-                hopf_model, val_timeseries, n_tp, cfg.tr,
-                n_simulations=3, n_rois=3, n_cols=3,
-                title="Coupled Hopf (Grid) - Real vs Simulated",
-                default_name=f"{ds_tag}/hopf_grid_timeseries",
-                use_wandb=cfg.use_wandb,
-                wandb_key=f"figures/{ds_tag}/hopf_grid_timeseries",
-            )
-        else:
-            print("Skipping figure generation (--skip-figures).")
+        _save_figures(hopf_model, val_loader, cfg, ds_tag, "hopf_grid", "Coupled Hopf (Grid)", args)
 
         final_metrics = val_metrics
         wandb_summary_update({f"final_{k}": v for k, v in final_metrics.items()}, use_wandb=cfg.use_wandb)
         log_hopf_best_params(hopf_model, use_wandb=cfg.use_wandb)
-        
-        # Evaluate on test set with std for paper reporting
-        test_window_size = getattr(getattr(test_loader, "dataset", None), "window_size", None)
-        test_metrics = evaluate_model_loader_metrics(hopf_model, test_loader, cfg, n_steps=test_window_size, return_std=True)
+
+        test_win = getattr(getattr(test_loader, "dataset", None), "window_size", None)
+        test_metrics = evaluate_model_loader_metrics(hopf_model, test_loader, cfg, n_steps=test_win, return_std=True)
         print(f"Test metrics (mean ± std): {_format_metrics_mean_std(test_metrics)}")
     finally:
         finish_wandb_run()
 
-    print("\n" + "=" * 60)
-    print("HOPF GRID SEARCH COMPLETED SUCCESSFULLY")
-    print("=" * 60)
+    print(f"\n{'='*60}\nHOPF GRID SEARCH COMPLETED SUCCESSFULLY\n{'='*60}")
     print(f"\nBest params: {best_params}")
     print(f"Train metrics: {train_metrics}")
-    print(f"Final metrics (full val loader): {final_metrics}")
+    print(f"Final metrics: {final_metrics}")
     print(f"Test metrics (mean ± std): {_format_metrics_mean_std(test_metrics)}")
-    print(f"Checkpoint: {checkpoint}")
-    print(f"Figures saved to: {FIGURES_DIR / ds_tag}")
+    print(f"Checkpoint: {checkpoint}  |  Figures: {FIGURES_DIR / ds_tag}")
 
     return {
         "run": "hopf_grid",
-        "paper_metrics": _as_numeric(test_metrics),  # Use test_metrics for paper consistency
+        "paper_metrics": _as_numeric(test_metrics),
         "train_metrics": _as_numeric(train_metrics),
         "params": {k: float(v) for k, v in best_params.items()},
         "checkpoint": str(checkpoint) if checkpoint is not None else None,
     }
 
 
+# ---------------------------------------------------------------------------
+# Paper suite
+# ---------------------------------------------------------------------------
+
 def _format_metric(value: float) -> str:
-    if torch.isnan(torch.tensor(value)):
-        return "nan"
-    return f"{value:.6f}"
+    return "nan" if torch.isnan(torch.tensor(value)) else f"{value:.6f}"
 
 
 def _print_paper_report(report: dict[str, dict[str, float]]) -> None:
     metric_keys = list(EVAL_METRIC_KEYS)
     header = ["model"] + metric_keys
-    col_widths = [max(len(key), 12) for key in header]
+    col_widths = [max(len(k), 12) for k in header]
 
     def _line(parts: list[str]) -> str:
-        return " | ".join(part.ljust(col_widths[idx]) for idx, part in enumerate(parts))
+        return " | ".join(p.ljust(col_widths[i]) for i, p in enumerate(parts))
 
     print_section("PAPER METRIC REPORT")
     print(_line(header))
     print("-" * (sum(col_widths) + 3 * (len(col_widths) - 1)))
     for model_name, metrics in report.items():
-        row = [model_name] + [_format_metric(metrics.get(key, float("nan"))) for key in metric_keys]
+        row = [model_name] + [_format_metric(metrics.get(k, float("nan"))) for k in metric_keys]
         print(_line(row))
 
 
@@ -560,10 +451,8 @@ def _save_paper_report(report: dict[str, dict[str, float]], output: Path | None,
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output = Path("results") / f"{dataset_type}_paper_metrics_{timestamp}.json"
     output.parent.mkdir(parents=True, exist_ok=True)
-    # Include dataset_type in the JSON for table routing
-    report_with_meta = {"dataset_type": dataset_type, "metrics": report}
     with output.open("w", encoding="utf-8") as fh:
-        json.dump(report_with_meta, fh, indent=2, sort_keys=True)
+        json.dump({"dataset_type": dataset_type, "metrics": report}, fh, indent=2, sort_keys=True)
     print(f"Paper metric report saved to: {output}")
     return output
 
@@ -574,297 +463,70 @@ def _run_paper_suite(args: argparse.Namespace) -> dict[str, object]:
 
     grid_result = _run_hopf_grid(args)
     report["hopf_grid"] = grid_result["paper_metrics"]
-    
-    # Get dataset_type from the grid config to use in filename
+
     cfg_temp = HopfConfig()
     _apply_dataset_cfg_overrides(cfg_temp, args)
     dataset_type = cfg_temp.dataset_type
 
+    all_checkpoints: dict[str, str] = {}
+    if grid_result.get("checkpoint"):
+        all_checkpoints["hopf_grid"] = grid_result["checkpoint"]
+
     backprop_results: dict[str, dict[str, object]] = {}
-    for model_name in ("hopf", "nsde", "hybrid_hopf"):  # "gnn_hopf" disabled
+    for model_name in ("hopf", "nsde", "hybrid_hopf"):
         backprop_args = _make_backprop_namespace_from_paper_args(args, model_name)
-        backprop_result = _run_backprop(backprop_args)
-        # Use test_metrics (which include std) for paper reporting
-        report[f"{model_name}_backprop"] = backprop_result.get("test_metrics", backprop_result["paper_metrics"])
-        backprop_results[model_name] = backprop_result
+        result = _run_backprop(backprop_args)
+        report[f"{model_name}_backprop"] = result.get("test_metrics", result["paper_metrics"])
+        backprop_results[model_name] = result
+        if result.get("checkpoint"):
+            all_checkpoints[f"{model_name}_backprop"] = result["checkpoint"]
 
     _print_paper_report(report)
     output_path = _save_paper_report(report, args.output_json, dataset_type=dataset_type)
 
-    # Collect checkpoint paths from all training runs
-    all_checkpoints: dict[str, str] = {}
-    if grid_result.get("checkpoint"):
-        all_checkpoints["hopf_grid"] = grid_result["checkpoint"]
-    for mname in ("hopf", "nsde", "hybrid_hopf"):  # "gnn_hopf" disabled
-        ckpt = backprop_results.get(mname, {}).get("checkpoint")
-        if ckpt:
-            all_checkpoints[f"{mname}_backprop"] = ckpt
-
-    # Run post-training pipeline (update tables, compare models, etc.)
-    from src.utils.paper_pipeline import run_paper_pipeline
-    run_paper_pipeline(
-        metrics_json=output_path,
-        dataset_type=dataset_type,
-        device=args.device,
-        no_wandb=args.no_wandb,
-        explicit_checkpoints=all_checkpoints,
-        data_path=getattr(args, "data_path", None),
-        lsd_data_dir=getattr(args, "lsd_data_dir", None),
-    )
-
     return {"paper_metrics": report, "output_json": str(output_path), "dataset_type": dataset_type}
 
 
-def _add_dataset_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--dataset-type",
-        type=str,
-        default=None,
-        choices=["ts_young", "mat", "lsd", "nilearn", "openneuro", "datalad", "bids"],
-        help="Dataset backend to use.",
-    )
-    parser.add_argument("--data-path", type=str, default=None, help="Path to local .mat dataset.")
-    parser.add_argument("--lsd-data-dir", type=str, default=None, help="Directory containing LSD .mat files.")
-    parser.add_argument("--max-subjects", type=int, default=None, help="Limit number of subjects loaded (None = all).")
-    parser.add_argument(
-        "--nilearn-dataset",
-        type=str,
-        default=None,
-        choices=["development_fmri", "adhd"],
-        help="nilearn fetcher dataset name.",
-    )
-    parser.add_argument("--nilearn-data-dir", type=str, default=None, help="Cache directory for nilearn data.")
-    parser.add_argument("--nilearn-n-subjects", type=int, default=None, help="Limit nilearn fetched subjects.")
-    parser.add_argument(
-        "--no-nilearn-reduce-confounds",
-        action="store_true",
-        help="Disable nilearn fetch_development_fmri confound reduction.",
-    )
-    parser.add_argument("--openneuro-dataset", type=str, default=None, help="OpenNeuro dataset id (e.g. ds000030).")
-    parser.add_argument("--openneuro-tag", type=str, default=None, help="OpenNeuro dataset tag/revision.")
-    parser.add_argument("--openneuro-target-dir", type=str, default=None, help="Directory for OpenNeuro download.")
-    parser.add_argument(
-        "--openneuro-include",
-        nargs="+",
-        default=None,
-        help="OpenNeuro include glob patterns.",
-    )
-    parser.add_argument(
-        "--openneuro-exclude",
-        nargs="+",
-        default=None,
-        help="OpenNeuro exclude glob patterns.",
-    )
-    parser.add_argument("--datalad-source", type=str, default=None, help="DataLad dataset source URL/path.")
-    parser.add_argument("--datalad-dataset-dir", type=str, default=None, help="Local DataLad dataset checkout dir.")
-    parser.add_argument(
-        "--datalad-get-paths",
-        nargs="+",
-        default=None,
-        help="DataLad paths/globs to materialize with `datalad get`.",
-    )
-    parser.add_argument("--bids-root", type=str, default=None, help="Root path for direct BIDS loading.")
-    parser.add_argument("--bids-relative-path", type=str, default=None, help="Subpath under downloaded dataset root.")
-    parser.add_argument(
-        "--bids-derivatives-dir",
-        type=str,
-        default=None,
-        help="Relative derivatives directory containing preprocessed BOLD files.",
-    )
-    parser.add_argument("--bids-task", type=str, default=None, help="BIDS task label filter.")
-    parser.add_argument("--bids-space", type=str, default=None, help="BIDS space label filter.")
-    parser.add_argument("--bids-desc", type=str, default=None, help="BIDS desc label filter.")
-    parser.add_argument(
-        "--bids-subject-ids",
-        nargs="+",
-        default=None,
-        help="Optional subject list (sub-XXX or XXX).",
-    )
-    parser.add_argument(
-        "--bids-runs-per-subject",
-        type=int,
-        default=None,
-        help="Number of BOLD runs to use per subject.",
-    )
-    parser.add_argument("--atlas-n-rois", type=int, default=None, help="Schaefer atlas ROI count.")
-    parser.add_argument("--atlas-yeo-networks", type=int, default=None, help="Schaefer atlas network count.")
-    parser.add_argument("--atlas-resolution-mm", type=int, default=None, help="Schaefer atlas resolution.")
-    parser.add_argument(
-        "--atlas-smoothing-fwhm",
-        type=float,
-        default=None,
-        help="Optional smoothing passed to nilearn masker.",
-    )
-
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Unified training script for Hopf grid-search and backprop models."
-    )
+    parser = argparse.ArgumentParser(description="Train Hopf (grid) and backprop models.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    def _add_common(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--no-wandb", action="store_true", help="Disable wandb logging")
+        p.add_argument("--device", type=str, default=None, help="Device (auto, cuda, cpu)")
+        p.add_argument("--skip-figures", action="store_true", help="Skip final figure generation")
+        p.add_argument("--n-epochs", type=int, default=None, help="Override number of training epochs")
+        add_dataset_args(p)
+
     backprop = subparsers.add_parser("backprop", help="Train NSDE/Hopf/Hybrid Hopf with backpropagation")
-    backprop.add_argument("--model", type=str, default="nsde", choices=list(_CONFIG_CLS), help="Model to train")
-    backprop.add_argument("--no-wandb", action="store_true", help="Disable wandb logging")
-    backprop.add_argument("--device", type=str, default=None, help="Device (auto, cuda, cpu)")
-    backprop.add_argument("--skip-figures", action="store_true", help="Skip final figure generation")
-    backprop.add_argument("--n-epochs", type=int, default=None, help="Override number of training epochs")
-    _add_dataset_args(backprop)
+    backprop.add_argument("--model", type=str, default="nsde", choices=list(_CONFIG_CLS))
+    _add_common(backprop)
 
     hopf_grid = subparsers.add_parser("hopf-grid", help="Train Coupled Hopf with grid search")
-    hopf_grid.add_argument("--no-wandb", action="store_true", help="Disable wandb logging")
-    hopf_grid.add_argument("--device", type=str, default=None, help="Device (auto, cuda, cpu)")
-    hopf_grid.add_argument("--skip-figures", action="store_true", help="Skip final figure generation")
-    hopf_grid.add_argument("--n-epochs", type=int, default=None, help=argparse.SUPPRESS)
-    _add_dataset_args(hopf_grid)
+    _add_common(hopf_grid)
 
     paper = subparsers.add_parser("paper", help="Run Hopf-grid + all backprop models and report paper metrics")
-    paper.add_argument("--no-wandb", action="store_true", help="Disable wandb logging")
-    paper.add_argument("--device", type=str, default=None, help="Device (auto, cuda, cpu)")
-    paper.add_argument("--skip-figures", action="store_true", help="Skip final figure generation")
-    paper.add_argument("--n-epochs", type=int, default=None, help="Override backprop training epochs")
-    _add_dataset_args(paper)
-    paper.add_argument(
-        "--output-json",
-        type=Path,
-        default=None,
-        help="Optional output path for the aggregated paper metric report JSON",
-    )
-
-    # --- Post-training subcommands (delegate to src.utils.paper_pipeline) ---
-
-    def _add_pipeline_args(p: argparse.ArgumentParser) -> None:
-        """Shared arguments for post-training pipeline subcommands."""
-        p.add_argument("--device", type=str, default=None, help="Device (auto, cuda, cpu)")
-        p.add_argument("--no-wandb", action="store_true", help="Disable wandb logging")
-        p.add_argument("--checkpoint-dir", type=str, default="checkpoints", help="Checkpoint directory")
-        _add_dataset_args(p)
-
-    # pipeline: run all 3 post-training steps
-    pipeline = subparsers.add_parser(
-        "pipeline",
-        help="Run post-training pipeline (update tables, compare models, compare conditions)",
-    )
-    _add_pipeline_args(pipeline)
-    pipeline.add_argument("--metrics", type=str, default=None, help="Path to paper metrics JSON")
-    pipeline.add_argument("--n-simulations", type=int, default=10, help="Simulations for compare_models")
-    pipeline.add_argument("--output-path", type=str, default="results/comparison_results.json", help="compare_models output")
-    pipeline.add_argument("--n-steps", type=int, default=240, help="Simulation length for compare_conditions")
-    pipeline.add_argument("--n-paths", type=int, default=10, help="Initial conditions for compare_conditions")
-
-    # update-tables
-    update_tables = subparsers.add_parser("update-tables", help="Patch LaTeX tables from metrics JSON")
-    update_tables.add_argument("--metrics", type=str, default=None, help="Path to paper metrics JSON")
-    update_tables.add_argument("--tex", type=str, default=None, help="Explicit .tex file to patch")
-    update_tables.add_argument("--table-label", type=str, default=None, help="LaTeX table label (e.g. tab:model_comparison)")
-    update_tables.add_argument("--dry-run", action="store_true", help="Preview without writing")
-
-    # compare
-    compare = subparsers.add_parser("compare", help="Compare Hopf and Neural SDE models (figures)")
-    compare.add_argument("--hopf-checkpoint", type=str, default=None, help="Hopf model checkpoint")
-    compare.add_argument("--nsde-checkpoint", type=str, default=None, help="Neural SDE model checkpoint")
-    compare.add_argument("--n-simulations", type=int, default=10, help="Number of simulations")
-    compare.add_argument("--output-path", type=str, default="results/comparison_results.json", help="Output JSON path")
-    compare.add_argument("--wandb-project", type=str, default="neuroscience-control", help="Wandb project")
-    compare.add_argument("--run-name", type=str, default="model_comparison", help="Wandb run name")
-    _add_pipeline_args(compare)
-
-    # compare-conditions
-    compare_cond = subparsers.add_parser("compare-conditions", help="Compare model FC under LSD control conditions")
-    compare_cond.add_argument("--checkpoints", nargs="+", type=str, default=None, help="Model checkpoints")
-    compare_cond.add_argument("--model-labels", nargs="+", type=str, default=None, help="Model display names")
-    compare_cond.add_argument("--n-steps", type=int, default=240, help="Simulation length")
-    compare_cond.add_argument("--n-paths", type=int, default=10, help="Number of initial conditions")
-    compare_cond.add_argument("--ctrl-values", nargs="+", type=int, default=None, help="Control values (default: 0 1 2)")
-    compare_cond.add_argument("--output-dir", type=str, default=None, help="Output directory for figures")
-    _add_pipeline_args(compare_cond)
+    _add_common(paper)
+    paper.add_argument("--output-json", type=Path, default=None,
+                       help="Optional output path for the aggregated paper metric report JSON")
 
     return parser
-
-
-def _run_pipeline(args: argparse.Namespace) -> dict[str, object]:
-    """Run the full post-training pipeline."""
-    from src.utils.paper_pipeline import run_paper_pipeline
-    result = run_paper_pipeline(
-        metrics_json=getattr(args, "metrics", None),
-        dataset_type=getattr(args, "dataset_type", None) or "ts_young",
-        device=args.device,
-        no_wandb=args.no_wandb,
-        checkpoint_dir=getattr(args, "checkpoint_dir", "checkpoints"),
-        data_path=getattr(args, "data_path", None),
-        lsd_data_dir=getattr(args, "lsd_data_dir", None),
-        n_simulations=getattr(args, "n_simulations", 10),
-        output_path=getattr(args, "output_path", "results/comparison_results.json"),
-        n_steps=getattr(args, "n_steps", 240),
-        n_paths=getattr(args, "n_paths", 10),
-    )
-    return {"pipeline_results": result}
-
-
-def _run_update_tables(args: argparse.Namespace) -> dict[str, object]:
-    """Run table update step."""
-    from src.utils.paper_pipeline import run_update_tables
-    run_update_tables(
-        metrics_json=getattr(args, "metrics", None),
-        tex_target=getattr(args, "tex", None),
-        table_label=getattr(args, "table_label", None),
-        dry_run=getattr(args, "dry_run", False),
-    )
-    return {"update_tables": "done"}
-
-
-def _run_compare(args: argparse.Namespace) -> dict[str, object]:
-    """Run model comparison step."""
-    from src.utils.paper_pipeline import run_compare_models
-    result = run_compare_models(
-        data_path=getattr(args, "data_path", None) or "data/ts_young/ts_young_TR0.72.mat",
-        hopf_checkpoint=getattr(args, "hopf_checkpoint", None),
-        nsde_checkpoint=getattr(args, "nsde_checkpoint", None),
-        device=args.device or "auto",
-        no_wandb=args.no_wandb,
-        wandb_project=getattr(args, "wandb_project", "neuroscience-control"),
-        run_name=getattr(args, "run_name", "model_comparison"),
-        n_simulations=getattr(args, "n_simulations", 10),
-        output_path=getattr(args, "output_path", "results/comparison_results.json"),
-    )
-    return {"compare_results": result}
-
-
-def _run_compare_conditions(args: argparse.Namespace) -> dict[str, object]:
-    """Run LSD control-condition comparison."""
-    from src.utils.paper_pipeline import run_compare_conditions
-    run_compare_conditions(
-        checkpoints=getattr(args, "checkpoints", None),
-        lsd_data_dir=getattr(args, "lsd_data_dir", None) or "data/lsd",
-        n_steps=getattr(args, "n_steps", 240),
-        n_paths=getattr(args, "n_paths", 10),
-        device=args.device,
-        model_labels=getattr(args, "model_labels", None),
-        ctrl_values=getattr(args, "ctrl_values", None),
-        output_dir=getattr(args, "output_dir", None),
-    )
-    return {"compare_conditions": "done"}
 
 
 def main(argv: list[str] | None = None) -> dict[str, object]:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
-    if args.command == "backprop":
-        return _run_backprop(args)
-    if args.command == "hopf-grid":
-        return _run_hopf_grid(args)
-    if args.command == "paper":
-        return _run_paper_suite(args)
-    if args.command == "pipeline":
-        return _run_pipeline(args)
-    if args.command == "update-tables":
-        return _run_update_tables(args)
-    if args.command == "compare":
-        return _run_compare(args)
-    if args.command == "compare-conditions":
-        return _run_compare_conditions(args)
-    raise ValueError(f"Unsupported command: {args.command}")
+    dispatch = {
+        "backprop": _run_backprop,
+        "hopf-grid": _run_hopf_grid,
+        "paper": _run_paper_suite,
+    }
+    return dispatch[args.command](args)
 
 
 if __name__ == "__main__":

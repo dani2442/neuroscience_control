@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from pathlib import Path
 import re
-from typing import Dict, Optional, Sequence, Tuple
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 import numpy as np
 from scipy.io import loadmat
@@ -775,3 +775,112 @@ class NeuroscienceDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         return self.timeseries[idx], self.fc_matrices[idx]
+
+
+def load_dataset(cfg: Any, device: str) -> "NeuroscienceDataset":
+    """Load dataset according to *cfg* and print a summary.
+
+    *cfg* is duck-typed: any object with ``dataset_type``, ``data_path``,
+    ``max_subjects``, ``tr``, ``fourier_denoise``, ``denoise_f_lo``,
+    ``denoise_f_hi`` attributes (i.e. a ``TrainingConfig`` subclass).
+    """
+    dataset_type = getattr(cfg, "dataset_type", "ts_young")
+    dataset_kwargs = dict(
+        normalize=True,
+        device=device,
+        max_subjects=cfg.max_subjects,
+        dt=cfg.tr,
+        fourier_denoise=cfg.fourier_denoise,
+        denoise_f_lo=cfg.denoise_f_lo,
+        denoise_f_hi=cfg.denoise_f_hi,
+    )
+
+    if dataset_type == "lsd":
+        dataset = NeuroscienceDataset.from_lsd(
+            data_dir=getattr(cfg, "lsd_data_dir", "data/lsd"),
+            **dataset_kwargs,
+        )
+    elif dataset_type == "nilearn":
+        dataset = NeuroscienceDataset.from_nilearn(
+            dataset_name=cfg.nilearn_dataset,
+            data_dir=cfg.nilearn_data_dir,
+            n_subjects=cfg.nilearn_n_subjects,
+            reduce_confounds=cfg.nilearn_reduce_confounds,
+            atlas_n_rois=cfg.atlas_n_rois,
+            atlas_yeo_networks=cfg.atlas_yeo_networks,
+            atlas_resolution_mm=cfg.atlas_resolution_mm,
+            atlas_smoothing_fwhm=cfg.atlas_smoothing_fwhm,
+            **dataset_kwargs,
+        )
+    elif dataset_type == "openneuro":
+        dataset = NeuroscienceDataset.from_openneuro(
+            dataset=cfg.openneuro_dataset,
+            target_dir=cfg.openneuro_target_dir,
+            tag=cfg.openneuro_tag,
+            include=cfg.openneuro_include,
+            exclude=cfg.openneuro_exclude,
+            bids_relative_path=cfg.bids_relative_path,
+            derivatives_dir=cfg.bids_derivatives_dir,
+            task=cfg.bids_task,
+            space=cfg.bids_space,
+            desc=cfg.bids_desc,
+            subject_ids=cfg.bids_subject_ids,
+            n_runs_per_subject=cfg.bids_runs_per_subject,
+            atlas_n_rois=cfg.atlas_n_rois,
+            atlas_yeo_networks=cfg.atlas_yeo_networks,
+            atlas_resolution_mm=cfg.atlas_resolution_mm,
+            atlas_smoothing_fwhm=cfg.atlas_smoothing_fwhm,
+            atlas_data_dir=cfg.nilearn_data_dir,
+            **dataset_kwargs,
+        )
+    elif dataset_type == "datalad":
+        dataset = NeuroscienceDataset.from_datalad(
+            source=cfg.datalad_source,
+            dataset_dir=cfg.datalad_dataset_dir,
+            get_paths=cfg.datalad_get_paths,
+            bids_relative_path=cfg.bids_relative_path,
+            derivatives_dir=cfg.bids_derivatives_dir,
+            task=cfg.bids_task,
+            space=cfg.bids_space,
+            desc=cfg.bids_desc,
+            subject_ids=cfg.bids_subject_ids,
+            n_runs_per_subject=cfg.bids_runs_per_subject,
+            atlas_n_rois=cfg.atlas_n_rois,
+            atlas_yeo_networks=cfg.atlas_yeo_networks,
+            atlas_resolution_mm=cfg.atlas_resolution_mm,
+            atlas_smoothing_fwhm=cfg.atlas_smoothing_fwhm,
+            atlas_data_dir=cfg.nilearn_data_dir,
+            **dataset_kwargs,
+        )
+    elif dataset_type == "bids":
+        if not cfg.bids_root:
+            raise ValueError("dataset_type='bids' requires cfg.bids_root to be set.")
+        dataset = NeuroscienceDataset.from_bids(
+            bids_root=cfg.bids_root,
+            derivatives_dir=cfg.bids_derivatives_dir,
+            task=cfg.bids_task,
+            space=cfg.bids_space,
+            desc=cfg.bids_desc,
+            subject_ids=cfg.bids_subject_ids,
+            n_runs_per_subject=cfg.bids_runs_per_subject,
+            atlas_n_rois=cfg.atlas_n_rois,
+            atlas_yeo_networks=cfg.atlas_yeo_networks,
+            atlas_resolution_mm=cfg.atlas_resolution_mm,
+            atlas_smoothing_fwhm=cfg.atlas_smoothing_fwhm,
+            atlas_data_dir=cfg.nilearn_data_dir,
+            **dataset_kwargs,
+        )
+    elif dataset_type in ("ts_young", "mat"):
+        dataset = NeuroscienceDataset(filepath=cfg.data_path, **dataset_kwargs)
+    else:
+        raise ValueError(
+            "Unsupported dataset_type. Expected one of "
+            "{'ts_young', 'mat', 'lsd', 'nilearn', 'openneuro', 'datalad', 'bids'}, "
+            f"got {dataset_type!r}."
+        )
+
+    print("Loaded dataset:")
+    print(f"  - subjects={dataset.n_subjects}  ROIs={dataset.n_rois}  T={dataset.n_timepoints}")
+    print(f"  - FC shape={dataset.fc_mean.shape}  dtype={dataset.timeseries.dtype}  dt={dataset.dt}s")
+    print(f"  - control_dims={dataset.n_control_dims}")
+    return dataset

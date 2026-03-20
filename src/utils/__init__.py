@@ -38,13 +38,6 @@ from .evaluation import (
     split_subject_indices,
     evaluate_model_loader_metrics
 )
-from .paper_pipeline import (
-    run_paper_pipeline,
-    run_update_tables,
-    run_compare_models,
-    run_compare_conditions,
-)
-
 __all__ = [
     "plot_fc_comparison",
     "plot_training_curves",
@@ -79,8 +72,4 @@ __all__ = [
     "extract_val_data",
     "split_subject_indices",
     "evaluate_model_loader_metrics",
-    "run_paper_pipeline",
-    "run_update_tables",
-    "run_compare_models",
-    "run_compare_conditions",
 ]

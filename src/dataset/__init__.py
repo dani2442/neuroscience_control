@@ -2,6 +2,7 @@
 
 from .data_loader import (
     NeuroscienceDataset,
+    load_dataset,
     load_mat_data,
     load_lsd_data,
     compute_fc_from_timeseries,
@@ -17,6 +18,7 @@ from .preprocessing import (
 
 __all__ = [
     "NeuroscienceDataset",
+    "load_dataset",
     "load_mat_data",
     "load_lsd_data",
     "compute_fc_from_timeseries",
