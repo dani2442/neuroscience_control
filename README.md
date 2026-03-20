@@ -26,15 +26,16 @@
 
 ## Overview
 
-A PyTorch framework for **whole-brain modeling** of resting-state fMRI BOLD signals. It implements three complementary approaches:
+A PyTorch framework for **whole-brain modeling** of resting-state fMRI BOLD signals. It provides three main training workflows and an additional experimental model class:
 
 | Model | Description |
 |-------|-------------|
 | **Coupled Hopf** | Physics-based coupled oscillators at the supercritical Hopf bifurcation, informed by structural connectivity |
 | **Hybrid Hopf** | Hopf oscillators with a learnable complex-valued graph-coupling network replacing fixed linear diffusive coupling |
 | **Neural SDE** | Data-driven neural networks parameterizing stochastic differential equations |
+| **GNN Hopf** | A node-wise neural coupling variant of the Hopf model, exposed as a model class and covered by tests |
 
-All three models operate in **complex-valued** space — state, drift, diffusion, and Brownian motion are complex tensors. The observed BOLD signal is the real part of the complex state.
+All model families operate in **complex-valued** space — state, drift, diffusion, and Brownian motion are complex tensors. The observed BOLD signal is the real part of the complex state.
 
 ### Key Features
 
@@ -83,8 +84,10 @@ uv sync --group datasets
 
 ### Verify
 
+The distribution is named `neuroscience-control`, but the importable package in this repository is currently `src`.
+
 ```bash
-python -c "import neuroscience_control as nc; print(nc.__version__)"
+python -c "import src; print(src.__version__)"
 ```
 
 > **Note:** The project depends on a [complex-valued fork of `torchsde`](https://github.com/dani2442/torchsde). When installing from source with `uv`, this is resolved automatically via the `[tool.uv.sources]` override in `pyproject.toml`.
@@ -95,7 +98,7 @@ python -c "import neuroscience_control as nc; print(nc.__version__)"
 
 ```python
 import torch
-from neuroscience_control.models import CoupledHopfModel
+from src.models import CoupledHopfModel
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 model = CoupledHopfModel(
@@ -139,7 +142,7 @@ where $W_i = W_{1,i} + i\, W_{2,i}$ is complex Brownian motion.
 The BOLD signal is $s_i(t) = \Re(z_i(t))$. The brain is hypothesised to operate near criticality ($a \approx 0$).
 
 ```python
-from neuroscience_control.models import CoupledHopfModel
+from src.models import CoupledHopfModel
 
 model = CoupledHopfModel(
     n_rois=68,
@@ -164,7 +167,7 @@ $$dz_i = \Bigl[\bigl(\kappa a + i\omega_i - \kappa \lvert z_i \rvert^2\bigr) z_i
 The network $\psi_\theta : \mathbb{C}^2 \to \mathbb{C}$ is a complex-valued harmonic network with phase-preserving activations ($f(z) = \frac{z}{|z|} \cdot \tanh(|z|)$), replacing the fixed linear coupling of the classical model. Magnitude is soft-clamped at 10.0 to prevent runaway growth.
 
 ```python
-from neuroscience_control.models import HybridHopfModel
+from src.models import HybridHopfModel
 
 model = HybridHopfModel(
     n_rois=68,
@@ -187,7 +190,7 @@ $$dz_t = f_\theta(z_t)\, dt + g_\phi(z_t)\, dW_t$$
 where $f_\theta$ and $g_\phi$ are real-valued MLPs operating on `torch.view_as_real` / `torch.view_as_complex` conversions. The drift network uses `tanh` activations; the diffusion network uses `Softplus`.
 
 ```python
-from neuroscience_control.models import NeuralSDE
+from src.models import NeuralSDE
 
 model = NeuralSDE(
     n_rois=68,
@@ -198,9 +201,24 @@ model = NeuralSDE(
 )
 ```
 
+### GNN Hopf Model
+
+The repository also exports `GNNHopfModel`, a node-wise neural coupling variant of the Hopf model. It is covered by tests and checkpoint loading, but it is not currently exposed through the main `examples/train_models.py backprop --model ...` CLI.
+
+```python
+from src.models import GNNHopfModel
+
+model = GNNHopfModel(
+    n_rois=68,
+    structural_connectivity=sc_matrix,
+    node_hidden_dim=16,
+    node_n_layers=1,
+)
+```
+
 ### Common Forward Interface
 
-All three models share the same `forward()` signature:
+`CoupledHopfModel`, `HybridHopfModel`, `GNNHopfModel`, and `NeuralSDE` share the same `forward()` signature:
 
 ```python
 timeseries = model.forward(
@@ -283,7 +301,7 @@ $$R(t) = \left\lvert \frac{1}{N} \sum_{n=1}^{N} e^{i\phi_n(t)} \right\rvert, \qq
 Losses are configured via `loss_weights` in `TrainingConfig` — a plain dict mapping term names to scalar weights. Zero-weight terms are never computed. The `CompositeLoss` nn.Module assembles the active terms automatically.
 
 ```python
-from src.training.losses import CompositeLoss
+from src.training import CompositeLoss
 
 # Explicit weight dict — no preset lookup needed
 loss_fn = CompositeLoss(
@@ -308,24 +326,26 @@ cfg = HopfConfig(loss_weights={"fc_correlation": 1.0, "phfcd": 1.0, "metastabili
 
 ### Unified Entry Point
 
-All training goes through `examples/train_models.py` with three subcommands:
+Training is orchestrated by [`examples/train_models.py`](examples/train_models.py). It exposes three subcommands:
 
 ```bash
 # Hopf grid search over (G, a, κ)
 python examples/train_models.py hopf-grid
 
-# Backprop training for any model
+# Backprop training for the CLI-supported models
 python examples/train_models.py backprop --model nsde
 python examples/train_models.py backprop --model hopf
 python examples/train_models.py backprop --model hybrid_hopf
 
-# Full paper reproduction: grid search + all backprop models + comparison report
+# Full paper suite: grid search + all backprop models + metrics JSON
 python examples/train_models.py paper --output-json results/paper_metrics.json
 ```
 
 **Common flags:** `--no-wandb`, `--device {auto,cuda,cpu}`, `--skip-figures`, `--n-epochs N`
 
-Training hyperparameters (learning rate, loss function, window size, etc.) are configured via the `TrainingConfig` dataclass in `src/training/config.py`.
+Training hyperparameters (learning rate, loss weights, dataset backend, solver settings, atlas settings, and split ratios) are configured via the `TrainingConfig` dataclasses in `src/training/config.py`.
+
+The `paper` subcommand saves an aggregated metrics JSON. Post-training report generation, table patching, and figure comparison live in [`examples/postprocess.py`](examples/postprocess.py).
 
 ### Dataset Backends
 
@@ -370,16 +390,7 @@ python examples/train_models.py backprop --model hybrid_hopf \
   --no-wandb
 ```
 
-> **Note:** `openneuro`, `datalad`, and `bids` backends expect preprocessed BOLD files (typically fMRIPrep outputs). ROI extraction uses the Schaefer atlas via nilearn (`--atlas-n-rois`, `--atlas-yeo-networks`, `--atlas-resolution-mm`). If BOLD runs have different lengths, the loader trims all runs to the shortest length.
-
-### Fine-Tuning a Neural SDE
-
-```bash
-python examples/train_nsde_finetune.py \
-    --checkpoint checkpoints/best_nsde_backprop.pt \
-    --fine-tune-epochs 20 \
-    --fine-tune-lr 1e-4
-```
+> **Note:** `openneuro`, `datalad`, and `bids` backends expect preprocessed BOLD files, typically fMRIPrep derivatives. ROI extraction uses the Schaefer atlas via nilearn (`--atlas-n-rois`, `--atlas-yeo-networks`, `--atlas-resolution-mm`). If BOLD runs have different lengths, the loader trims all runs to the shortest length.
 
 ---
 
@@ -409,18 +420,12 @@ The SDE solver uses an internal Euler–Maruyama sub-step of `dt_min = 0.05` s (
 
 ## Import Path
 
-Use the public namespace in new code:
-
-```python
-from neuroscience_control.models import CoupledHopfModel, NeuralSDE
-from neuroscience_control.metrics import FCCorrelation, FCMSE, FCD, PhFCD
-from neuroscience_control.training import Trainer, TrainingConfig
-```
-
-Legacy imports via `src.*` are still supported:
+The current import namespace in this repository is `src`:
 
 ```python
 from src.models import NeuralSDE
+from src.metrics import FCCorrelation, FCMSE, FCD, PhFCD
+from src.training import Trainer, TrainingConfig
 ```
 
 ---
@@ -430,43 +435,25 @@ from src.models import NeuralSDE
 ```text
 neuroscience_control/
 ├── src/
-│   ├── dataset/                   # Data loading and preprocessing
-│   │   ├── data_loader.py         # NeuroscienceDataset, Hilbert transform
-│   │   └── preprocessing.py       # Windowing, omega estimation
-│   ├── models/                    # Brain dynamics models
-│   │   ├── base_model.py          # Abstract base class (forward, compute_fc, save/load)
-│   │   ├── hopf_model.py          # Coupled Hopf oscillator SDE
-│   │   ├── hybrid_hopf_model.py   # Hybrid mechanistic–neural Hopf SDE
-│   │   ├── neural_sde.py          # Neural SDE (drift + diffusion MLPs)
-│   │   ├── factory.py             # build_model() dispatcher
-│   │   └── checkpointing.py       # Checkpoint loading with version migration
-│   ├── metrics/                   # nn.Module metric/loss classes
-│   │   ├── fc_metrics.py          # FCCorrelation, FCMSE
-│   │   ├── dynamics_metrics.py    # FCD, PhFCD, Metastability, PhaseFC
-│   │   ├── timeseries_metrics.py  # PowerSpectrumDistance, TemporalCorrelation, AutocorrelationDistance
-│   │   └── metrics_store.py       # MetricsStore JSON-backed accumulator
-│   ├── training/                  # Training utilities
-│   │   ├── trainer.py             # Backprop trainer (train/val/test loops)
-│   │   ├── grid_search.py         # Hopf grid search over (G, a, κ)
-│   │   ├── fine_tuning.py         # Fine-tuning pipeline
-│   │   ├── losses.py              # CompositeLoss, L2Timeseries, AmplitudeLoss, OmegaLoss
-│   │   ├── backprop.py            # run_backprop_training() orchestration
-│   │   └── config.py              # TrainingConfig / HopfConfig / NeuralSDEConfig
-│   └── utils/                     # Visualization, evaluation, runtime
-│       ├── visualization.py       # FC comparison plots, training curves, multigrid
-│       ├── evaluation.py          # EVAL_METRIC_KEYS, checkpoint evaluation helpers
-│       └── runtime.py             # Device resolution, seeding, W&B wrappers
-├── examples/                      # Entry-point scripts
-│   ├── train_models.py            # Unified training (grid / backprop / paper)
-│   ├── train_nsde_finetune.py     # Neural SDE fine-tuning
-│   ├── compare_models.py          # Side-by-side model comparison
-│   ├── test.py                    # Checkpoint evaluation
-│   └── visualization.py           # Standalone plotting utilities
-├── tests/                         # Unit tests (pytest)
-├── paper/                         # LaTeX source for accompanying paper
+│   ├── dataset/                   # Data loading, preprocessing, alternate dataset backends
+│   ├── metrics/                   # FC, dynamics, phase, spectrum, and auxiliary losses
+│   ├── models/                    # Coupled Hopf, Hybrid Hopf, GNN Hopf, Neural SDE, checkpoint loading
+│   ├── training/                  # Config dataclasses, grid search, trainer, composite loss
+│   └── utils/                     # Evaluation helpers, plotting, runtime/W&B utilities
+├── examples/
+│   ├── train_models.py            # Training entry point: backprop, hopf-grid, paper
+│   ├── postprocess.py             # Table updates, model comparison, LSD condition comparisons
+│   ├── cli_args.py                # Shared dataset-related CLI flags
+│   ├── visualization.py           # 2D latent-trajectory animation example
+│   ├── visualization_3d.py        # Surface-mapped 3D animation example
+│   ├── example.ipynb              # Notebook demo
+│   └── pipeline_visualization.ipynb
+├── tests/                         # Model and grid-search unit tests
 ├── docs/                          # MkDocs Material documentation site
-├── data/                          # Data directory (.mat files)
-├── checkpoints/                   # Saved model weights
+├── paper/                         # Figures, LaTeX tables, manuscript sources
+├── data/                          # Local datasets (.mat, LSD, downloaded BIDS derivatives)
+├── checkpoints/                   # Saved model checkpoints
+├── results/                       # Metrics JSON, comparison outputs, metrics-store runs
 ├── mkdocs.yml
 └── pyproject.toml
 ```
@@ -476,14 +463,17 @@ neuroscience_control/
 ## Examples
 
 ```bash
-# Evaluate a saved checkpoint
-python examples/test.py --checkpoint checkpoints/best_nsde_backprop.pt
+# Train a short Hopf run on the default ts_young dataset
+python examples/train_models.py backprop --model hopf --n-epochs 2 --no-wandb
 
-# Compare two trained models
-python examples/compare_models.py \
-    --hopf-checkpoint checkpoints/best_hopf_backprop.pt \
-    --nsde-checkpoint checkpoints/best_nsde_backprop.pt \
-    --n-simulations 10
+# Compare trained Hopf and Neural SDE checkpoints
+python examples/postprocess.py compare \
+  --data-path data/ts_young/ts_young_TR0.72.mat \
+  --hopf-checkpoint checkpoints/hopf_backprop_ts_young_best_<run>.pt \
+  --nsde-checkpoint checkpoints/nsde_backprop_ts_young_best_<run>.pt
+
+# Patch paper tables from the latest metrics JSON
+python examples/postprocess.py update-tables --metrics results/ts_young_paper_metrics_<timestamp>.json
 ```
 
 ---
@@ -510,7 +500,7 @@ uv run mkdocs build --strict
 
 ```bash
 uv sync --group dev
-uv run pytest --cov=src --cov=neuroscience_control --cov-report=term-missing
+uv run pytest --cov=src --cov-report=term-missing
 ```
 
 ---
@@ -574,19 +564,24 @@ Run from the repository root. See each script's docstring for full usage details
 .venv/bin/python examples/train_models.py paper \
   --dataset-type ts_young --data-path data/ts_young/ts_young_TR0.72.mat
 
-# 2) Update paper LaTeX tables from metrics JSON (see examples/update_paper_tables.py)
-.venv/bin/python examples/update_paper_tables.py \
+# 2) Update paper LaTeX tables from metrics JSON
+.venv/bin/python examples/postprocess.py update-tables \
   --metrics results/lsd_paper_metrics_<timestamp>.json
 
-.venv/bin/python examples/update_paper_tables.py \
+.venv/bin/python examples/postprocess.py update-tables \
   --metrics results/ts_young_paper_metrics_<timestamp>.json
 
-# 3) Compare LSD control conditions (see examples/compare_control_conditions.py)
-.venv/bin/python examples/compare_control_conditions.py \
+# 3) Compare LSD control conditions
+.venv/bin/python examples/postprocess.py compare-conditions \
   --checkpoints checkpoints/hopf_grid_lsd_best_*.pt \
                 checkpoints/hopf_backprop_lsd_best_*.pt \
                 checkpoints/nsde_backprop_lsd_best_*.pt \
                 checkpoints/hybrid_hopf_backprop_lsd_best_*.pt \
                 checkpoints/gnn_hopf_backprop_lsd_best_*.pt \
+  --lsd-data-dir data/lsd
+
+# 4) Or run the full post-training pipeline
+.venv/bin/python examples/postprocess.py pipeline \
+  --dataset-type lsd \
   --lsd-data-dir data/lsd
 ```

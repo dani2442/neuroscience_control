@@ -1,39 +1,97 @@
 # Metrics Evaluation
 
-The package includes static FC, dynamics, and timeseries metrics.
+Metrics are implemented as `nn.Module` classes under `src.metrics`. Each metric accepts complex analytic signals with shape `(batch, n_rois, T)`.
 
-## Example: FC + dynamics metrics
+- `forward(ts_pred, ts_target)` returns a differentiable scalar loss.
+- `evaluate(ts_pred, ts_target)` returns one or more logging-ready metric values.
+
+## Example: evaluate a simulated batch
 
 ```python
-import torch
-from neuroscience_control.metrics import compute_all_fc_metrics, compute_dynamics_fit_metrics
+from src.metrics import (
+    FCCorrelation,
+    FCMSE,
+    FCD,
+    PhFCD,
+    Metastability,
+    PhaseFC,
+    PowerSpectrumDistance,
+    TemporalCorrelation,
+    AutocorrelationDistance,
+)
 
-# sim_ts and real_ts: [batch, n_rois, n_timepoints], complex-valued
-sim_fc = torch.corrcoef(sim_ts.real[0])
-real_fc = torch.corrcoef(real_ts.real[0])
+modules = [
+    FCCorrelation(),
+    FCMSE(),
+    FCD(tr=0.72, fcd_win_sec=30.0, fcd_step_sec=2.0),
+    PhFCD(),
+    Metastability(),
+    PhaseFC(),
+    PowerSpectrumDistance(),
+    TemporalCorrelation(),
+    AutocorrelationDistance(),
+]
 
-fc_metrics = compute_all_fc_metrics(sim_fc.unsqueeze(0), real_fc.unsqueeze(0))
-dyn_metrics = compute_dynamics_fit_metrics(
-    sim_ts,
-    real_ts,
+metrics = {}
+for module in modules:
+    metrics.update(module.evaluate(sim_ts, real_ts))
+
+print(metrics)
+```
+
+## Metric groups
+
+- FC: `FCCorrelation`, `FCMSE`
+- Dynamics / phase: `FCD`, `PhFCD`, `Metastability`, `PhaseFC`
+- Timeseries: `PowerSpectrumDistance`, `TemporalCorrelation`, `AutocorrelationDistance`
+- Auxiliary training losses: `L2Timeseries`, `AmplitudeLoss`, `OmegaLoss`
+
+FC, spectrum, and autocorrelation metrics operate on the real part of the analytic signal. Phase-based metrics derive phases with `torch.angle(...)`.
+
+## Composite training loss
+
+`src.training.CompositeLoss` wires the same modules into a weighted training objective:
+
+```python
+from src.training import CompositeLoss
+
+loss_fn = CompositeLoss(
+    weights={
+        "fc_correlation": 1.0,
+        "phfcd": 1.0,
+        "metastability": 1.0,
+    },
     tr=0.72,
     fcd_win_sec=30.0,
     fcd_step_sec=2.0,
 )
 
-print(fc_metrics)
-print(dyn_metrics)
+total_loss, components = loss_fn(sim_ts, real_ts)
+print(total_loss)
+print(components)
 ```
 
-## Key metrics used in training/evaluation
+## Loader-level evaluation
+
+For end-to-end model evaluation on a `DataLoader`, use `src.utils.evaluate_model_loader_metrics`:
+
+```python
+from src.utils import EVAL_METRIC_KEYS, evaluate_model_loader_metrics
+
+metrics = evaluate_model_loader_metrics(model, val_loader, cfg, return_std=True)
+
+for key in EVAL_METRIC_KEYS:
+    print(key, metrics.get(key), metrics.get(f"{key}_std"))
+```
+
+The default report keys are:
 
 - `fc_correlation`
 - `fc_mse`
-- `fcd_ks`
-- `phfcd_ks`
-- `metastability_diff`
 - `temporal_correlation`
 - `power_spectrum_distance`
 - `autocorr_distance`
-
-These metrics are aggregated in `neuroscience_control.utils.EVAL_METRIC_KEYS`.
+- `fcd_ks`
+- `phfcd_ks`
+- `phase_fc_correlation`
+- `metastability_diff`

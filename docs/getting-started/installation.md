@@ -40,7 +40,17 @@ uv sync --group datasets
 ## Verify installation
 
 ```bash
-python -c "import neuroscience_control as nc; print(nc.__version__)"
+python -c "import src; print(src.__version__)"
+```
+
+## Import namespace
+
+Install the package as `neuroscience-control`, but import from `src` in the current repository layout:
+
+```python
+from src.models import CoupledHopfModel, NeuralSDE
+from src.metrics import FCCorrelation, PhFCD
+from src.training import Trainer, HopfConfig
 ```
 
 ## Dependency notes

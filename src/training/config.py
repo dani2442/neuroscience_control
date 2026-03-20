@@ -87,10 +87,15 @@ class TrainingConfig:
         "amplitude": 1.0, "omega": 1.0, "power_spectrum": 1.0,
         "temporal_correlation": 1.0, "autocorrelation": 1.0,
         "fcd": 1.0, "phfcd": 1.0, "phase_fc_correlation": 1.0,
-        "metastability": 1.0,
+        "metastability": 1.0, "fdm": 0.0,
     })
     early_stopping_patience: int = 15
     n_steps: int = 50
+
+    # FDM loss hyperparameters
+    fdm_n_pairs: int = 32
+    fdm_max_lag: int = 50
+    fdm_sigma: float = 1.0
     dt_min: Optional[float] = 0.05  # Fixed solver sub-step (passed as torchsde `dt`)
     sde_type: str = "ito"  # SDE interpretation required by reversible_heun
     sde_method: str = "euler"  # Stable Stratonovich solver
@@ -194,6 +199,25 @@ class GNNHopfConfig(TrainingConfig):
     node_hidden_dim: int = 16
     node_n_layers: int = 1
     use_adjoint: bool = True  # Adjoint SDE solver to reduce CUDA memory usage
+
+
+@dataclass
+class HybridNeuralConfig(TrainingConfig):
+    """Configuration for HybridHopfNeuralModel training (Hopf + neural drift correction)."""
+    experiment_name: str = "hybrid_neural"
+    noise_sigma: float = 0.1
+    initial_a: float = -0.02
+    initial_g: float = 0.5
+    initial_kappa: float = 1.0
+    learnable_a: bool = True
+    learnable_g: bool = True
+    learnable_kappa: bool = False
+    learnable_omega: bool = False
+
+    # Neural drift architecture
+    drift_hidden_dim: int = 64
+    drift_n_layers: int = 2
+    use_adjoint: bool = True
 
 
 @dataclass

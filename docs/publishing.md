@@ -8,7 +8,7 @@ Run these before creating a release:
 
 ```bash
 uv sync --group dev --group docs
-uv run pytest --cov=src --cov=neuroscience_control --cov-report=term-missing
+uv run pytest --cov=src --cov-report=term-missing
 uv run mkdocs build --strict
 uv run python -m build
 uv run twine check dist/*

@@ -85,6 +85,7 @@ _BEST_CKPT_PATTERNS: dict[str, list[str]] = {
         "best_nsde_backprop_ts_young.pt",
         "best_hybrid_hopf_backprop_ts_young.pt",
         "best_gnn_hopf_backprop_ts_young.pt",
+        "best_hybrid_neural_backprop_ts_young.pt",
     ],
     "lsd": [
         "best_hopf_grid_lsd.pt",
@@ -92,6 +93,7 @@ _BEST_CKPT_PATTERNS: dict[str, list[str]] = {
         "best_nsde_backprop_lsd.pt",
         "best_hybrid_hopf_backprop_lsd.pt",
         "best_gnn_hopf_backprop_lsd.pt",
+        "best_hybrid_neural_backprop_lsd.pt",
     ],
 }
 
@@ -136,28 +138,33 @@ METRIC_COLS: list[tuple[str, str]] = [
     ("fc_correlation",          r"FC corr $\uparrow$"),
     ("fc_mse",                  r"FC MSE $\downarrow$"),
     ("phase_fc_correlation",    r"phFC corr $\uparrow$"),
+    ("fcd_ks",                  r"FCD KS $\downarrow$"),
     ("phfcd_ks",                r"phFCD KS $\downarrow$"),
     ("metastability_diff",      r"Meta $|\Delta|$ $\downarrow$"),
     ("temporal_correlation",    r"TS corr $\uparrow$"),
     ("power_spectrum_distance", r"TS PSD $\downarrow$"),
+    ("autocorr_distance",       r"Autocorr $\downarrow$"),
 ]
 
 MODEL_DISPLAY: dict[str, str] = {
-    "hopf_grid":            "Coupled Hopf (grid search)",
-    "hopf_backprop":        "Coupled Hopf (gradient opt.)",
-    "hybrid_hopf_backprop": "Hybrid Hopf (gradient opt.)",
-    "nsde_backprop":        "Neural SDE (gradient opt.)",
-    "gnn_hopf_backprop":    "GNN Hopf (gradient opt.)",
+    "hopf_grid":     "Coupled Hopf (grid search)",
+    "hopf":          "Coupled Hopf",
+    "nsde":          "Neural SDE",
+    "hybrid_hopf":   "Hybrid Hopf",
+    "gnn_hopf":      "GNN Hopf",
+    "hybrid_neural": "Hybrid Hopf+Neural",
 }
 
 HIGHER_BETTER: dict[str, bool] = {
     "fc_correlation": True,
     "fc_mse": False,
     "phase_fc_correlation": True,
+    "fcd_ks": False,
     "phfcd_ks": False,
     "metastability_diff": False,
     "temporal_correlation": True,
     "power_spectrum_distance": False,
+    "autocorr_distance": False,
 }
 
 TABLE_TARGET_BY_LABEL: dict[str, Path] = {
@@ -543,6 +550,7 @@ def run_compare_models(
 
 _MODEL_TAGS = [
     ("gnn_hopf", "GNN Hopf"),
+    ("hybrid_neural", "Hybrid+Neural"),
     ("hybrid_hopf", "Hybrid Hopf"),
     ("nsde", "Neural SDE"),
     ("hopf", "Hopf"),
@@ -554,8 +562,8 @@ def _short_model_label(stem: str) -> str:
     lower = stem.lower()
     for tag, label in _MODEL_TAGS:
         if tag in lower:
-            suffix = " (Grid)" if "grid" in lower else ""
-            return f"{label}{suffix}"
+            grid_suffix = " (Grid)" if "grid" in lower else ""
+            return f"{label}{grid_suffix}"
     return stem
 
 

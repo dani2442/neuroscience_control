@@ -1,38 +1,37 @@
 # Neuroscience Control
 
-`neuroscience-control` is a PyTorch framework for **whole-brain modeling** of resting-state fMRI BOLD signals. It implements three complementary model families — all operating in **complex-valued** space — with a shared training and evaluation pipeline.
+`neuroscience-control` is a PyTorch framework for **whole-brain modeling** of resting-state fMRI BOLD signals. The repository centers on three main training workflows:
 
-| Model | Description |
-|-------|-------------|
+| Workflow / Model | Description |
+|------------------|-------------|
 | **Coupled Hopf** | Physics-based coupled oscillators at the supercritical Hopf bifurcation, informed by structural connectivity |
-| **Hybrid Hopf** | Hopf oscillators with a learnable complex-valued graph-coupling network replacing fixed linear diffusive coupling |
-| **Neural SDE** | Data-driven neural networks parameterising stochastic differential equations |
+| **Hybrid Hopf** | Hopf oscillators with learnable complex coupling networks |
+| **Neural SDE** | Data-driven neural networks parameterizing stochastic differential equations |
+
+The codebase also exports an experimental `GNNHopfModel` class for node-wise neural coupling experiments.
 
 The observed BOLD signal is the real part of the complex state, $s_i(t) = \Re(z_i(t))$.
 
-## Key Features
+## Key Facts
 
-- **Biologically-grounded** modeling with structural connectivity from DTI
-- **Native complex-valued SDEs** via a [complex-valued fork of `torchsde`](https://github.com/dani2442/torchsde)
-- **Comprehensive evaluation**: FC, FCD, phFCD, phase-coherence FC, metastability, power spectrum, autocorrelation
-- **Composable losses** via `CompositeLoss` with presets (`mse`, `combined`, `fc_phfcd_meta`, `full`, …)
-- **Flexible data loading**: local `.mat` files, LSD pharmacological data, nilearn, OpenNeuro, DataLad, BIDS
-- **Weights & Biases** integration for experiment tracking
-- **GPU-accelerated** training and simulation
-- **CI / Docs / PyPI** workflows ready out of the box
+- The install name is `neuroscience-control`, but the current Python import namespace is `src`.
+- All model families operate on **complex-valued** analytic signals.
+- Training uses `examples/train_models.py`; post-training comparison and paper artefacts use `examples/postprocess.py`.
+- Dataset backends include local `.mat`, LSD, nilearn, OpenNeuro, DataLad, and local BIDS derivatives.
+- Evaluation covers FC, FCD, phFCD, phase-coherence FC, metastability, temporal correlation, power spectrum, and autocorrelation.
 
 ## Quick Start
 
 ```python
 import torch
-from neuroscience_control.models import CoupledHopfModel
+from src.models import CoupledHopfModel
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 model = CoupledHopfModel(
     n_rois=68,
-    initial_a=-0.02,   # Bifurcation parameter (near criticality)
-    initial_g=0.5,      # Global coupling strength
-    initial_kappa=0.1,  # Scaling factor for local dynamics
+    initial_a=-0.02,
+    initial_g=0.5,
+    initial_kappa=0.1,
     noise_sigma=0.5,
     device=device,
 )
@@ -40,15 +39,16 @@ model = CoupledHopfModel(
 initial_state = torch.randn(10, 68, dtype=torch.complex64, device=device)
 with torch.no_grad():
     timeseries = model.forward(initial_state=initial_state, n_steps=200)
-    fc_matrix  = model.compute_fc(timeseries)
+    fc_matrix = model.compute_fc(timeseries)
 ```
 
 ## Documentation
 
 | Page | Contents |
 |------|----------|
-| [Installation](getting-started/installation.md) | Requirements, PyPI/source install, optional extras, torchsde note |
-| [First Training Run](tutorials/first-training-run.md) | End-to-end training walkthrough, CLI flags, dataset backends |
-| [Metrics & Evaluation](tutorials/metrics-evaluation.md) | All 9 evaluation metrics, mathematical definitions, loss presets |
-| [API Overview](api/index.md) | Module-by-module reference: models, metrics, training, dataset, utils |
-| [Publishing](publishing.md) | TestPyPI / PyPI release checklist |
+| [Installation](getting-started/installation.md) | Requirements, install commands, import namespace, dependency notes |
+| [Project Structure](getting-started/project-structure.md) | Repository map for `src/`, `examples/`, `tests/`, `docs/`, and output folders |
+| [First Training Run](tutorials/first-training-run.md) | Backprop, grid-search, and paper-suite entry points |
+| [Metrics & Evaluation](tutorials/metrics-evaluation.md) | Metric modules, composite loss, and loader-level evaluation helpers |
+| [API Overview](api/index.md) | Actual exported modules and common imports |
+| [Publishing](publishing.md) | Preflight checks and release workflow |

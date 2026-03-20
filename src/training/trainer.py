@@ -117,6 +117,9 @@ class Trainer:
             tr=tr,
             fcd_win_sec=fcd_win_sec,
             fcd_step_sec=fcd_step_sec,
+            fdm_n_pairs=getattr(cfg, "fdm_n_pairs", 32),
+            fdm_max_lag=getattr(cfg, "fdm_max_lag", 50),
+            fdm_sigma=getattr(cfg, "fdm_sigma", 1.0),
         )
 
         # Evaluation metric modules (always compute all, for logging)

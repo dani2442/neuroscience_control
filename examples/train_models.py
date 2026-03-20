@@ -43,6 +43,7 @@ from src.training import (
     GNNHopfConfig,
     HopfConfig,
     HybridHopfConfig,
+    HybridNeuralConfig,
     NeuralSDEConfig,
     grid_search_hopf,
     Trainer,
@@ -74,12 +75,16 @@ _CONFIG_CLS = {
     "nsde": NeuralSDEConfig,
     "hopf": HopfConfig,
     "hybrid_hopf": HybridHopfConfig,
+    "gnn_hopf": GNNHopfConfig,
+    "hybrid_neural": HybridNeuralConfig,
 }
 
 _MODEL_TITLES = {
     "nsde": "Neural SDE",
     "hopf": "Coupled Hopf",
     "hybrid_hopf": "Hybrid Hopf",
+    "gnn_hopf": "GNN Hopf",
+    "hybrid_neural": "Hybrid Hopf+Neural",
 }
 
 
@@ -209,8 +214,13 @@ def _format_metrics_mean_std(metrics: dict[str, object]) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 def _run_backprop(args: argparse.Namespace) -> dict[str, object]:
+    fdm_weight = getattr(args, "fdm", 0.0) or 0.0
+    exp_prefix = f"{args.model}_backprop"
     print_section(f"{args.model.upper()} BACKPROP TRAINING")
-    cfg, device, ds_tag = _setup_run(_CONFIG_CLS[args.model], args, f"{args.model}_backprop")
+    cfg, device, ds_tag = _setup_run(_CONFIG_CLS[args.model], args, exp_prefix)
+
+    if fdm_weight > 0.0:
+        cfg.loss_weights["fdm"] = fdm_weight
 
     print_section("STEP 1: Loading and Processing Data")
     dataset = load_dataset(cfg, device)
@@ -270,7 +280,7 @@ def _run_backprop(args: argparse.Namespace) -> dict[str, object]:
         title = _MODEL_TITLES.get(args.model, args.model)
         _save_figures(model, val_loader, cfg, ds_tag, args.model, f"{title} (Backprop)", args,
                       sde_type=cfg.sde_type, method=cfg.sde_method, dt_min=cfg.dt_min)
-        if args.model in ("hopf", "hybrid_hopf"):
+        if args.model in ("hopf", "hybrid_hopf", "hybrid_neural", "gnn_hopf"):
             log_hopf_best_params(model, use_wandb=cfg.use_wandb)
     finally:
         if trainer is not None:
@@ -473,13 +483,13 @@ def _run_paper_suite(args: argparse.Namespace) -> dict[str, object]:
         all_checkpoints["hopf_grid"] = grid_result["checkpoint"]
 
     backprop_results: dict[str, dict[str, object]] = {}
-    for model_name in ("hopf", "nsde", "hybrid_hopf"):
+    for model_name in ("hopf", "nsde", "hybrid_hopf", "gnn_hopf", "hybrid_neural"):
         backprop_args = _make_backprop_namespace_from_paper_args(args, model_name)
         result = _run_backprop(backprop_args)
-        report[f"{model_name}_backprop"] = result.get("test_metrics", result["paper_metrics"])
+        report[model_name] = result.get("test_inter_metrics", result["paper_metrics"])
         backprop_results[model_name] = result
         if result.get("checkpoint"):
-            all_checkpoints[f"{model_name}_backprop"] = result["checkpoint"]
+            all_checkpoints[model_name] = result["checkpoint"]
 
     _print_paper_report(report)
     output_path = _save_paper_report(report, args.output_json, dataset_type=dataset_type)
@@ -504,6 +514,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     backprop = subparsers.add_parser("backprop", help="Train NSDE/Hopf/Hybrid Hopf with backpropagation")
     backprop.add_argument("--model", type=str, default="nsde", choices=list(_CONFIG_CLS))
+    backprop.add_argument("--fdm", type=float, default=0.0,
+                          help="FDM loss weight (0 = disabled, suggested: 0.25)")
     _add_common(backprop)
 
     hopf_grid = subparsers.add_parser("hopf-grid", help="Train Coupled Hopf with grid search")

@@ -5,9 +5,10 @@ from __future__ import annotations
 import torch
 
 from ..dataset import NeuroscienceDataset, compute_omega_from_timeseries
-from ..training.config import HopfConfig, HybridHopfConfig, GNNHopfConfig, NeuralSDEConfig, TrainingConfig
+from ..training.config import HopfConfig, HybridHopfConfig, HybridNeuralConfig, GNNHopfConfig, NeuralSDEConfig, TrainingConfig
 from .hopf_model import CoupledHopfModel
 from .hybrid_hopf_model import HybridHopfModel
+from .hybrid_neural_model import HybridHopfNeuralModel
 from .gnn_hopf_model import GNNHopfModel
 from .neural_sde import NeuralSDE
 
@@ -131,6 +132,27 @@ def build_model(
         print(
             f"\nGNN-Hopf model — learnable params: {n_learn}, "
             f"node_hidden_dim={model.node_hidden_dim}, node_n_layers={model.node_n_layers}"
+        )
+        return model
+
+    if model_name == "hybrid_neural":
+        if not isinstance(cfg, HybridNeuralConfig):
+            raise ValueError(f"Expected HybridNeuralConfig for 'hybrid_neural', got {type(cfg).__name__}")
+        model = HybridHopfNeuralModel(
+            n_rois=dataset.n_rois,
+            structural_connectivity=structural_connectivity,
+            omega=omega,
+            initial_a=cfg.initial_a,
+            initial_g=cfg.initial_g,
+            drift_hidden_dim=cfg.drift_hidden_dim,
+            drift_n_layers=cfg.drift_n_layers,
+            device=device,
+            n_control_dims=n_control_dims,
+        )
+        n_learn = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(
+            f"\nHybrid Neural model — learnable params: {n_learn}, "
+            f"drift_hidden_dim={cfg.drift_hidden_dim}, drift_n_layers={cfg.drift_n_layers}"
         )
         return model
 
