@@ -3,6 +3,7 @@ data/
 checkpoints/
 results/
 wandb/
+wrap.o*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

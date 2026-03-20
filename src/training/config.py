@@ -58,7 +58,7 @@ class TrainingConfig:
     atlas_resolution_mm: int = 1
     atlas_smoothing_fwhm: Optional[float] = None
     max_subjects: Optional[int] = None  # None means use all subjects
-    window_size: int = 50
+    window_size: int = 100
     n_windows_per_epoch: int = 1024
     batch_size: int = 128
     train_ratio: float = 0.7
@@ -83,7 +83,7 @@ class TrainingConfig:
     n_epochs: int = 20
     lr: float = 1e-3
     loss_weights: dict = field(default_factory=lambda: {
-        "fc_correlation": 1.0, "fc_mse": 1.0, "l2": 1.0,
+        "fc_correlation": 1.0, "fc_mse": 1.0, "l2": 0.0,
         "amplitude": 1.0, "omega": 1.0, "power_spectrum": 1.0,
         "temporal_correlation": 1.0, "autocorrelation": 1.0,
         "fcd": 1.0, "phfcd": 1.0, "phase_fc_correlation": 1.0,
