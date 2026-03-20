@@ -1,8 +1,4 @@
-"""Shared evaluation, checkpointing, and figure-generation utilities.
-
-These helpers consolidate boiler-plate that was previously duplicated across the
-training scripts (train_hopf, train_backprop, train_nsde_finetune).
-"""
+"""Shared evaluation, checkpointing, and figure-generation utilities."""
 
 from __future__ import annotations
 
