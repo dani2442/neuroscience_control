@@ -282,10 +282,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#key-features" class="md-nav__link">
+  <a href="#key-facts" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Key Features
+        Key Facts
       
     </span>
   </a>
@@ -389,6 +389,34 @@
     
   
     Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="getting-started/project-structure/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project Structure
   
 
     
@@ -632,10 +660,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#key-features" class="md-nav__link">
+  <a href="#key-facts" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Key Features
+        Key Facts
       
     </span>
   </a>
@@ -685,11 +713,11 @@
 
 
 <h1 id="neuroscience-control">Neuroscience Control<a class="headerlink" href="#neuroscience-control" title="Permanent link">&para;</a></h1>
-<p><code>neuroscience-control</code> is a PyTorch framework for <strong>whole-brain modeling</strong> of resting-state fMRI BOLD signals. It implements three complementary model families — all operating in <strong>complex-valued</strong> space — with a shared training and evaluation pipeline.</p>
+<p><code>neuroscience-control</code> is a PyTorch framework for <strong>whole-brain modeling</strong> of resting-state fMRI BOLD signals. The repository centers on three main training workflows:</p>
 <table>
 <thead>
 <tr>
-<th>Model</th>
+<th>Workflow / Model</th>
 <th>Description</th>
 </tr>
 </thead>
@@ -700,36 +728,34 @@
 </tr>
 <tr>
 <td><strong>Hybrid Hopf</strong></td>
-<td>Hopf oscillators with a learnable complex-valued graph-coupling network replacing fixed linear diffusive coupling</td>
+<td>Hopf oscillators with learnable complex coupling networks</td>
 </tr>
 <tr>
 <td><strong>Neural SDE</strong></td>
-<td>Data-driven neural networks parameterising stochastic differential equations</td>
+<td>Data-driven neural networks parameterizing stochastic differential equations</td>
 </tr>
 </tbody>
 </table>
+<p>The codebase also exports an experimental <code>GNNHopfModel</code> class for node-wise neural coupling experiments.</p>
 <p>The observed BOLD signal is the real part of the complex state, $s_i(t) = \Re(z_i(t))$.</p>
-<h2 id="key-features">Key Features<a class="headerlink" href="#key-features" title="Permanent link">&para;</a></h2>
+<h2 id="key-facts">Key Facts<a class="headerlink" href="#key-facts" title="Permanent link">&para;</a></h2>
 <ul>
-<li><strong>Biologically-grounded</strong> modeling with structural connectivity from DTI</li>
-<li><strong>Native complex-valued SDEs</strong> via a <a href="https://github.com/dani2442/torchsde">complex-valued fork of <code>torchsde</code></a></li>
-<li><strong>Comprehensive evaluation</strong>: FC, FCD, phFCD, phase-coherence FC, metastability, power spectrum, autocorrelation</li>
-<li><strong>Composable losses</strong> via <code>CompositeLoss</code> with presets (<code>mse</code>, <code>combined</code>, <code>fc_phfcd_meta</code>, <code>full</code>, …)</li>
-<li><strong>Flexible data loading</strong>: local <code>.mat</code> files, LSD pharmacological data, nilearn, OpenNeuro, DataLad, BIDS</li>
-<li><strong>Weights &amp; Biases</strong> integration for experiment tracking</li>
-<li><strong>GPU-accelerated</strong> training and simulation</li>
-<li><strong>CI / Docs / PyPI</strong> workflows ready out of the box</li>
+<li>The install name is <code>neuroscience-control</code>, but the current Python import namespace is <code>src</code>.</li>
+<li>All model families operate on <strong>complex-valued</strong> analytic signals.</li>
+<li>Training uses <code>examples/train_models.py</code>; post-training comparison and paper artefacts use <code>examples/postprocess.py</code>.</li>
+<li>Dataset backends include local <code>.mat</code>, LSD, nilearn, OpenNeuro, DataLad, and local BIDS derivatives.</li>
+<li>Evaluation covers FC, FCD, phFCD, phase-coherence FC, metastability, temporal correlation, power spectrum, and autocorrelation.</li>
 </ul>
 <h2 id="quick-start">Quick Start<a class="headerlink" href="#quick-start" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">neuroscience_control.models</span><span class="w"> </span><span class="kn">import</span> <span class="n">CoupledHopfModel</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">src.models</span><span class="w"> </span><span class="kn">import</span> <span class="n">CoupledHopfModel</span>
 
 <span class="n">device</span> <span class="o">=</span> <span class="s2">&quot;cuda&quot;</span> <span class="k">if</span> <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">is_available</span><span class="p">()</span> <span class="k">else</span> <span class="s2">&quot;cpu&quot;</span>
 <span class="n">model</span> <span class="o">=</span> <span class="n">CoupledHopfModel</span><span class="p">(</span>
     <span class="n">n_rois</span><span class="o">=</span><span class="mi">68</span><span class="p">,</span>
-    <span class="n">initial_a</span><span class="o">=-</span><span class="mf">0.02</span><span class="p">,</span>   <span class="c1"># Bifurcation parameter (near criticality)</span>
-    <span class="n">initial_g</span><span class="o">=</span><span class="mf">0.5</span><span class="p">,</span>      <span class="c1"># Global coupling strength</span>
-    <span class="n">initial_kappa</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span>  <span class="c1"># Scaling factor for local dynamics</span>
+    <span class="n">initial_a</span><span class="o">=-</span><span class="mf">0.02</span><span class="p">,</span>
+    <span class="n">initial_g</span><span class="o">=</span><span class="mf">0.5</span><span class="p">,</span>
+    <span class="n">initial_kappa</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span>
     <span class="n">noise_sigma</span><span class="o">=</span><span class="mf">0.5</span><span class="p">,</span>
     <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
 <span class="p">)</span>
@@ -737,7 +763,7 @@
 <span class="n">initial_state</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">randn</span><span class="p">(</span><span class="mi">10</span><span class="p">,</span> <span class="mi">68</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">complex64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
 <span class="k">with</span> <span class="n">torch</span><span class="o">.</span><span class="n">no_grad</span><span class="p">():</span>
     <span class="n">timeseries</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">forward</span><span class="p">(</span><span class="n">initial_state</span><span class="o">=</span><span class="n">initial_state</span><span class="p">,</span> <span class="n">n_steps</span><span class="o">=</span><span class="mi">200</span><span class="p">)</span>
-    <span class="n">fc_matrix</span>  <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">compute_fc</span><span class="p">(</span><span class="n">timeseries</span><span class="p">)</span>
+    <span class="n">fc_matrix</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">compute_fc</span><span class="p">(</span><span class="n">timeseries</span><span class="p">)</span>
 </code></pre></div>
 <h2 id="documentation">Documentation<a class="headerlink" href="#documentation" title="Permanent link">&para;</a></h2>
 <table>
@@ -750,23 +776,27 @@
 <tbody>
 <tr>
 <td><a href="getting-started/installation/">Installation</a></td>
-<td>Requirements, PyPI/source install, optional extras, torchsde note</td>
+<td>Requirements, install commands, import namespace, dependency notes</td>
+</tr>
+<tr>
+<td><a href="getting-started/project-structure/">Project Structure</a></td>
+<td>Repository map for <code>src/</code>, <code>examples/</code>, <code>tests/</code>, <code>docs/</code>, and output folders</td>
 </tr>
 <tr>
 <td><a href="tutorials/first-training-run/">First Training Run</a></td>
-<td>End-to-end training walkthrough, CLI flags, dataset backends</td>
+<td>Backprop, grid-search, and paper-suite entry points</td>
 </tr>
 <tr>
 <td><a href="tutorials/metrics-evaluation/">Metrics &amp; Evaluation</a></td>
-<td>All 9 evaluation metrics, mathematical definitions, loss presets</td>
+<td>Metric modules, composite loss, and loader-level evaluation helpers</td>
 </tr>
 <tr>
 <td><a href="api/">API Overview</a></td>
-<td>Module-by-module reference: models, metrics, training, dataset, utils</td>
+<td>Actual exported modules and common imports</td>
 </tr>
 <tr>
 <td><a href="publishing/">Publishing</a></td>
-<td>TestPyPI / PyPI release checklist</td>
+<td>Preflight checks and release workflow</td>
 </tr>
 </tbody>
 </table>

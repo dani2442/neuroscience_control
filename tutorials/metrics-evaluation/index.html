@@ -324,6 +324,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/project-structure/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project Structure
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -480,10 +508,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#example-fc-dynamics-metrics" class="md-nav__link">
+  <a href="#example-evaluate-a-simulated-batch" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Example: FC + dynamics metrics
+        Example: evaluate a simulated batch
       
     </span>
   </a>
@@ -491,10 +519,32 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#key-metrics-used-in-trainingevaluation" class="md-nav__link">
+  <a href="#metric-groups" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Key metrics used in training/evaluation
+        Metric groups
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#composite-training-loss" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Composite training loss
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#loader-level-evaluation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Loader-level evaluation
       
     </span>
   </a>
@@ -625,10 +675,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#example-fc-dynamics-metrics" class="md-nav__link">
+  <a href="#example-evaluate-a-simulated-batch" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Example: FC + dynamics metrics
+        Example: evaluate a simulated batch
       
     </span>
   </a>
@@ -636,10 +686,32 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#key-metrics-used-in-trainingevaluation" class="md-nav__link">
+  <a href="#metric-groups" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Key metrics used in training/evaluation
+        Metric groups
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#composite-training-loss" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Composite training loss
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#loader-level-evaluation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Loader-level evaluation
       
     </span>
   </a>
@@ -667,39 +739,90 @@
 
 
 <h1 id="metrics-evaluation">Metrics Evaluation<a class="headerlink" href="#metrics-evaluation" title="Permanent link">&para;</a></h1>
-<p>The package includes static FC, dynamics, and timeseries metrics.</p>
-<h2 id="example-fc-dynamics-metrics">Example: FC + dynamics metrics<a class="headerlink" href="#example-fc-dynamics-metrics" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">neuroscience_control.metrics</span><span class="w"> </span><span class="kn">import</span> <span class="n">compute_all_fc_metrics</span><span class="p">,</span> <span class="n">compute_dynamics_fit_metrics</span>
+<p>Metrics are implemented as <code>nn.Module</code> classes under <code>src.metrics</code>. Each metric accepts complex analytic signals with shape <code>(batch, n_rois, T)</code>.</p>
+<ul>
+<li><code>forward(ts_pred, ts_target)</code> returns a differentiable scalar loss.</li>
+<li><code>evaluate(ts_pred, ts_target)</code> returns one or more logging-ready metric values.</li>
+</ul>
+<h2 id="example-evaluate-a-simulated-batch">Example: evaluate a simulated batch<a class="headerlink" href="#example-evaluate-a-simulated-batch" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">src.metrics</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">FCCorrelation</span><span class="p">,</span>
+    <span class="n">FCMSE</span><span class="p">,</span>
+    <span class="n">FCD</span><span class="p">,</span>
+    <span class="n">PhFCD</span><span class="p">,</span>
+    <span class="n">Metastability</span><span class="p">,</span>
+    <span class="n">PhaseFC</span><span class="p">,</span>
+    <span class="n">PowerSpectrumDistance</span><span class="p">,</span>
+    <span class="n">TemporalCorrelation</span><span class="p">,</span>
+    <span class="n">AutocorrelationDistance</span><span class="p">,</span>
+<span class="p">)</span>
 
-<span class="c1"># sim_ts and real_ts: [batch, n_rois, n_timepoints], complex-valued</span>
-<span class="n">sim_fc</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">corrcoef</span><span class="p">(</span><span class="n">sim_ts</span><span class="o">.</span><span class="n">real</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
-<span class="n">real_fc</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">corrcoef</span><span class="p">(</span><span class="n">real_ts</span><span class="o">.</span><span class="n">real</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
+<span class="n">modules</span> <span class="o">=</span> <span class="p">[</span>
+    <span class="n">FCCorrelation</span><span class="p">(),</span>
+    <span class="n">FCMSE</span><span class="p">(),</span>
+    <span class="n">FCD</span><span class="p">(</span><span class="n">tr</span><span class="o">=</span><span class="mf">0.72</span><span class="p">,</span> <span class="n">fcd_win_sec</span><span class="o">=</span><span class="mf">30.0</span><span class="p">,</span> <span class="n">fcd_step_sec</span><span class="o">=</span><span class="mf">2.0</span><span class="p">),</span>
+    <span class="n">PhFCD</span><span class="p">(),</span>
+    <span class="n">Metastability</span><span class="p">(),</span>
+    <span class="n">PhaseFC</span><span class="p">(),</span>
+    <span class="n">PowerSpectrumDistance</span><span class="p">(),</span>
+    <span class="n">TemporalCorrelation</span><span class="p">(),</span>
+    <span class="n">AutocorrelationDistance</span><span class="p">(),</span>
+<span class="p">]</span>
 
-<span class="n">fc_metrics</span> <span class="o">=</span> <span class="n">compute_all_fc_metrics</span><span class="p">(</span><span class="n">sim_fc</span><span class="o">.</span><span class="n">unsqueeze</span><span class="p">(</span><span class="mi">0</span><span class="p">),</span> <span class="n">real_fc</span><span class="o">.</span><span class="n">unsqueeze</span><span class="p">(</span><span class="mi">0</span><span class="p">))</span>
-<span class="n">dyn_metrics</span> <span class="o">=</span> <span class="n">compute_dynamics_fit_metrics</span><span class="p">(</span>
-    <span class="n">sim_ts</span><span class="p">,</span>
-    <span class="n">real_ts</span><span class="p">,</span>
+<span class="n">metrics</span> <span class="o">=</span> <span class="p">{}</span>
+<span class="k">for</span> <span class="n">module</span> <span class="ow">in</span> <span class="n">modules</span><span class="p">:</span>
+    <span class="n">metrics</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">module</span><span class="o">.</span><span class="n">evaluate</span><span class="p">(</span><span class="n">sim_ts</span><span class="p">,</span> <span class="n">real_ts</span><span class="p">))</span>
+
+<span class="nb">print</span><span class="p">(</span><span class="n">metrics</span><span class="p">)</span>
+</code></pre></div>
+<h2 id="metric-groups">Metric groups<a class="headerlink" href="#metric-groups" title="Permanent link">&para;</a></h2>
+<ul>
+<li>FC: <code>FCCorrelation</code>, <code>FCMSE</code></li>
+<li>Dynamics / phase: <code>FCD</code>, <code>PhFCD</code>, <code>Metastability</code>, <code>PhaseFC</code></li>
+<li>Timeseries: <code>PowerSpectrumDistance</code>, <code>TemporalCorrelation</code>, <code>AutocorrelationDistance</code></li>
+<li>Auxiliary training losses: <code>L2Timeseries</code>, <code>AmplitudeLoss</code>, <code>OmegaLoss</code></li>
+</ul>
+<p>FC, spectrum, and autocorrelation metrics operate on the real part of the analytic signal. Phase-based metrics derive phases with <code>torch.angle(...)</code>.</p>
+<h2 id="composite-training-loss">Composite training loss<a class="headerlink" href="#composite-training-loss" title="Permanent link">&para;</a></h2>
+<p><code>src.training.CompositeLoss</code> wires the same modules into a weighted training objective:</p>
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">src.training</span><span class="w"> </span><span class="kn">import</span> <span class="n">CompositeLoss</span>
+
+<span class="n">loss_fn</span> <span class="o">=</span> <span class="n">CompositeLoss</span><span class="p">(</span>
+    <span class="n">weights</span><span class="o">=</span><span class="p">{</span>
+        <span class="s2">&quot;fc_correlation&quot;</span><span class="p">:</span> <span class="mf">1.0</span><span class="p">,</span>
+        <span class="s2">&quot;phfcd&quot;</span><span class="p">:</span> <span class="mf">1.0</span><span class="p">,</span>
+        <span class="s2">&quot;metastability&quot;</span><span class="p">:</span> <span class="mf">1.0</span><span class="p">,</span>
+    <span class="p">},</span>
     <span class="n">tr</span><span class="o">=</span><span class="mf">0.72</span><span class="p">,</span>
     <span class="n">fcd_win_sec</span><span class="o">=</span><span class="mf">30.0</span><span class="p">,</span>
     <span class="n">fcd_step_sec</span><span class="o">=</span><span class="mf">2.0</span><span class="p">,</span>
 <span class="p">)</span>
 
-<span class="nb">print</span><span class="p">(</span><span class="n">fc_metrics</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">dyn_metrics</span><span class="p">)</span>
+<span class="n">total_loss</span><span class="p">,</span> <span class="n">components</span> <span class="o">=</span> <span class="n">loss_fn</span><span class="p">(</span><span class="n">sim_ts</span><span class="p">,</span> <span class="n">real_ts</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">total_loss</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">components</span><span class="p">)</span>
 </code></pre></div>
-<h2 id="key-metrics-used-in-trainingevaluation">Key metrics used in training/evaluation<a class="headerlink" href="#key-metrics-used-in-trainingevaluation" title="Permanent link">&para;</a></h2>
+<h2 id="loader-level-evaluation">Loader-level evaluation<a class="headerlink" href="#loader-level-evaluation" title="Permanent link">&para;</a></h2>
+<p>For end-to-end model evaluation on a <code>DataLoader</code>, use <code>src.utils.evaluate_model_loader_metrics</code>:</p>
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">src.utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">EVAL_METRIC_KEYS</span><span class="p">,</span> <span class="n">evaluate_model_loader_metrics</span>
+
+<span class="n">metrics</span> <span class="o">=</span> <span class="n">evaluate_model_loader_metrics</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">val_loader</span><span class="p">,</span> <span class="n">cfg</span><span class="p">,</span> <span class="n">return_std</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+
+<span class="k">for</span> <span class="n">key</span> <span class="ow">in</span> <span class="n">EVAL_METRIC_KEYS</span><span class="p">:</span>
+    <span class="nb">print</span><span class="p">(</span><span class="n">key</span><span class="p">,</span> <span class="n">metrics</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">key</span><span class="p">),</span> <span class="n">metrics</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">key</span><span class="si">}</span><span class="s2">_std&quot;</span><span class="p">))</span>
+</code></pre></div>
+<p>The default report keys are:</p>
 <ul>
 <li><code>fc_correlation</code></li>
 <li><code>fc_mse</code></li>
-<li><code>fcd_ks</code></li>
-<li><code>phfcd_ks</code></li>
-<li><code>metastability_diff</code></li>
 <li><code>temporal_correlation</code></li>
 <li><code>power_spectrum_distance</code></li>
 <li><code>autocorr_distance</code></li>
+<li><code>fcd_ks</code></li>
+<li><code>phfcd_ks</code></li>
+<li><code>phase_fc_correlation</code></li>
+<li><code>metastability_diff</code></li>
 </ul>
-<p>These metrics are aggregated in <code>neuroscience_control.utils.EVAL_METRIC_KEYS</code>.</p>
 
 
 

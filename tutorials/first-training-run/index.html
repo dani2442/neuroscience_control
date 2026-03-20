@@ -13,7 +13,7 @@
         <link rel="canonical" href="https://dani2442.github.io/neuroscience_control/tutorials/first-training-run/">
       
       
-        <link rel="prev" href="../../getting-started/installation/">
+        <link rel="prev" href="../../getting-started/project-structure/">
       
       
         <link rel="next" href="../metrics-evaluation/">
@@ -324,6 +324,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/project-structure/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project Structure
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -452,10 +480,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#1-prepare-data" class="md-nav__link">
+  <a href="#1-pick-a-dataset-backend" class="md-nav__link">
     <span class="md-ellipsis">
       
-        1. Prepare data
+        1. Pick a dataset backend
       
     </span>
   </a>
@@ -463,10 +491,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#2-run-a-quick-experiment" class="md-nav__link">
+  <a href="#2-run-a-short-backprop-experiment" class="md-nav__link">
     <span class="md-ellipsis">
       
-        2. Run a quick experiment
+        2. Run a short backprop experiment
       
     </span>
   </a>
@@ -474,10 +502,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#3-outputs" class="md-nav__link">
+  <a href="#3-run-hopf-grid-search" class="md-nav__link">
     <span class="md-ellipsis">
       
-        3. Outputs
+        3. Run Hopf grid search
       
     </span>
   </a>
@@ -485,10 +513,32 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#4-reproduce-paper-pipeline" class="md-nav__link">
+  <a href="#4-run-the-paper-suite" class="md-nav__link">
     <span class="md-ellipsis">
       
-        4. Reproduce paper pipeline
+        4. Run the paper suite
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-outputs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Outputs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-post-training-steps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Post-training steps
       
     </span>
   </a>
@@ -647,10 +697,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#1-prepare-data" class="md-nav__link">
+  <a href="#1-pick-a-dataset-backend" class="md-nav__link">
     <span class="md-ellipsis">
       
-        1. Prepare data
+        1. Pick a dataset backend
       
     </span>
   </a>
@@ -658,10 +708,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#2-run-a-quick-experiment" class="md-nav__link">
+  <a href="#2-run-a-short-backprop-experiment" class="md-nav__link">
     <span class="md-ellipsis">
       
-        2. Run a quick experiment
+        2. Run a short backprop experiment
       
     </span>
   </a>
@@ -669,10 +719,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#3-outputs" class="md-nav__link">
+  <a href="#3-run-hopf-grid-search" class="md-nav__link">
     <span class="md-ellipsis">
       
-        3. Outputs
+        3. Run Hopf grid search
       
     </span>
   </a>
@@ -680,10 +730,32 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#4-reproduce-paper-pipeline" class="md-nav__link">
+  <a href="#4-run-the-paper-suite" class="md-nav__link">
     <span class="md-ellipsis">
       
-        4. Reproduce paper pipeline
+        4. Run the paper suite
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-outputs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Outputs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-post-training-steps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Post-training steps
       
     </span>
   </a>
@@ -711,36 +783,77 @@
 
 
 <h1 id="first-training-run">First Training Run<a class="headerlink" href="#first-training-run" title="Permanent link">&para;</a></h1>
-<p>This tutorial runs one short backprop experiment and saves outputs locally.</p>
-<h2 id="1-prepare-data">1. Prepare data<a class="headerlink" href="#1-prepare-data" title="Permanent link">&para;</a></h2>
-<p>By default, training config points to:</p>
+<p>This tutorial covers the current training entry point, the dataset knobs it uses, and the files it writes.</p>
+<h2 id="1-pick-a-dataset-backend">1. Pick a dataset backend<a class="headerlink" href="#1-pick-a-dataset-backend" title="Permanent link">&para;</a></h2>
+<p>The default config points at:</p>
 <div class="highlight"><pre><span></span><code>data/ts_young/ts_young_TR0.72.mat
 </code></pre></div>
-<p>If your dataset path differs, edit <code>TrainingConfig.data_path</code> in <code>src/training/config.py</code>.</p>
-<h2 id="2-run-a-quick-experiment">2. Run a quick experiment<a class="headerlink" href="#2-run-a-quick-experiment" title="Permanent link">&para;</a></h2>
+<p>You can keep that default, or override the loader from the CLI with <code>--dataset-type</code> and the matching dataset arguments.</p>
+<p>Common choices:</p>
+<ul>
+<li><code>--dataset-type ts_young --data-path ...</code></li>
+<li><code>--dataset-type lsd --lsd-data-dir ...</code></li>
+<li><code>--dataset-type nilearn --nilearn-dataset development_fmri</code></li>
+<li><code>--dataset-type bids --bids-root ...</code></li>
+</ul>
+<h2 id="2-run-a-short-backprop-experiment">2. Run a short backprop experiment<a class="headerlink" href="#2-run-a-short-backprop-experiment" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code>python<span class="w"> </span>examples/train_models.py<span class="w"> </span>backprop<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model<span class="w"> </span>hopf<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--n-epochs<span class="w"> </span><span class="m">2</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--no-wandb<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--device<span class="w"> </span>cpu
 </code></pre></div>
-<h2 id="3-outputs">3. Outputs<a class="headerlink" href="#3-outputs" title="Permanent link">&para;</a></h2>
+<p>Supported <code>--model</code> values in the CLI are:</p>
 <ul>
-<li>Checkpoints: <code>checkpoints/</code></li>
-<li>Figures: <code>paper/images/</code></li>
-<li>Optional metrics JSON if you run the <code>paper</code> subcommand</li>
+<li><code>hopf</code></li>
+<li><code>hybrid_hopf</code></li>
+<li><code>nsde</code></li>
 </ul>
-<h2 id="4-reproduce-paper-pipeline">4. Reproduce paper pipeline<a class="headerlink" href="#4-reproduce-paper-pipeline" title="Permanent link">&para;</a></h2>
+<p>Under the hood this command:</p>
+<ol>
+<li>Loads data with <code>src.dataset.load_dataset()</code>.</li>
+<li>Builds random-window loaders with <code>src.dataset.create_data_loaders()</code>.</li>
+<li>Constructs the selected model with <code>src.models.build_model()</code>.</li>
+<li>Trains it with <code>src.training.Trainer</code>.</li>
+<li>Evaluates it with <code>src.utils.evaluate_model_loader_metrics()</code>.</li>
+</ol>
+<h2 id="3-run-hopf-grid-search">3. Run Hopf grid search<a class="headerlink" href="#3-run-hopf-grid-search" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code>python<span class="w"> </span>examples/train_models.py<span class="w"> </span>hopf-grid<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--no-wandb<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--device<span class="w"> </span>cpu
+</code></pre></div>
+<p>This searches over <code>g_values</code>, <code>a_values</code>, and <code>kappa_values</code> from <code>src/training/config.py</code>.</p>
+<h2 id="4-run-the-paper-suite">4. Run the paper suite<a class="headerlink" href="#4-run-the-paper-suite" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code>python<span class="w"> </span>examples/train_models.py<span class="w"> </span>paper<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--output-json<span class="w"> </span>results/paper_metrics.json<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--no-wandb
 </code></pre></div>
-<p>This executes:</p>
+<p>This runs:</p>
 <ol>
-<li>Hopf grid search</li>
-<li>Backprop training for Hopf, Hybrid Hopf, and Neural SDE</li>
-<li>Metrics comparison report</li>
+<li>Hopf grid search.</li>
+<li>Backprop training for Hopf, Hybrid Hopf, and Neural SDE.</li>
+<li>Aggregated metric export to a JSON file in <code>results/</code>.</li>
 </ol>
+<h2 id="5-outputs">5. Outputs<a class="headerlink" href="#5-outputs" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Checkpoints are written to <code>checkpoints/</code>.</li>
+<li>Figures are written under <code>paper/images/&lt;dataset_type&gt;/</code>.</li>
+<li>Per-run metrics stores are written under <code>results/metrics/&lt;experiment_name&gt;/</code>.</li>
+<li>The <code>paper</code> command writes an aggregated JSON report to <code>results/</code>.</li>
+</ul>
+<h2 id="6-post-training-steps">6. Post-training steps<a class="headerlink" href="#6-post-training-steps" title="Permanent link">&para;</a></h2>
+<p>Use <code>examples/postprocess.py</code> after training:</p>
+<div class="highlight"><pre><span></span><code>python<span class="w"> </span>examples/postprocess.py<span class="w"> </span>compare<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--data-path<span class="w"> </span>data/ts_young/ts_young_TR0.72.mat<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--hopf-checkpoint<span class="w"> </span>checkpoints/hopf_backprop_ts_young_best_&lt;run&gt;.pt<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--nsde-checkpoint<span class="w"> </span>checkpoints/nsde_backprop_ts_young_best_&lt;run&gt;.pt
+</code></pre></div>
+<p>Other subcommands:</p>
+<ul>
+<li><code>update-tables</code>: patch LaTeX tables from a metrics JSON.</li>
+<li><code>compare-conditions</code>: LSD control-condition comparison.</li>
+<li><code>pipeline</code>: run all post-training steps in sequence.</li>
+</ul>
 
 
 

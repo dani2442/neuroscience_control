@@ -16,7 +16,7 @@
         <link rel="prev" href="../..">
       
       
-        <link rel="next" href="../../tutorials/first-training-run/">
+        <link rel="next" href="../project-structure/">
       
       
         
@@ -420,6 +420,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#import-namespace" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Import namespace
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#dependency-notes" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -434,6 +445,34 @@
   
 </nav>
       
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../project-structure/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project Structure
+  
+
+    
+  </span>
+  
+  
+
+      </a>
     </li>
   
 
@@ -724,6 +763,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#import-namespace" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Import namespace
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#dependency-notes" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -780,7 +830,13 @@ uv<span class="w"> </span>sync
 uv<span class="w"> </span>sync<span class="w"> </span>--group<span class="w"> </span>datasets
 </code></pre></div>
 <h2 id="verify-installation">Verify installation<a class="headerlink" href="#verify-installation" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code>python<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;import neuroscience_control as nc; print(nc.__version__)&quot;</span>
+<div class="highlight"><pre><span></span><code>python<span class="w"> </span>-c<span class="w"> </span><span class="s2">&quot;import src; print(src.__version__)&quot;</span>
+</code></pre></div>
+<h2 id="import-namespace">Import namespace<a class="headerlink" href="#import-namespace" title="Permanent link">&para;</a></h2>
+<p>Install the package as <code>neuroscience-control</code>, but import from <code>src</code> in the current repository layout:</p>
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">src.models</span><span class="w"> </span><span class="kn">import</span> <span class="n">CoupledHopfModel</span><span class="p">,</span> <span class="n">NeuralSDE</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">src.metrics</span><span class="w"> </span><span class="kn">import</span> <span class="n">FCCorrelation</span><span class="p">,</span> <span class="n">PhFCD</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">src.training</span><span class="w"> </span><span class="kn">import</span> <span class="n">Trainer</span><span class="p">,</span> <span class="n">HopfConfig</span>
 </code></pre></div>
 <h2 id="dependency-notes">Dependency notes<a class="headerlink" href="#dependency-notes" title="Permanent link">&para;</a></h2>
 <div class="admonition note">
