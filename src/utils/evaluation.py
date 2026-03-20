@@ -274,57 +274,6 @@ def split_subject_indices(cfg, n_subjects: int) -> tuple[torch.Tensor, torch.Ten
     return train_idx, val_idx, test_idx
 
 
-def evaluate_hopf_model(
-    hopf_model,
-    dataset,
-    cfg,
-    n_paths: int = 10,
-    subject_indices: torch.Tensor | None = None,
-) -> dict[str, float]:
-    """Evaluate FC/FCD/metastability for a trained Hopf model."""
-    from ..metrics import (
-        FCCorrelation, FCMSE,
-        FCD, PhFCD, Metastability, PhaseFC,
-        PowerSpectrumDistance, TemporalCorrelation, AutocorrelationDistance,
-    )
-
-    if subject_indices is None:
-        subject_indices = torch.arange(dataset.n_subjects, device=dataset.timeseries.device)
-    else:
-        subject_indices = torch.as_tensor(subject_indices, device=dataset.timeseries.device, dtype=torch.long)
-
-    if subject_indices.numel() == 0:
-        raise ValueError("subject_indices must contain at least one subject.")
-
-    n_timepoints = min(dataset.n_timepoints, 200)
-    n_paths = min(n_paths, subject_indices.numel())
-    eval_indices = subject_indices[:n_paths]
-    initial_states = dataset.timeseries[eval_indices, :, 0]
-
-    # Extract control for evaluated subjects if available
-    ctrl = getattr(dataset, "control", None)
-    eval_control = ctrl[eval_indices] if ctrl is not None else None
-
-    fwd_kwargs: dict[str, Any] = dict(initial_state=initial_states, n_steps=n_timepoints, dt=cfg.tr)
-    if eval_control is not None:
-        fwd_kwargs["control"] = eval_control
-    with torch.no_grad():
-        hopf_ts = hopf_model.forward(**fwd_kwargs)
-
-    target_ts = dataset.timeseries[eval_indices[: hopf_ts.shape[0]], :, :n_timepoints]
-    eval_modules = [
-        FCCorrelation(), FCMSE(),
-        PowerSpectrumDistance(), TemporalCorrelation(), AutocorrelationDistance(),
-        FCD(tr=cfg.tr, fcd_win_sec=cfg.fcd_win_sec, fcd_step_sec=cfg.fcd_step_sec),
-        PhFCD(), Metastability(), PhaseFC(),
-    ]
-    metrics: dict[str, float] = {}
-    with torch.no_grad():
-        for module in eval_modules:
-            metrics.update(module.evaluate(hopf_ts, target_ts))
-    return metrics
-
-
 def _forward_for_metrics(
     model,
     initial_state: torch.Tensor,
@@ -470,19 +419,3 @@ def evaluate_model_loader_metrics(
                 result[f"{key}_std"] = float("nan")
 
     return result
-
-
-def evaluate_hopf_loader_metrics(
-    hopf_model,
-    loader,
-    cfg,
-    *,
-    n_steps: int | None = None,
-) -> dict[str, float]:
-    """Backwards-compatible wrapper around :func:`evaluate_model_loader_metrics`."""
-    return evaluate_model_loader_metrics(
-        model=hopf_model,
-        loader=loader,
-        cfg=cfg,
-        n_steps=n_steps,
-    )

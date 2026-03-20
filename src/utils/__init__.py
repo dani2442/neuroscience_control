@@ -36,7 +36,6 @@ from .evaluation import (
     log_hopf_best_params,
     extract_val_data,
     split_subject_indices,
-    evaluate_hopf_model,
     evaluate_model_loader_metrics
 )
 from .paper_pipeline import (
@@ -79,7 +78,6 @@ __all__ = [
     "log_hopf_best_params",
     "extract_val_data",
     "split_subject_indices",
-    "evaluate_hopf_model",
     "evaluate_model_loader_metrics",
     "run_paper_pipeline",
     "run_update_tables",

@@ -58,22 +58,21 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.dataset import NeuroscienceDataset, RandomWindowDataset, compute_omega_from_timeseries
 from src.models import build_model
+from src.dataset import create_data_loaders
 from src.training import (
     GNNHopfConfig,
     HopfConfig,
     HybridHopfConfig,
     NeuralSDEConfig,
-    create_windowed_loaders,
     grid_search_hopf,
     load_dataset,
-    run_backprop_training,
+    Trainer
 )
 from src.training.losses import compute_ref_amplitude, compute_ref_omega
 from src.utils import (
     FIGURES_DIR,
     EVAL_METRIC_KEYS,
     ensure_proxy_env,
-    evaluate_hopf_model,
     evaluate_model_loader_metrics,
     extract_val_data,
     finish_wandb_run,
@@ -237,7 +236,17 @@ def _run_backprop(args: argparse.Namespace) -> dict[str, object]:
 
     print_section("STEP 1: Loading and Processing Data")
     dataset = load_dataset(cfg, device)
-    train_loader, val_loader, test_inter_loader, test_intra_loader, window_size = create_windowed_loaders(dataset, cfg, device)
+    window_size = min(cfg.window_size, dataset.n_timepoints // 4)
+    train_loader, val_loader, test_inter_loader, test_intra_loader = create_data_loaders(
+        dataset=dataset,
+        window_size=window_size,
+        batch_size=cfg.batch_size,
+        n_windows_per_epoch=cfg.n_windows_per_epoch,
+        train_ratio=cfg.train_ratio,
+        val_ratio=cfg.val_ratio,
+        seed=cfg.seed,
+        device=device,
+    )
     print(f"  window_size={window_size}  train={len(train_loader)}  val={len(val_loader)}  test_inter={len(test_inter_loader)}  test_intra={len(test_intra_loader)}")
 
     print_section("STEP 2: Training Model (Backpropagation)")
@@ -254,16 +263,37 @@ def _run_backprop(args: argparse.Namespace) -> dict[str, object]:
     test_inter_metrics: dict[str, float] = {}
     test_intra_metrics: dict[str, float] = {}
     try:
-        trainer, _metrics_store, test_inter_metrics, test_intra_metrics = run_backprop_training(
+        trainer = Trainer(
             model=model,
+            lr=cfg.lr,
+            device=device,
+            checkpoint_dir=cfg.checkpoint_dir,
+            experiment_name=cfg.experiment_name or cfg.experiment_name,
+            cfg=cfg,
+            use_wandb=cfg.use_wandb,
+        )
+
+        metrics_store = trainer.train(
             train_loader=train_loader,
             val_loader=val_loader,
-            test_inter_loader=test_inter_loader,
-            test_intra_loader=test_intra_loader,
-            window_size=window_size,
-            cfg=cfg,
-            device=device,
-            experiment_name=cfg.experiment_name,
+            n_epochs=cfg.n_epochs,
+            n_steps=window_size,
+            dt=cfg.tr,
+            early_stopping_patience=cfg.early_stopping_patience,
+            verbose=True,
+        )
+
+        test_inter_metrics = trainer.test(
+            test_inter_loader,
+            n_steps=window_size,
+            dt=cfg.tr,
+            label="test_inter",
+        )
+        test_intra_metrics = trainer.test(
+            test_intra_loader,
+            n_steps=window_size,
+            dt=cfg.tr,
+            label="test_intra",
         )
 
         print_section("STEP 3: Saving Model and Generating Figures")
@@ -424,9 +454,11 @@ def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
             n_control_dims=dataset.n_control_dims,
         )
 
-        n_eval_paths = max(10, cfg.n_simulations)
-        train_metrics = evaluate_hopf_model(hopf_model, dataset, cfg, n_paths=n_eval_paths, subject_indices=train_idx)
-        val_metrics = evaluate_hopf_model(hopf_model, dataset, cfg, n_paths=n_eval_paths, subject_indices=val_idx)
+        train_loader_eval = _create_validation_loader(dataset, cfg, device, train_idx)
+        train_window_size = getattr(getattr(train_loader_eval, "dataset", None), "window_size", None)
+        val_window_size = getattr(getattr(val_loader, "dataset", None), "window_size", None)
+        train_metrics = evaluate_model_loader_metrics(hopf_model, train_loader_eval, cfg, n_steps=train_window_size)
+        val_metrics = evaluate_model_loader_metrics(hopf_model, val_loader, cfg, n_steps=val_window_size)
         print(f"Train metrics: {train_metrics}")
         print(f"Validation metrics: {val_metrics}")
 
@@ -471,8 +503,7 @@ def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
         else:
             print("Skipping figure generation (--skip-figures).")
 
-        val_window_size = getattr(getattr(val_loader, "dataset", None), "window_size", None)
-        final_metrics = evaluate_model_loader_metrics(hopf_model, val_loader, cfg, n_steps=val_window_size)
+        final_metrics = val_metrics
         wandb_summary_update({f"final_{k}": v for k, v in final_metrics.items()}, use_wandb=cfg.use_wandb)
         log_hopf_best_params(hopf_model, use_wandb=cfg.use_wandb)
         

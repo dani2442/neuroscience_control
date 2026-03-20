@@ -97,12 +97,6 @@ class TrainingConfig:
     use_adjoint: bool = False  # Use torchsde.sdeint_adjoint for backprop memory efficiency
     adjoint_method: Optional[str] = "euler"  # Matching adjoint for reversible_heun
     
-    # Fine-tuning settings
-    fine_tune: bool = False
-    fine_tune_epochs: int = 20
-    fine_tune_lr: float = 1e-4
-    warmup_epochs: int = 3
-    
     # Grid search settings (for Hopf)
     g_values: List[float] = field(default_factory=lambda: [0.3, 0.5, 0.7, 1.0, 1.5])
     a_values: List[float] = field(default_factory=lambda: [-0.02, -0.01, 0.0, 0.01])
