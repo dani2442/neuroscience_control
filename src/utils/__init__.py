@@ -12,11 +12,6 @@ from .visualization import (
     FIGURES_DIR,
     _get_save_path
 )
-from .signal_pipeline import (
-    SignalPipelineResult,
-    prepare_signal_pipeline,
-    plot_signal_pipeline,
-)
 from .runtime import (
     ensure_proxy_env,
     resolve_device,
@@ -42,8 +37,7 @@ from .evaluation import (
     extract_val_data,
     split_subject_indices,
     evaluate_hopf_model,
-    evaluate_model_loader_metrics,
-    evaluate_hopf_loader_metrics,
+    evaluate_model_loader_metrics
 )
 from .paper_pipeline import (
     run_paper_pipeline,
@@ -61,8 +55,6 @@ __all__ = [
     "plot_power_spectrum",
     "plot_simulation_multigrid",
     "SignalPipelineResult",
-    "prepare_signal_pipeline",
-    "plot_signal_pipeline",
     "create_comparison_report",
     "FIGURES_DIR",
     "_get_save_path",
@@ -89,7 +81,6 @@ __all__ = [
     "split_subject_indices",
     "evaluate_hopf_model",
     "evaluate_model_loader_metrics",
-    "evaluate_hopf_loader_metrics",
     "run_paper_pipeline",
     "run_update_tables",
     "run_compare_models",

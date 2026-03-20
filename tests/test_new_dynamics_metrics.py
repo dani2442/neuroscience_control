@@ -14,7 +14,6 @@ import torch
 from src.metrics.dynamics_metrics import (
     markov_entropy_rate,
     phase_coherence_fc,
-    phase_coherence_fc_correlation,
     symmetric_kl_divergence,
     tpm_entropy_distance,
 )
@@ -97,14 +96,15 @@ class TestPhaseCoherenceFCCorrelation(unittest.TestCase):
 
     def test_identical_signals_give_corr_one(self) -> None:
         ts = torch.randn(2, 8, 150, dtype=torch.complex64)
-        corr = phase_coherence_fc_correlation(ts, ts)
-        self.assertAlmostEqual(corr.item(), 1.0, places=4)
+        # PhaseFC.forward returns 1 - corr, so identical signals → loss ≈ 0
+        loss = PhaseFC()(ts, ts)
+        self.assertAlmostEqual(loss.item(), 0.0, places=4)
 
     def test_returns_tensor(self) -> None:
         ts1 = torch.randn(2, 6, 100, dtype=torch.complex64)
         ts2 = torch.randn(2, 6, 100, dtype=torch.complex64)
-        corr = phase_coherence_fc_correlation(ts1, ts2)
-        self.assertIsInstance(corr, torch.Tensor)
+        loss = PhaseFC()(ts1, ts2)
+        self.assertIsInstance(loss, torch.Tensor)
 
     def test_in_phase_fc_evaluate(self) -> None:
         """PhaseFC.evaluate should include phase_fc_correlation."""

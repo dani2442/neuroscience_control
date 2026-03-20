@@ -7,8 +7,8 @@ from matplotlib.gridspec import GridSpec
 from typing import Dict, List, Optional, Tuple, Any
 from pathlib import Path
 
-from ..metrics import fc_correlation, fc_mse
 from ..metrics.metrics_store import MetricsStore
+from ..metrics._utils import upper_tri_vec
 
 # Default figures directory for paper
 FIGURES_DIR = Path("paper/images")
@@ -71,8 +71,11 @@ def plot_fc_comparison(
     fc_target_np = fc_target.detach().cpu().numpy()
     fc_diff = fc_pred_np - fc_target_np
     
-    # Compute correlation
-    corr = fc_correlation(fc_pred.unsqueeze(0), fc_target.unsqueeze(0)).item()
+    # Compute correlation (Pearson on upper triangle)
+    p = upper_tri_vec(fc_pred.unsqueeze(0), k=1).squeeze(0)
+    t = upper_tri_vec(fc_target.unsqueeze(0), k=1).squeeze(0)
+    pc, tc = p - p.mean(), t - t.mean()
+    corr = ((pc * tc).sum() / (torch.sqrt((pc**2).sum() * (tc**2).sum()) + 1e-8)).item()
     
     fig, axes = plt.subplots(1, 3, figsize=figsize)
     
@@ -628,10 +631,16 @@ def create_comparison_report(
         ax_fc = fig.add_subplot(gs[0, i + 1])
         im = ax_fc.imshow(fc_pred_np, cmap='coolwarm', vmin=-1, vmax=1)
         
-        # Compute metrics
+        # Compute FC metrics (Pearson correlation and MSE on upper triangle)
+        p = upper_tri_vec(fc_pred, k=1)
+        t = upper_tri_vec(target_fc.unsqueeze(0), k=1)
+        pc, tc = p - p.mean(dim=1, keepdim=True), t - t.mean(dim=1, keepdim=True)
+        fc_corr = ((pc * tc).sum(dim=1) / (
+            torch.sqrt((pc**2).sum(dim=1) * (tc**2).sum(dim=1)) + 1e-8
+        )).mean().item()
         metrics = {
-            "fc_correlation": fc_correlation(fc_pred, target_fc.unsqueeze(0)).item(),
-            "fc_mse": fc_mse(fc_pred, target_fc.unsqueeze(0)).item(),
+            "fc_correlation": fc_corr,
+            "fc_mse": ((p - t) ** 2).mean().item(),
         }
         all_metrics[name] = metrics
 

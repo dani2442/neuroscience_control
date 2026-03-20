@@ -282,8 +282,11 @@ def evaluate_hopf_model(
     subject_indices: torch.Tensor | None = None,
 ) -> dict[str, float]:
     """Evaluate FC/FCD/metastability for a trained Hopf model."""
-    from ..metrics import fc_correlation, fc_mse, FCD, PhFCD, Metastability, PhaseFC
-    from ..metrics import PowerSpectrumDistance, TemporalCorrelation, AutocorrelationDistance
+    from ..metrics import (
+        FCCorrelation, FCMSE,
+        FCD, PhFCD, Metastability, PhaseFC,
+        PowerSpectrumDistance, TemporalCorrelation, AutocorrelationDistance,
+    )
 
     if subject_indices is None:
         subject_indices = torch.arange(dataset.n_subjects, device=dataset.timeseries.device)
@@ -293,7 +296,6 @@ def evaluate_hopf_model(
     if subject_indices.numel() == 0:
         raise ValueError("subject_indices must contain at least one subject.")
 
-    target_fc = dataset.fc_matrices[subject_indices].mean(dim=0)
     n_timepoints = min(dataset.n_timepoints, 200)
     n_paths = min(n_paths, subject_indices.numel())
     eval_indices = subject_indices[:n_paths]
@@ -308,19 +310,18 @@ def evaluate_hopf_model(
         fwd_kwargs["control"] = eval_control
     with torch.no_grad():
         hopf_ts = hopf_model.forward(**fwd_kwargs)
-        hopf_fc = hopf_model.compute_fc(hopf_ts)
-        hopf_fc_mean = hopf_fc.mean(dim=0)
 
-    metrics: dict[str, float] = {
-        "fc_correlation": fc_correlation(hopf_fc_mean.unsqueeze(0), target_fc.unsqueeze(0)).item(),
-        "fc_mse": fc_mse(hopf_fc_mean.unsqueeze(0), target_fc.unsqueeze(0)).item(),
-    }
     target_ts = dataset.timeseries[eval_indices[: hopf_ts.shape[0]], :, :n_timepoints]
-    for module in [PowerSpectrumDistance(), TemporalCorrelation(), AutocorrelationDistance()]:
-        metrics.update(module.evaluate(hopf_ts, target_ts))
-    fcd_module = FCD(tr=cfg.tr, fcd_win_sec=cfg.fcd_win_sec, fcd_step_sec=cfg.fcd_step_sec)
-    for module in [fcd_module, PhFCD(), Metastability(), PhaseFC()]:
-        metrics.update(module.evaluate(hopf_ts, target_ts))
+    eval_modules = [
+        FCCorrelation(), FCMSE(),
+        PowerSpectrumDistance(), TemporalCorrelation(), AutocorrelationDistance(),
+        FCD(tr=cfg.tr, fcd_win_sec=cfg.fcd_win_sec, fcd_step_sec=cfg.fcd_step_sec),
+        PhFCD(), Metastability(), PhaseFC(),
+    ]
+    metrics: dict[str, float] = {}
+    with torch.no_grad():
+        for module in eval_modules:
+            metrics.update(module.evaluate(hopf_ts, target_ts))
     return metrics
 
 
@@ -371,6 +372,7 @@ def evaluate_model_loader_metrics(
     """
     Evaluate a model on the provided data loader.
 
+    Uses the same ``module.evaluate()`` pattern as :class:`Trainer`.
     When *return_std* is True, metrics are computed **per sample** (not per
     batch) so that the reported standard deviations reflect true cross-sample
     variability rather than the much smaller variability between batch-level
@@ -387,12 +389,18 @@ def evaluate_model_loader_metrics(
     Returns:
         Dictionary of metric_name → mean (and optionally metric_name_std → std)
     """
-    from ..metrics import fc_correlation, fc_mse, FCD, PhFCD, Metastability, PhaseFC
-    from ..metrics import PowerSpectrumDistance, TemporalCorrelation, AutocorrelationDistance
+    from ..metrics import (
+        FCCorrelation, FCMSE,
+        FCD, PhFCD, Metastability, PhaseFC,
+        PowerSpectrumDistance, TemporalCorrelation, AutocorrelationDistance,
+    )
 
-    _fcd_module = FCD(tr=cfg.tr, fcd_win_sec=cfg.fcd_win_sec, fcd_step_sec=cfg.fcd_step_sec)
-    _ts_modules = [PowerSpectrumDistance(), TemporalCorrelation(), AutocorrelationDistance()]
-    _dyn_modules = [_fcd_module, PhFCD(), Metastability(), PhaseFC()]
+    eval_modules = [
+        FCCorrelation(), FCMSE(),
+        PowerSpectrumDistance(), TemporalCorrelation(), AutocorrelationDistance(),
+        FCD(tr=cfg.tr, fcd_win_sec=cfg.fcd_win_sec, fcd_step_sec=cfg.fcd_step_sec),
+        PhFCD(), Metastability(), PhaseFC(),
+    ]
 
     sums: dict[str, float] = {}
     counts: dict[str, int] = {}
@@ -400,12 +408,11 @@ def evaluate_model_loader_metrics(
 
     for batch in loader:
         if len(batch) == 4:
-            windows, fc_targets, _, control = batch
+            windows, _, _, control = batch
         else:
-            windows, fc_targets, _ = batch
+            windows, _, _ = batch
             control = None
         windows = windows.to(model.device)
-        fc_targets = fc_targets.to(model.device)
         if control is not None:
             control = control.to(model.device)
             if control.shape[-1] == 0:
@@ -418,7 +425,6 @@ def evaluate_model_loader_metrics(
 
         with torch.no_grad():
             simulated = _forward_for_metrics(model, initial_state, n_sim_steps, cfg, control=control)
-            fc_pred = model.compute_fc(simulated)
 
             if return_std:
                 # Per-sample metrics for proper std computation
@@ -426,14 +432,8 @@ def evaluate_model_loader_metrics(
                 for i in range(B):
                     sim_i = simulated[i : i + 1]
                     tgt_i = target_window[i : i + 1]
-                    fc_p_i = fc_pred[i : i + 1]
-                    fc_t_i = fc_targets[i : i + 1]
-
-                    sample_metrics = {
-                        "fc_correlation": fc_correlation(fc_p_i, fc_t_i).item(),
-                        "fc_mse": fc_mse(fc_p_i, fc_t_i).item(),
-                    }
-                    for module in _ts_modules + _dyn_modules:
+                    sample_metrics: dict[str, float] = {}
+                    for module in eval_modules:
                         sample_metrics.update(module.evaluate(sim_i, tgt_i))
                     for key, value in sample_metrics.items():
                         numeric = to_float_metric(value)
@@ -441,16 +441,11 @@ def evaluate_model_loader_metrics(
                             continue
                         sums[key] = sums.get(key, 0.0) + numeric
                         counts[key] = counts.get(key, 0) + 1
-                        if key not in sample_values:
-                            sample_values[key] = []
-                        sample_values[key].append(numeric)
+                        sample_values.setdefault(key, []).append(numeric)
             else:
                 # Batch-level aggregate (faster, no std needed)
-                batch_metrics = {
-                    "fc_correlation": fc_correlation(fc_pred, fc_targets).item(),
-                    "fc_mse": fc_mse(fc_pred, fc_targets).item(),
-                }
-                for module in _ts_modules + _dyn_modules:
+                batch_metrics: dict[str, float] = {}
+                for module in eval_modules:
                     batch_metrics.update(module.evaluate(simulated, target_window))
                 for key, value in batch_metrics.items():
                     numeric = to_float_metric(value)
@@ -465,15 +460,15 @@ def evaluate_model_loader_metrics(
         key: (sums[key] / counts[key]) if counts.get(key, 0) > 0 else float("nan")
         for key in all_keys
     }
-    
+
     if return_std:
         for key in all_keys:
-            if key in sample_values and len(sample_values[key]) > 1:
-                vals = torch.tensor(sample_values[key])
-                result[f"{key}_std"] = vals.std().item()
+            vals = sample_values.get(key, [])
+            if len(vals) > 1:
+                result[f"{key}_std"] = torch.tensor(vals).std().item()
             else:
                 result[f"{key}_std"] = float("nan")
-    
+
     return result
 
 

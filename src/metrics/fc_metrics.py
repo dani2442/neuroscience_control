@@ -35,60 +35,6 @@ def compute_static_fc(ts: torch.Tensor) -> torch.Tensor:
     return torch.bmm(ts_n, ts_n.transpose(1, 2)) / max(T - 1, 1)
 
 
-def fc_correlation(
-    fc_pred: torch.Tensor,
-    fc_target: torch.Tensor,
-    use_upper_triangle: bool = True,
-) -> torch.Tensor:
-    """Pearson correlation between predicted and target FC.
-
-    By default only the upper triangle (excluding diagonal) is compared.
-    The result is averaged over the batch.
-    """
-    fc_pred = to_real(fc_pred)
-    fc_target = to_real(fc_target)
-
-    if fc_pred.dim() == 2:
-        fc_pred = fc_pred.unsqueeze(0)
-        fc_target = fc_target.unsqueeze(0)
-
-    if use_upper_triangle:
-        pred_flat = upper_tri_vec(fc_pred, k=1)   # (B, M)
-        targ_flat = upper_tri_vec(fc_target, k=1)
-    else:
-        pred_flat = fc_pred.reshape(fc_pred.shape[0], -1)
-        targ_flat = fc_target.reshape(fc_target.shape[0], -1)
-
-    pred_c = pred_flat - pred_flat.mean(dim=1, keepdim=True)
-    targ_c = targ_flat - targ_flat.mean(dim=1, keepdim=True)
-    num = (pred_c * targ_c).sum(dim=1)
-    den = torch.sqrt((pred_c ** 2).sum(dim=1) * (targ_c ** 2).sum(dim=1)) + 1e-8
-    return (num / den).mean()
-
-
-def fc_mse(
-    fc_pred: torch.Tensor,
-    fc_target: torch.Tensor,
-    use_upper_triangle: bool = True,
-) -> torch.Tensor:
-    """MSE between predicted and target FC (upper triangle by default)."""
-    fc_pred = to_real(fc_pred)
-    fc_target = to_real(fc_target)
-
-    if fc_pred.dim() == 2:
-        fc_pred = fc_pred.unsqueeze(0)
-        fc_target = fc_target.unsqueeze(0)
-
-    if use_upper_triangle:
-        pred_flat = upper_tri_vec(fc_pred, k=1)   # (B, M)
-        targ_flat = upper_tri_vec(fc_target, k=1)
-    else:
-        pred_flat = fc_pred.reshape(fc_pred.shape[0], -1)
-        targ_flat = fc_target.reshape(fc_target.shape[0], -1)
-
-    return ((pred_flat - targ_flat) ** 2).mean()
-
-
 # ---------------------------------------------------------------------------
 # nn.Module metric/loss classes
 # ---------------------------------------------------------------------------
@@ -103,7 +49,15 @@ class FCCorrelation(nn.Module):
     def forward(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> torch.Tensor:
         fc_pred = compute_static_fc(ts_pred)
         fc_target = compute_static_fc(ts_target)
-        return 1.0 - fc_correlation(fc_pred, fc_target)
+
+        pred_flat = upper_tri_vec(to_real(fc_pred), k=1)
+        targ_flat = upper_tri_vec(to_real(fc_target), k=1)
+        pred_c = pred_flat - pred_flat.mean(dim=1, keepdim=True)
+        targ_c = targ_flat - targ_flat.mean(dim=1, keepdim=True)
+        num = (pred_c * targ_c).sum(dim=1)
+        den = torch.sqrt((pred_c ** 2).sum(dim=1) * (targ_c ** 2).sum(dim=1)) + 1e-8
+        corr = (num / den).mean()
+        return 1.0 - corr
 
     @torch.no_grad()
     def evaluate(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> dict:
@@ -119,7 +73,9 @@ class FCMSE(nn.Module):
     def forward(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> torch.Tensor:
         fc_pred = compute_static_fc(ts_pred)
         fc_target = compute_static_fc(ts_target)
-        return fc_mse(fc_pred, fc_target)
+        pred_flat = upper_tri_vec(to_real(fc_pred), k=1)
+        targ_flat = upper_tri_vec(to_real(fc_target), k=1)
+        return ((pred_flat - targ_flat) ** 2).mean()
 
     @torch.no_grad()
     def evaluate(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> dict:

@@ -133,35 +133,6 @@ def phase_coherence_fc(ts: torch.Tensor) -> torch.Tensor:
     return torch.cos(diff).mean(dim=-1)  # (B, N, N)
 
 
-def phase_coherence_fc_correlation(
-    ts_pred: torch.Tensor,
-    ts_target: torch.Tensor,
-) -> torch.Tensor:
-    r"""Pearson correlation between predicted and target phase-coherence FC.
-
-    Computes grand-average phase-coherence FC for both tensors (mean over
-    batch), then returns the Pearson correlation of their upper-triangular
-    entries.
-
-    Args:
-        ts_pred: ``(batch, n_rois, T)`` complex tensor.
-        ts_target: ``(batch, n_rois, T)`` complex tensor.
-
-    Returns:
-        Scalar Pearson correlation as a Tensor (differentiable).
-        Returns NaN tensor when there are fewer than 2 ROI pairs.
-    """
-    fc_pred = phase_coherence_fc(ts_pred).mean(dim=0)    # (N, N)
-    fc_target = phase_coherence_fc(ts_target).mean(dim=0)  # (N, N)
-    v_pred = upper_tri_vec(fc_pred, k=1)
-    v_target = upper_tri_vec(fc_target, k=1)
-    if v_pred.numel() < 2:
-        return torch.tensor(float("nan"), device=ts_pred.device, dtype=ts_pred.real.dtype)
-    p = v_pred - v_pred.mean()
-    t = v_target - v_target.mean()
-    num = (p * t).sum()
-    den = torch.sqrt((p ** 2).sum() * (t ** 2).sum()) + 1e-8
-    return num / den
 
 
 # ---------------------------------------------------------------------------
@@ -384,138 +355,6 @@ def metastability_value(ts: torch.Tensor) -> torch.Tensor:
 
 
 # ---------------------------------------------------------------------------
-# Private helpers for KS evaluation
-# ---------------------------------------------------------------------------
-
-def _fcd_ks(
-    ts_pred: torch.Tensor,
-    ts_target: torch.Tensor,
-    tr: float,
-    fcd_win_sec: float,
-    fcd_step_sec: float,
-) -> float:
-    """FCD KS distance. Returns NaN when windowing is not feasible."""
-    ts_pred = ensure_batch(ts_pred)
-    ts_target = ensure_batch(ts_target)
-    B = min(ts_pred.shape[0], ts_target.shape[0])
-    T = min(ts_pred.shape[2], ts_target.shape[2])
-    pred_real = to_real(ts_pred[:B, :, :T])
-    targ_real = to_real(ts_target[:B, :, :T])
-
-    win_len = int(round(fcd_win_sec / tr))
-    win_step = int(round(fcd_step_sec / tr))
-
-    if win_len < 10 or (T - win_len) <= 10 or win_step <= 0:
-        return float("nan")
-
-    pred_dists: List[torch.Tensor] = []
-    targ_dists: List[torch.Tensor] = []
-    for b in range(B):
-        pd = fcd_distribution(pred_real[b].T, win_len, win_step)
-        td = fcd_distribution(targ_real[b].T, win_len, win_step)
-        if pd.numel() == 0 or td.numel() == 0:
-            return float("nan")
-        pred_dists.append(pd)
-        targ_dists.append(td)
-
-    if not pred_dists:
-        return float("nan")
-    return float(ks_distance_2samp(torch.cat(pred_dists), torch.cat(targ_dists)).item())
-
-
-def _phfcd_ks(ts_pred: torch.Tensor, ts_target: torch.Tensor) -> float:
-    """phFCD KS distance. Returns NaN when inputs are real or have < 2 ROIs."""
-    pred = ensure_batch(ts_pred)
-    target = ensure_batch(ts_target)
-    B = min(pred.shape[0], target.shape[0])
-    T = min(pred.shape[2], target.shape[2])
-    pred = pred[:B, :, :T]
-    target = target[:B, :, :T]
-
-    if not torch.is_complex(pred) or not torch.is_complex(target):
-        return float("nan")
-
-    pred_ph_dists: List[torch.Tensor] = []
-    targ_ph_dists: List[torch.Tensor] = []
-    for b in range(B):
-        pred_phases = torch.angle(pred[b]).T   # (T, N)
-        targ_phases = torch.angle(target[b]).T
-        pd_ph = phfcd_distribution(pred_phases)
-        td_ph = phfcd_distribution(targ_phases)
-        if pd_ph.numel() == 0 or td_ph.numel() == 0:
-            return float("nan")
-        pred_ph_dists.append(pd_ph)
-        targ_ph_dists.append(td_ph)
-
-    if not pred_ph_dists:
-        return float("nan")
-    return float(ks_distance_2samp(torch.cat(pred_ph_dists), torch.cat(targ_ph_dists)).item())
-
-
-def _fcd_mse(
-    ts_pred: torch.Tensor,
-    ts_target: torch.Tensor,
-    tr: float,
-    fcd_win_sec: float,
-    fcd_step_sec: float,
-) -> torch.Tensor:
-    """Differentiable FCD surrogate: MSE between FCD matrices."""
-    pred, target, batch, _ = align_batch_and_time(ts_pred, ts_target)
-    pred, target = to_real(pred), to_real(target)
-
-    win_len = int(round(fcd_win_sec / tr))
-    win_step = int(round(fcd_step_sec / tr))
-
-    if win_len < 10 or win_step <= 0:
-        return torch.zeros((), device=pred.device, dtype=pred.dtype)
-
-    losses: list[torch.Tensor] = []
-    for b in range(batch):
-        pred_fcd = fcd_matrix(pred[b].T, win_len, win_step)
-        targ_fcd = fcd_matrix(target[b].T, win_len, win_step)
-        if pred_fcd is None or targ_fcd is None:
-            continue
-        n = min(pred_fcd.shape[0], targ_fcd.shape[0])
-        if n <= 1:
-            continue
-        losses.append(((pred_fcd[:n, :n] - targ_fcd[:n, :n]) ** 2).mean())
-
-    if not losses:
-        return torch.zeros((), device=pred.device, dtype=pred.dtype)
-    return torch.stack(losses).mean()
-
-
-def _phfcd_mse(ts_pred: torch.Tensor, ts_target: torch.Tensor) -> torch.Tensor:
-    """Differentiable phFCD surrogate: MSE between phFCD matrices."""
-    pred = ensure_batch(ts_pred)
-    target = ensure_batch(ts_target)
-    B = min(pred.shape[0], target.shape[0])
-    T = min(pred.shape[2], target.shape[2])
-    pred = pred[:B, :, :T]
-    target = target[:B, :, :T]
-
-    if not torch.is_complex(pred) or not torch.is_complex(target):
-        return torch.zeros((), device=pred.device, dtype=pred.real.dtype)
-
-    losses: list[torch.Tensor] = []
-    for b in range(B):
-        pred_phases = torch.angle(pred[b]).T   # (T, N)
-        targ_phases = torch.angle(target[b]).T
-        pred_phfcd = phfcd_matrix(pred_phases)
-        targ_phfcd = phfcd_matrix(targ_phases)
-        if pred_phfcd is None or targ_phfcd is None:
-            continue
-        n = min(pred_phfcd.shape[0], targ_phfcd.shape[0])
-        if n <= 1:
-            continue
-        losses.append(((pred_phfcd[:n, :n] - targ_phfcd[:n, :n]) ** 2).mean())
-
-    if not losses:
-        return torch.zeros((), device=pred.device, dtype=pred.real.dtype)
-    return torch.stack(losses).mean()
-
-
-# ---------------------------------------------------------------------------
 # nn.Module metric/loss classes
 # ---------------------------------------------------------------------------
 
@@ -538,13 +377,54 @@ class FCD(nn.Module):
         self.fcd_step_sec = fcd_step_sec
 
     def forward(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> torch.Tensor:
-        return _fcd_mse(ts_pred, ts_target, self.tr, self.fcd_win_sec, self.fcd_step_sec)
+        pred, target, batch, _ = align_batch_and_time(ts_pred, ts_target)
+        pred, target = to_real(pred), to_real(target)
+        win_len = int(round(self.fcd_win_sec / self.tr))
+        win_step = int(round(self.fcd_step_sec / self.tr))
+        if win_len < 10 or win_step <= 0:
+            return torch.zeros((), device=pred.device, dtype=pred.dtype)
+        losses: list[torch.Tensor] = []
+        for b in range(batch):
+            pred_fcd = fcd_matrix(pred[b].T, win_len, win_step)
+            targ_fcd = fcd_matrix(target[b].T, win_len, win_step)
+            if pred_fcd is None or targ_fcd is None:
+                continue
+            n = min(pred_fcd.shape[0], targ_fcd.shape[0])
+            if n <= 1:
+                continue
+            losses.append(((pred_fcd[:n, :n] - targ_fcd[:n, :n]) ** 2).mean())
+        if not losses:
+            return torch.zeros((), device=pred.device, dtype=pred.dtype)
+        return torch.stack(losses).mean()
 
     @torch.no_grad()
     def evaluate(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> dict:
+        ts_pred_b = ensure_batch(ts_pred)
+        ts_target_b = ensure_batch(ts_target)
+        B = min(ts_pred_b.shape[0], ts_target_b.shape[0])
+        T = min(ts_pred_b.shape[2], ts_target_b.shape[2])
+        pred_real = to_real(ts_pred_b[:B, :, :T])
+        targ_real = to_real(ts_target_b[:B, :, :T])
+        win_len = int(round(self.fcd_win_sec / self.tr))
+        win_step = int(round(self.fcd_step_sec / self.tr))
+        fcd_ks = float("nan")
+        if win_len >= 10 and (T - win_len) > 10 and win_step > 0:
+            pred_dists: List[torch.Tensor] = []
+            targ_dists: List[torch.Tensor] = []
+            valid = True
+            for b in range(B):
+                pd = fcd_distribution(pred_real[b].T, win_len, win_step)
+                td = fcd_distribution(targ_real[b].T, win_len, win_step)
+                if pd.numel() == 0 or td.numel() == 0:
+                    valid = False
+                    break
+                pred_dists.append(pd)
+                targ_dists.append(td)
+            if valid and pred_dists:
+                fcd_ks = float(ks_distance_2samp(torch.cat(pred_dists), torch.cat(targ_dists)).item())
         return {
             "fcd_mse": self(ts_pred, ts_target).item(),
-            "fcd_ks": _fcd_ks(ts_pred, ts_target, self.tr, self.fcd_win_sec, self.fcd_step_sec),
+            "fcd_ks": fcd_ks,
         }
 
 
@@ -556,13 +436,56 @@ class PhFCD(nn.Module):
     """
 
     def forward(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> torch.Tensor:
-        return _phfcd_mse(ts_pred, ts_target)
+        pred = ensure_batch(ts_pred)
+        target = ensure_batch(ts_target)
+        B = min(pred.shape[0], target.shape[0])
+        T = min(pred.shape[2], target.shape[2])
+        pred, target = pred[:B, :, :T], target[:B, :, :T]
+        if not torch.is_complex(pred) or not torch.is_complex(target):
+            return torch.zeros((), device=pred.device, dtype=pred.real.dtype)
+        losses: list[torch.Tensor] = []
+        for b in range(B):
+            pred_phases = torch.angle(pred[b]).T
+            targ_phases = torch.angle(target[b]).T
+            pred_phfcd = phfcd_matrix(pred_phases)
+            targ_phfcd = phfcd_matrix(targ_phases)
+            if pred_phfcd is None or targ_phfcd is None:
+                continue
+            n = min(pred_phfcd.shape[0], targ_phfcd.shape[0])
+            if n <= 1:
+                continue
+            losses.append(((pred_phfcd[:n, :n] - targ_phfcd[:n, :n]) ** 2).mean())
+        if not losses:
+            return torch.zeros((), device=pred.device, dtype=pred.real.dtype)
+        return torch.stack(losses).mean()
 
     @torch.no_grad()
     def evaluate(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> dict:
+        pred = ensure_batch(ts_pred)
+        target = ensure_batch(ts_target)
+        B = min(pred.shape[0], target.shape[0])
+        T = min(pred.shape[2], target.shape[2])
+        pred, target = pred[:B, :, :T], target[:B, :, :T]
+        phfcd_ks = float("nan")
+        if torch.is_complex(pred) and torch.is_complex(target):
+            pred_ph_dists: List[torch.Tensor] = []
+            targ_ph_dists: List[torch.Tensor] = []
+            valid = True
+            for b in range(B):
+                pd_ph = phfcd_distribution(torch.angle(pred[b]).T)
+                td_ph = phfcd_distribution(torch.angle(target[b]).T)
+                if pd_ph.numel() == 0 or td_ph.numel() == 0:
+                    valid = False
+                    break
+                pred_ph_dists.append(pd_ph)
+                targ_ph_dists.append(td_ph)
+            if valid and pred_ph_dists:
+                phfcd_ks = float(ks_distance_2samp(
+                    torch.cat(pred_ph_dists), torch.cat(targ_ph_dists)
+                ).item())
         return {
             "phfcd_mse": self(ts_pred, ts_target).item(),
-            "phfcd_ks": _phfcd_ks(ts_pred, ts_target),
+            "phfcd_ks": phfcd_ks,
         }
 
 
@@ -589,8 +512,17 @@ class PhaseFC(nn.Module):
     """
 
     def forward(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> torch.Tensor:
-        corr = phase_coherence_fc_correlation(ts_pred, ts_target)
-        return 1.0 - corr
+        fc_pred = phase_coherence_fc(ts_pred).mean(dim=0)
+        fc_target = phase_coherence_fc(ts_target).mean(dim=0)
+        v_pred = upper_tri_vec(fc_pred, k=1)
+        v_target = upper_tri_vec(fc_target, k=1)
+        if v_pred.numel() < 2:
+            return torch.tensor(float("nan"), device=ts_pred.device, dtype=ts_pred.real.dtype)
+        p = v_pred - v_pred.mean()
+        t = v_target - v_target.mean()
+        num = (p * t).sum()
+        den = torch.sqrt((p ** 2).sum() * (t ** 2).sum()) + 1e-8
+        return 1.0 - num / den
 
     @torch.no_grad()
     def evaluate(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> dict:

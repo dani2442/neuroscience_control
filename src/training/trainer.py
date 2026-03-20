@@ -582,8 +582,7 @@ class Trainer:
         )
         metrics = {name: accumulator.average(name) for name in all_keys}
         metrics.update({f"{name}_std": accumulator.std(name) for name in all_keys})
-        if label == "test":
-            self.metrics_store.log_test(metrics)
+        self.metrics_store.log_test(metrics, label=label)
 
         self._log_wandb(metrics, step=0, prefix=label)
         if self.wandb_run is not None:

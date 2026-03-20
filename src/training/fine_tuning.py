@@ -7,7 +7,6 @@ from typing import Dict, Optional, List, Any
 from pathlib import Path
 
 from ..models.base_model import BaseNeuroscienceModel
-from ..metrics import fc_correlation, fc_mse
 from ..metrics.metrics_store import MetricsStore
 from .trainer import Trainer
 

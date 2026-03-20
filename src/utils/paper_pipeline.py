@@ -364,10 +364,21 @@ def _load_models(hopf_checkpoint: str | None, nsde_checkpoint: str | None, n_roi
     return models
 
 
+def _fc_corr_and_mse(fc_pred: "torch.Tensor", fc_target: "torch.Tensor"):
+    """Upper-triangle Pearson correlation and MSE between two FC matrices."""
+    from src.metrics._utils import upper_tri_vec
+    p = upper_tri_vec(fc_pred, k=1)
+    t = upper_tri_vec(fc_target, k=1)
+    pc, tc = p - p.mean(dim=-1, keepdim=True), t - t.mean(dim=-1, keepdim=True)
+    corr = ((pc * tc).sum(dim=-1) / (
+        (pc**2).sum(dim=-1).sqrt() * (tc**2).sum(dim=-1).sqrt() + 1e-8
+    )).mean().item()
+    mse = ((p - t) ** 2).mean().item()
+    return corr, mse
+
+
 def _evaluate_models(models: dict, dataset, target_fc, n_timepoints: int, n_simulations: int = 10):
     """Evaluate all models and compute FC metrics."""
-    from src.metrics import fc_correlation, fc_mse
-
     print_section("Evaluating Models")
     all_results: dict[str, dict[str, float]] = {}
     n_eval = min(n_simulations, dataset.n_subjects)
@@ -380,8 +391,9 @@ def _evaluate_models(models: dict, dataset, target_fc, n_timepoints: int, n_simu
             fc_pred = model.compute_fc(ts)
             all_fc_corrs, all_fc_mses = [], []
             for i in range(n_eval):
-                all_fc_corrs.append(fc_correlation(fc_pred[i:i+1], target_fc.unsqueeze(0)).item())
-                all_fc_mses.append(fc_mse(fc_pred[i:i+1], target_fc.unsqueeze(0)).item())
+                corr, mse = _fc_corr_and_mse(fc_pred[i:i+1], target_fc.unsqueeze(0))
+                all_fc_corrs.append(corr)
+                all_fc_mses.append(mse)
 
         results = {
             "fc_correlation": float(np.mean(all_fc_corrs)),
@@ -734,7 +746,6 @@ def run_compare_conditions(
 ) -> None:
     """Compare model-simulated FC under different LSD control conditions."""
     from src.dataset import NeuroscienceDataset
-    from src.metrics import fc_correlation
     from src.models import load_model_from_checkpoint
 
     device = resolve_device(device)
@@ -808,11 +819,7 @@ def run_compare_conditions(
             print(f"  {mname}: simulating ctrl={cv} …", end=" ", flush=True)
             fc_sim = _simulate_fc(model, initial_states, cv, n_steps=n_steps, dt=dataset.dt, device=device)
             fc_emp = empirical_fc_per_ctrl[cv]
-            corr = fc_correlation(fc_sim.unsqueeze(0), fc_emp.unsqueeze(0)).item()
-            fc_sim_r = fc_sim.real if torch.is_complex(fc_sim) else fc_sim
-            fc_emp_r = fc_emp.real if torch.is_complex(fc_emp) else fc_emp
-            idx = torch.triu_indices(fc_sim_r.shape[0], fc_sim_r.shape[1], offset=1)
-            mse = ((fc_sim_r[idx[0], idx[1]] - fc_emp_r[idx[0], idx[1]]) ** 2).mean().item()
+            corr, mse = _fc_corr_and_mse(fc_sim.unsqueeze(0), fc_emp.unsqueeze(0))
             fc_per_model[mname][cv] = fc_sim
             cond_metrics[mname][cv] = {"fc_corr": corr, "fc_mse": mse}
             print(f"FC corr={corr:.3f}  MSE={mse:.4f}")

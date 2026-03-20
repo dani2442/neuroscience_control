@@ -10,13 +10,18 @@ from tqdm import tqdm
 
 from ..models.hopf_model import CoupledHopfModel
 from ..models.base_model import BaseNeuroscienceModel
-from ..metrics import fc_correlation, fc_mse, FCD, Metastability, PhFCD
-from ..dataset import NeuroscienceDataset
-from ..dataset.preprocessing import compute_omega_from_timeseries
+from ..metrics import (
+    FCCorrelation, FCMSE,
+    FCD, Metastability, PhFCD, PhaseFC,
+    PowerSpectrumDistance, TemporalCorrelation, AutocorrelationDistance,
+)
 
 
 # Metrics where a *higher* value is better; all others are lower-is-better.
-_HIGHER_IS_BETTER = frozenset({"fc_correlation"})
+_HIGHER_IS_BETTER = frozenset({"fc_correlation", "phase_fc_correlation"})
+
+# Evaluation modules that don't need timeseries dynamics (FC + timeseries quality)
+_BASE_MODULES = [FCCorrelation(), FCMSE(), PowerSpectrumDistance(), TemporalCorrelation(), AutocorrelationDistance()]
 
 
 class GridSearch:
@@ -71,18 +76,23 @@ class GridSearch:
     ) -> Dict[str, float]:
         """Evaluate a model with given initial states.
 
+        Uses the same ``module.evaluate()`` pattern as the Trainer.  When
+        *target_timeseries* is provided all metrics (FC, timeseries quality,
+        and dynamics) are computed; otherwise only FC metrics are returned.
+
         Args:
             model: Model to evaluate.
-            target_fc: Target FC (n_rois, n_rois).
-            initial_states: Complex tensor (batch, n_rois).
+            target_fc: Target FC ``(n_rois, n_rois)`` — used when
+                *target_timeseries* is not provided.
+            initial_states: Complex tensor ``(batch, n_rois)``.
             n_timepoints: Simulation length.
             dt: Time step.
-            target_timeseries: Optional complex tensor (batch, n_rois, T) for
-                computing FCD and metastability losses.
+            target_timeseries: Optional ``(batch, n_rois, T)`` complex tensor.
+                When given it is used as the target for all metrics.
             tr: Repetition time in seconds (for FCD window sizing).
             fcd_win_sec: FCD window length in seconds.
             fcd_step_sec: FCD window step in seconds.
-            control: Optional control input (batch, n_control_dims).
+            control: Optional control input.
         """
         batch_size = initial_states.shape[0]
         with torch.no_grad():
@@ -90,38 +100,57 @@ class GridSearch:
                 initial_state=initial_states, n_steps=n_timepoints, dt=dt,
                 control=control,
             )
-            fc_pred = model.compute_fc(timeseries)
 
-            # Mean-FC approach: average simulated FCs, then compare to target.
-            # This is the standard methodology in computational neuroscience
-            # (Deco et al.) and matches the evaluation in evaluate_hopf_model.
-            fc_pred_mean = fc_pred.mean(dim=0)
-            fc_corr_val = fc_correlation(fc_pred_mean.unsqueeze(0), target_fc.unsqueeze(0)).item()
-            fc_mse_val = fc_mse(fc_pred_mean.unsqueeze(0), target_fc.unsqueeze(0)).item()
+        sums: Dict[str, float] = {}
+        sum_sq: Dict[str, float] = {}
+        counts: Dict[str, int] = {}
 
-            # Per-subject stats kept for diagnostics.
-            fc_corrs = [fc_correlation(fc_pred[i:i+1], target_fc.unsqueeze(0)).item() for i in range(batch_size)]
-            fc_mses_list = [fc_mse(fc_pred[i:i+1], target_fc.unsqueeze(0)).item() for i in range(batch_size)]
+        with torch.no_grad():
+            if target_timeseries is not None:
+                # All metrics via the same module.evaluate() pattern as Trainer
+                target_ts = target_timeseries[:batch_size, :, :n_timepoints]
+                dyn_modules = [
+                    FCD(tr=tr, fcd_win_sec=fcd_win_sec, fcd_step_sec=fcd_step_sec),
+                    PhFCD(), Metastability(), PhaseFC(),
+                ]
+                eval_modules = _BASE_MODULES + dyn_modules
+                for i in range(batch_size):
+                    sample_metrics: Dict[str, float] = {}
+                    for module in eval_modules:
+                        sample_metrics.update(module.evaluate(timeseries[i:i+1], target_ts[i:i+1]))
+                    for k, v in sample_metrics.items():
+                        if v is None or (isinstance(v, float) and np.isnan(v)):
+                            continue
+                        sums[k] = sums.get(k, 0.0) + v
+                        sum_sq[k] = sum_sq.get(k, 0.0) + v * v
+                        counts[k] = counts.get(k, 0) + 1
+            else:
+                # FC-only: compare simulated FC against provided target_fc
+                from ..metrics.fc_metrics import compute_static_fc
+                from ..metrics._utils import upper_tri_vec, to_real
+                fc_tgt = to_real(target_fc.unsqueeze(0))
+                targ_flat = upper_tri_vec(fc_tgt, k=1)
+                for i in range(batch_size):
+                    fc_sim = to_real(compute_static_fc(timeseries[i:i+1]))
+                    pred_flat = upper_tri_vec(fc_sim, k=1)
+                    pred_c = pred_flat - pred_flat.mean(dim=1, keepdim=True)
+                    targ_c = targ_flat - targ_flat.mean(dim=1, keepdim=True)
+                    num = (pred_c * targ_c).sum(dim=1)
+                    den = (torch.sqrt((pred_c**2).sum(dim=1) * (targ_c**2).sum(dim=1)) + 1e-8)
+                    fc_corr = (num / den).mean().item()
+                    fc_mse = ((pred_flat - targ_flat) ** 2).mean().item()
+                    for k, v in [("fc_correlation", fc_corr), ("fc_mse", fc_mse)]:
+                        sums[k] = sums.get(k, 0.0) + v
+                        sum_sq[k] = sum_sq.get(k, 0.0) + v * v
+                        counts[k] = counts.get(k, 0) + 1
 
-        metrics: Dict[str, float] = {
-            "fc_correlation": fc_corr_val,
-            "fc_correlation_std": np.std(fc_corrs),
-            "fc_correlation_per_subject": np.mean(fc_corrs),
-            "fc_mse": fc_mse_val,
-            "fc_mse_std": np.std(fc_mses_list),
-            "fc_mse_per_subject": np.mean(fc_mses_list),
-        }
-
-        # ---- FCD and metastability (only when target timeseries available) ----
-        if target_timeseries is not None:
-            target_ts = target_timeseries[:batch_size, :, :n_timepoints]
-
-            metrics["fcd_mse"] = FCD(
-                tr=tr, fcd_win_sec=fcd_win_sec, fcd_step_sec=fcd_step_sec,
-            )(timeseries, target_ts).item()
-            metrics["metastability_diff"] = Metastability()(timeseries, target_ts).item()
-            metrics["phfcd_mse"] = PhFCD()(timeseries, target_ts).item()
-
+        metrics: Dict[str, float] = {}
+        for k in sums:
+            n = counts[k]
+            mean = sums[k] / n
+            metrics[k] = mean
+            if n > 1:
+                metrics[f"{k}_std"] = np.sqrt(max(0.0, sum_sq[k] / n - mean * mean))
         return metrics
 
     @staticmethod
@@ -314,7 +343,7 @@ def grid_search_hopf(
 
     print(f"\nBest parameters: {best_params}")
     print(f"Best fc_correlation: {best_metrics['fc_correlation']:.4f} "
-          f"± {best_metrics['fc_correlation_std']:.4f}")
+          f"± {best_metrics.get('fc_correlation_std', float('nan')):.4f}")
 
     best_model = CoupledHopfModel(
         n_rois=n_rois,

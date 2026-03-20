@@ -35,7 +35,7 @@ class MetricsStore:
         
         self.train_metrics: List[Dict[str, float]] = []
         self.val_metrics: List[Dict[str, float]] = []
-        self.test_metrics: Dict[str, float] = {}
+        self.test_metrics: Dict[str, Dict[str, float]] = {}
         self.hyperparameters: Dict[str, Any] = {}
         self.metadata: Dict[str, Any] = {
             'created': datetime.now().isoformat(),
@@ -64,14 +64,15 @@ class MetricsStore:
         entry = {'epoch': epoch, **metrics}
         self.val_metrics.append(entry)
     
-    def log_test(self, metrics: Dict[str, float]):
+    def log_test(self, metrics: Dict[str, float], label: str = "test"):
         """
-        Log test metrics.
-        
+        Log test metrics under a label (e.g. ``"test_inter"``, ``"test_intra"``).
+
         Args:
-            metrics: Dictionary of metric values
+            metrics: Dictionary of metric values.
+            label: Key under which to store these metrics.
         """
-        self.test_metrics = metrics
+        self.test_metrics[label] = metrics
     
     def set_hyperparameters(self, hyperparams: Dict[str, Any]):
         """Store hyperparameters."""
@@ -178,7 +179,12 @@ class MetricsStore:
         store.hyperparameters = data.get('hyperparameters', {})
         store.train_metrics = data.get('train_metrics', [])
         store.val_metrics = data.get('val_metrics', [])
-        store.test_metrics = data.get('test_metrics', {})
+        raw_test = data.get('test_metrics', {})
+        # Support old flat format (Dict[str, float]) and new labeled format
+        if raw_test and not isinstance(next(iter(raw_test.values())), dict):
+            store.test_metrics = {"test": raw_test}
+        else:
+            store.test_metrics = raw_test
         
         return store
     
