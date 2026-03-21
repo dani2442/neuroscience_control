@@ -152,10 +152,10 @@ class HopfConfig(TrainingConfig):
     learnable_fc: bool = False  # Learnable functional connectivity matrix
 
     # Composite grid-search scoring weights
-    weight_fc: float = 1.0
-    weight_fcd: float = 0.0
-    weight_phfcd: float = 1.0
-    weight_meta: float = 1.0
+    # weight_fc: float = 1.0
+    # weight_fcd: float = 0.0
+    # weight_phfcd: float = 1.0
+    # weight_meta: float = 1.0
 
 
 @dataclass
@@ -217,7 +217,7 @@ class HybridNeuralConfig(TrainingConfig):
     # Neural drift architecture
     drift_hidden_dim: int = 64
     drift_n_layers: int = 2
-    use_adjoint: bool = True
+    use_adjoint: bool = False
 
 
 @dataclass

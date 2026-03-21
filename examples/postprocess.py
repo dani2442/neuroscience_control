@@ -196,9 +196,30 @@ def _bold(s: str) -> str:
     return rf"\bf{{{s}}}"
 
 
-def _build_table_body(metrics: dict[str, dict[str, float]]) -> str:
+def _active_metric_cols(metrics: dict[str, dict[str, float]]) -> list[tuple[str, str]]:
+    """Return metric columns that are present in the provided metrics."""
+    active: list[tuple[str, str]] = []
+    for metric_key, header in METRIC_COLS:
+        for model_metrics in metrics.values():
+            val = model_metrics.get(metric_key)
+            if val is None:
+                continue
+            try:
+                if math.isnan(float(val)):
+                    continue
+            except (TypeError, ValueError):
+                continue
+            active.append((metric_key, header))
+            break
+    return active
+
+
+def _build_table_body(
+    metrics: dict[str, dict[str, float]],
+    metric_cols: list[tuple[str, str]],
+) -> str:
     """Return LaTeX table rows (\\midrule … \\bottomrule exclusive)."""
-    col_keys = [mk for mk, _ in METRIC_COLS]
+    col_keys = [mk for mk, _ in metric_cols]
 
     best: dict[str, float] = {}
     for mk in col_keys:
@@ -228,17 +249,35 @@ def _build_table_body(metrics: dict[str, dict[str, float]]) -> str:
     return "\n".join(rows)
 
 
-def _patch_tabular_body(tex: str, new_body: str) -> str:
-    """Replace row block between \\midrule and \\bottomrule in a tabular snippet."""
+def _build_tabular(metrics: dict[str, dict[str, float]]) -> str:
+    """Build a complete LaTeX tabular fragment matching the active metrics."""
+    metric_cols = _active_metric_cols(metrics)
+    body = _build_table_body(metrics, metric_cols)
+    header = "Model"
+    if metric_cols:
+        header += " & " + " & ".join(label for _, label in metric_cols)
+    header += r" \\"
+    col_spec = "l" + (" " + " ".join("c" for _ in metric_cols) if metric_cols else "")
+    return (
+        rf"\begin{{tabular}}{{{col_spec}}}" "\n"
+        r"\toprule" "\n"
+        + header + "\n"
+        + r"\midrule" "\n"
+        + body + "\n"
+        + r"\bottomrule" "\n"
+        + r"\end{tabular}" "\n"
+    )
+
+
+def _replace_first_tabular(tex: str, new_tabular: str) -> str:
+    """Replace the first tabular environment, preserving surrounding TeX."""
     tabular_pattern = re.compile(
-        r"(\\midrule\n)(.*?)(\n\s*\\bottomrule)",
+        r"\\begin\{tabular\}\{.*?\}.*?\\end\{tabular\}\n?",
         re.DOTALL,
     )
-    def _replacement(m: re.Match) -> str:
-        return m.group(1) + new_body + m.group(3)
-    patched, n_subs = tabular_pattern.subn(_replacement, tex)
+    patched, n_subs = tabular_pattern.subn(new_tabular, tex, count=1)
     if n_subs == 0:
-        print("  Warning: could not find \\midrule/\\bottomrule block in target file.", file=sys.stderr)
+        print("  Warning: could not find a tabular environment in target file.", file=sys.stderr)
     return patched
 
 
@@ -313,9 +352,9 @@ def run_update_tables(
         tex_path = TABLE_TARGET_BY_LABEL.get(table_label, Path("paper/sections/03_results.tex"))
     print(f"Target file: {tex_path}")
 
-    body = _build_table_body(metrics)
-    print("\nGenerated table rows:")
-    print(body)
+    tabular = _build_tabular(metrics)
+    print("\nGenerated table:")
+    print(tabular)
 
     if dry_run:
         return
@@ -325,7 +364,11 @@ def run_update_tables(
         return
 
     original = tex_path.read_text(encoding="utf-8")
-    patched = _patch_tabular_body(original, body)
+    stripped_original = original.strip()
+    if stripped_original.startswith(r"\begin{tabular}") and stripped_original.endswith(r"\end{tabular}"):
+        patched = tabular
+    else:
+        patched = _replace_first_tabular(original, tabular)
     if patched == original:
         print("No changes made (table not found or already up to date).")
     else:
@@ -427,9 +470,12 @@ def _generate_comparison_figures(
     results: dict,
     n_timepoints: int,
     use_wandb: bool = False,
+    save_dir: Path | None = None,
 ):
     """Generate all comparison figures (FC, timeseries, bar, report)."""
     print_section("Generating Comparison Figures")
+    out_dir = save_dir if save_dir is not None else FIGURES_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
     figures: dict[str, Any] = {}
     initial_state = dataset.timeseries[:1, :, 0]
 
@@ -438,20 +484,22 @@ def _generate_comparison_figures(
             ts = model.forward(initial_state=initial_state, n_steps=n_timepoints)
             fc_pred = model.compute_fc(ts)[0]
 
+        stem = f"{name.lower().replace(' ', '_')}_fc_comparison"
         fig = plot_fc_comparison(
             fc_pred, target_fc,
             title=f"{name} - FC Comparison",
-            default_name=f"{name.lower().replace(' ', '_')}_fc_comparison",
+            save_path=str(out_dir / f"{stem}.pdf"),
             use_pdf=True,
         )
         figures[f"{name}_fc"] = fig
         wandb_log_figure(f"figures/{name}_fc_comparison", fig, use_wandb=use_wandb)
         plt.close()
 
+        stem = f"{name.lower().replace(' ', '_')}_timeseries"
         fig = plot_timeseries(
             ts[0].real, n_rois=5,
             title=f"{name} - Simulated Timeseries",
-            default_name=f"{name.lower().replace(' ', '_')}_timeseries",
+            save_path=str(out_dir / f"{stem}.pdf"),
             use_pdf=True,
         )
         figures[f"{name}_ts"] = fig
@@ -460,7 +508,7 @@ def _generate_comparison_figures(
 
     fig = plot_model_comparison(
         results, metric_names=["fc_correlation", "fc_mse"],
-        default_name="model_comparison_metrics", use_pdf=True,
+        save_path=str(out_dir / "model_comparison_metrics.pdf"), use_pdf=True,
     )
     figures["comparison"] = fig
     wandb_log_figure("figures/model_comparison", fig, use_wandb=use_wandb)
@@ -468,13 +516,13 @@ def _generate_comparison_figures(
 
     fig = create_comparison_report(
         models=models, target_fc=target_fc, n_timepoints=n_timepoints,
-        initial_state=initial_state, save_dir=str(FIGURES_DIR), use_pdf=True,
+        initial_state=initial_state, save_dir=str(out_dir), use_pdf=True,
     )
     figures["report"] = fig
     wandb_log_figure("figures/comparison_report", fig, use_wandb=use_wandb)
     plt.close()
 
-    print(f"All figures saved to {FIGURES_DIR}")
+    print(f"All figures saved to {out_dir}")
     return figures
 
 
@@ -518,6 +566,7 @@ def run_compare_models(
     run_name: str = "model_comparison",
     n_simulations: int = 10,
     output_path: str = "results/comparison_results.json",
+    save_dir: Path | None = None,
 ) -> dict | None:
     """Compare trained Hopf and Neural SDE models."""
     print_section("MODEL COMPARISON")
@@ -525,6 +574,7 @@ def run_compare_models(
     device = resolve_device(device)
     seed_all(42)
     use_wandb = not no_wandb
+    figures_dir = save_dir if save_dir is not None else FIGURES_DIR
 
     with managed_wandb_run(
         use_wandb=use_wandb,
@@ -550,13 +600,13 @@ def run_compare_models(
             use_wandb=use_wandb,
         )
 
-        _generate_comparison_figures(models, dataset, target_fc, results, n_timepoints, use_wandb=use_wandb)
+        _generate_comparison_figures(models, dataset, target_fc, results, n_timepoints, use_wandb=use_wandb, save_dir=figures_dir)
         _save_comparison_results(results, output_path)
         _print_comparison_summary(results)
 
         print_section("COMPARISON COMPLETED SUCCESSFULLY")
         print(f"\nResults saved to: {output_path}")
-        print(f"Figures saved to: {FIGURES_DIR}")
+        print(f"Figures saved to: {figures_dir}")
         return results
 
 
@@ -893,9 +943,15 @@ def run_paper_pipeline(
     print_section("POST-TRAINING PAPER PIPELINE")
     results: dict[str, Any] = {}
 
+    if dataset_type == "lsd":
+        table_label = "tab:lsd_model_comparison"
+    else:
+        table_label = "tab:model_comparison"
+    dataset_figures_dir = FIGURES_DIR / dataset_type
+
     print_section("Step 1/3: Updating LaTeX tables")
     try:
-        run_update_tables(metrics_json=metrics_json)
+        run_update_tables(metrics_json=metrics_json, table_label=table_label)
         results["update_tables"] = "ok"
     except Exception as exc:
         print(f"  Warning: update_paper_tables failed: {exc}")
@@ -929,6 +985,7 @@ def run_paper_pipeline(
                     no_wandb=no_wandb,
                     n_simulations=n_simulations,
                     output_path=output_path,
+                    save_dir=dataset_figures_dir,
                 )
                 results["compare_models"] = "ok"
             else:
