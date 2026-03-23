@@ -281,7 +281,10 @@ def _replace_first_tabular(tex: str, new_tabular: str) -> str:
     return patched
 
 
-def _aggregate_individual_metrics(results_dir: Path) -> tuple[str | None, dict | None]:
+def _aggregate_individual_metrics(
+    results_dir: Path,
+    dataset_type: str | None = None,
+) -> tuple[str | None, dict | None]:
     """Aggregate per-model metrics files written by individual training runs.
 
     Each file has the shape::
@@ -290,12 +293,16 @@ def _aggregate_individual_metrics(results_dir: Path) -> tuple[str | None, dict |
          "metrics": {"test_inter": {<metric_key>: <value>, ...},
                      "test_intra": {<metric_key>: <value>, ...}}}
 
+    If *dataset_type* is given, only files whose ``dataset_type`` field matches
+    are included (prevents ts_young files from overwriting lsd files when both
+    live in the same results directory).
+
     Returns the inferred dataset_type and a combined metrics dict keyed by
     model name (using test_inter metrics), or ``(None, None)`` when no
     matching files are found.
     """
     combined: dict[str, dict] = {}
-    dataset_type: str | None = None
+    inferred_type: str | None = None
     for f in sorted(results_dir.glob("*.json")):
         try:
             data = json.loads(f.read_text(encoding="utf-8"))
@@ -305,11 +312,14 @@ def _aggregate_individual_metrics(results_dir: Path) -> tuple[str | None, dict |
         test_inter = data.get("metrics", {}).get("test_inter")
         if not model_key or not test_inter:
             continue
+        file_dataset_type = data.get("dataset_type")
+        if dataset_type is not None and file_dataset_type != dataset_type:
+            continue
         combined[model_key] = test_inter
-        if dataset_type is None:
-            dataset_type = data.get("dataset_type")
+        if inferred_type is None:
+            inferred_type = file_dataset_type
 
-    return dataset_type, combined or None
+    return inferred_type or dataset_type, combined or None
 
 
 def run_update_tables(
@@ -320,7 +330,16 @@ def run_update_tables(
 ) -> None:
     """Patch paper LaTeX tables with fresh metrics."""
     if metrics_json is None:
-        dataset_type, metrics = _aggregate_individual_metrics(Path("results"))
+        # Infer expected dataset_type from table_label so we only pick up
+        # matching JSON files (avoids ts_young files overwriting lsd ones).
+        expected_dataset_type: str | None = None
+        if table_label == "tab:lsd_model_comparison":
+            expected_dataset_type = "lsd"
+        elif table_label == "tab:model_comparison":
+            expected_dataset_type = "ts_young"
+        dataset_type, metrics = _aggregate_individual_metrics(
+            Path("results"), dataset_type=expected_dataset_type
+        )
         if not metrics:
             print("No metrics found in results/. Please run training first.")
             return
@@ -972,9 +991,15 @@ def run_paper_pipeline(
         try:
             resolve_data_path = data_path
             if dataset_type == "lsd" and lsd_data_dir and not data_path:
-                mat_files = sorted(Path(lsd_data_dir).glob("*.mat"))
-                if mat_files:
-                    resolve_data_path = str(mat_files[0])
+                lsd_dir = Path(lsd_data_dir)
+                # Prefer time_series_data.mat; fall back to any other .mat
+                ts_mat = lsd_dir / "time_series_data.mat"
+                if ts_mat.exists():
+                    resolve_data_path = str(ts_mat)
+                else:
+                    mat_files = sorted(lsd_dir.glob("*.mat"))
+                    if mat_files:
+                        resolve_data_path = str(mat_files[0])
 
             if resolve_data_path:
                 run_compare_models(

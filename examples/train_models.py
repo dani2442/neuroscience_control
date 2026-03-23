@@ -149,8 +149,8 @@ def _create_validation_loader(
     device: str,
     val_idx: torch.Tensor,
 ) -> DataLoader:
-    window_size = min(cfg.window_size, dataset.n_timepoints // 4)
-    n_val_win = max(cfg.batch_size, cfg.n_windows_per_epoch // 4)
+    window_size = min(cfg.window_size, dataset.n_timepoints // 2)
+    n_val_win = max(cfg.batch_size, cfg.n_windows_per_epoch // 2)
     val_idx = torch.as_tensor(val_idx, device=dataset.timeseries.device, dtype=torch.long)
     ctrl = getattr(dataset, "control", None)
     val_ctrl = ctrl[val_idx] if ctrl is not None else None
@@ -224,7 +224,7 @@ def _run_backprop(args: argparse.Namespace) -> dict[str, object]:
 
     print_section("STEP 1: Loading and Processing Data")
     dataset = load_dataset(cfg, device)
-    window_size = min(cfg.window_size, dataset.n_timepoints // 4)
+    window_size = min(cfg.window_size, dataset.n_timepoints // 2)
     train_loader, val_loader, test_inter_loader, test_intra_loader = create_data_loaders(
         dataset=dataset,
         window_size=window_size,
@@ -345,12 +345,17 @@ def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
         initial_states = dataset.timeseries[eval_train_idx, :, 0]
         target_ts = dataset.timeseries[eval_train_idx, :, :n_timepoints]
 
-        metric_weights = {k: v for k, v in [
-            ("fc_correlation", cfg.weight_fc),
-            ("fcd_mse", cfg.weight_fcd),
-            ("metastability_diff", cfg.weight_meta),
-            ("phfcd_mse", cfg.weight_phfcd),
-        ] if v}
+        _LOSS_TO_GRID = {
+            "fc_correlation": "fc_correlation",
+            "fcd": "fcd_mse",
+            "phfcd": "phfcd_mse",
+            "metastability": "metastability_diff",
+        }
+        metric_weights = {
+            grid_k: cfg.loss_weights[loss_k]
+            for loss_k, grid_k in _LOSS_TO_GRID.items()
+            if cfg.loss_weights.get(loss_k)
+        }
 
         n_combos = len(cfg.g_values) * len(cfg.a_values) * len(cfg.kappa_values)
         print(f"Grid search over {n_combos} combinations  "

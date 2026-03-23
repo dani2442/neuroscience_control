@@ -64,16 +64,21 @@ class TrainingConfig:
     train_ratio: float = 0.7
     val_ratio: float = 0.15
 
-    # Fourier denoising
+    # Fourier denoising (data preprocessing)
     fourier_denoise: bool = True
     denoise_f_lo: float = 0.008
     denoise_f_hi: float = 0.08
+    # Whether to denoise model predictions during training
+    denoise_predictions: bool = False
+    # Whether FC losses use the precomputed per-subject FC from the dataloader
+    # (True) or compute FC from the short simulation window (False)
+    use_precomputed_fc: bool = False
 
     # Dynamics metrics settings
     tr: float = 0.72
     f_lo: float = 0.04
     f_hi: float = 0.07
-    fcd_win_sec: float = 20.0
+    fcd_win_sec: float = 30.0 # 20.0
     fcd_step_sec: float = 2.0
     
     # Model settings
@@ -83,10 +88,10 @@ class TrainingConfig:
     n_epochs: int = 20
     lr: float = 1e-3
     loss_weights: dict = field(default_factory=lambda: {
-        "fc_correlation": 1.0, "fc_mse": 1.0, "l2": 0.0,
-        "amplitude": 1.0, "omega": 1.0, "power_spectrum": 1.0,
-        "temporal_correlation": 1.0, "autocorrelation": 1.0,
-        "fcd": 1.0, "phfcd": 1.0, "phase_fc_correlation": 1.0,
+        "fc_correlation": 0.5, "fc_mse": 1.0, "l2": 0.0,
+        "amplitude": 1.0, "omega": 1.0, "power_spectrum": 0.0,
+        "temporal_correlation": 0.0, "autocorrelation": 0.0,
+        "fcd": 1.0, "phfcd": 1.0, "phase_fc_correlation": 0.0,
         "metastability": 1.0, "fdm": 0.25,
     })
     early_stopping_patience: int = 15
@@ -150,12 +155,6 @@ class HopfConfig(TrainingConfig):
     learnable_kappa: bool = False
     learnable_omega: bool = False
     learnable_fc: bool = False  # Learnable functional connectivity matrix
-
-    # Composite grid-search scoring weights
-    # weight_fc: float = 1.0
-    # weight_fcd: float = 0.0
-    # weight_phfcd: float = 1.0
-    # weight_meta: float = 1.0
 
 
 @dataclass

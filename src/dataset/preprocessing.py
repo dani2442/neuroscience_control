@@ -143,8 +143,10 @@ def create_data_loaders(
     intra_ts  = dataset.timeseries[train_idx, :, T_split:]
     train_fc  = dataset.fc_matrices[train_idx]
     if ctrl is not None:
-        train_ctrl = ctrl[train_idx, :T_split]
-        intra_ctrl = ctrl[train_idx, T_split:]
+        # Control is per-subject (n_subjects, n_control_dims), not time-varying.
+        # Both temporal halves share the same per-subject control.
+        train_ctrl = ctrl[train_idx]
+        intra_ctrl = ctrl[train_idx]
     else:
         train_ctrl = intra_ctrl = None
 

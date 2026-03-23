@@ -105,6 +105,8 @@ class Trainer:
                 else self.sde_method
             )
 
+        self.use_precomputed_fc = cfg.use_precomputed_fc if cfg is not None else True
+
         # Dynamics parameters for FCD windowing
         tr = cfg.tr if cfg is not None else 0.72
         fcd_win_sec = cfg.fcd_win_sec if cfg is not None else 30.0
@@ -156,9 +158,11 @@ class Trainer:
         if self.use_wandb and cfg is not None:
             self._init_wandb(cfg)
 
-    def _denoise_pred(self, simulated: torch.Tensor, dt: float) -> torch.Tensor:
-        """Apply the same FFT bandpass filter used on real data to the predicted signal."""
-        if self.cfg is None or not self.cfg.fourier_denoise:
+    def _denoise_pred(self, simulated: torch.Tensor, dt: float, training: bool = False) -> torch.Tensor:
+        """Apply FFT bandpass filter to predicted signal (val/test always and only training when denoise_predictions==True)."""
+        if self.cfg is None:
+            return simulated
+        if training and not self.cfg.denoise_predictions:
             return simulated
         f_lo, f_hi = self.cfg.denoise_f_lo, self.cfg.denoise_f_hi
         if torch.is_complex(simulated):
@@ -319,6 +323,8 @@ class Trainer:
             if train:
                 self.optimizer.zero_grad()
 
+            fc_arg = fc_targets if self.use_precomputed_fc else None
+
             if train:
                 simulated = self.model.forward(
                     initial_state=initial_state,
@@ -331,8 +337,8 @@ class Trainer:
                     adjoint_method=self.adjoint_method,
                     control=ctrl_arg,
                 )
-                simulated = self._denoise_pred(simulated, dt)
-                loss, loss_components = self.loss_fn(simulated, target_window)
+                simulated = self._denoise_pred(simulated, dt, training=True)
+                loss, loss_components = self.loss_fn(simulated, target_window, fc_target=fc_arg)
             else:
                 with torch.no_grad():
                     simulated = self.model.forward(
@@ -346,8 +352,8 @@ class Trainer:
                         adjoint_method=self.adjoint_method,
                         control=ctrl_arg,
                     )
-                    simulated = self._denoise_pred(simulated, dt)
-                    loss, loss_components = self.loss_fn(simulated, target_window)
+                    simulated = self._denoise_pred(simulated, dt, training=False)
+                    loss, loss_components = self.loss_fn(simulated, target_window, fc_target=fc_arg)
 
             if not torch.isfinite(simulated.real).all():
                 raise RuntimeError(
@@ -519,6 +525,13 @@ class Trainer:
             wandb.summary["best_val_loss"] = self.best_val_loss
             wandb.summary["total_epochs"] = epoch + 1
 
+        # Restore best weights and remove the temporary checkpoint file
+        if save_best:
+            best_ckpt = self.checkpoint_dir / f"best_{self.experiment_name}.pt"
+            if best_ckpt.exists():
+                self.model.load(str(best_ckpt))
+                best_ckpt.unlink()
+
         return self.metrics_store
 
     @torch.no_grad()
@@ -573,7 +586,8 @@ class Trainer:
                 accumulator.update(sample_metrics)
 
             # Batch-level loss and components
-            loss, loss_components = self.loss_fn(simulated, target_window)
+            fc_arg = fc_targets if self.use_precomputed_fc else None
+            loss, loss_components = self.loss_fn(simulated, target_window, fc_target=fc_arg)
             batch_loss_metrics: Dict[str, float] = {"loss": float(loss.item())}
             for name, value in loss_components.items():
                 batch_loss_metrics[name] = float(value.item())

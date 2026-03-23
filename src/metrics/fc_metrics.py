@@ -4,6 +4,8 @@ FC matrices are real-valued ``(batch, n_rois, n_rois)`` tensors.  If a
 complex tensor is passed the real part is used automatically.
 """
 
+from __future__ import annotations
+
 import torch
 import torch.nn as nn
 
@@ -44,11 +46,20 @@ class FCCorrelation(nn.Module):
 
     ``forward()`` returns the loss (lower is better).
     ``evaluate()`` returns ``{"fc_correlation": float}`` (higher is better).
+
+    When *fc_target* is provided (precomputed per-subject FC), it is used
+    directly instead of computing FC from *ts_target*.
     """
 
-    def forward(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        ts_pred: torch.Tensor,
+        ts_target: torch.Tensor,
+        fc_target: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         fc_pred = compute_static_fc(ts_pred)
-        fc_target = compute_static_fc(ts_target)
+        if fc_target is None:
+            fc_target = compute_static_fc(ts_target)
 
         pred_flat = upper_tri_vec(to_real(fc_pred), k=1)
         targ_flat = upper_tri_vec(to_real(fc_target), k=1)
@@ -68,11 +79,20 @@ class FCMSE(nn.Module):
     """MSE between FC matrices. Metric and loss are the same value.
 
     ``forward()`` returns the loss. ``evaluate()`` returns ``{"fc_mse": float}``.
+
+    When *fc_target* is provided (precomputed per-subject FC), it is used
+    directly instead of computing FC from *ts_target*.
     """
 
-    def forward(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        ts_pred: torch.Tensor,
+        ts_target: torch.Tensor,
+        fc_target: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         fc_pred = compute_static_fc(ts_pred)
-        fc_target = compute_static_fc(ts_target)
+        if fc_target is None:
+            fc_target = compute_static_fc(ts_target)
         pred_flat = upper_tri_vec(to_real(fc_pred), k=1)
         targ_flat = upper_tri_vec(to_real(fc_target), k=1)
         return ((pred_flat - targ_flat) ** 2).mean()
