@@ -105,8 +105,6 @@ class Trainer:
                 else self.sde_method
             )
 
-        self.use_precomputed_fc = cfg.use_precomputed_fc if cfg is not None else True
-
         # Dynamics parameters for FCD windowing
         tr = cfg.tr if cfg is not None else 0.72
         fcd_win_sec = cfg.fcd_win_sec if cfg is not None else 30.0
@@ -306,9 +304,8 @@ class Trainer:
             )
 
         for batch in iterable:
-            windows, fc_targets, _, control = batch
+            windows, _fc, _, control = batch
             windows = windows.to(self.device)
-            fc_targets = fc_targets.to(self.device)
             control = control.to(self.device)
             ctrl_arg = control if control.shape[-1] > 0 else None
 
@@ -323,8 +320,6 @@ class Trainer:
             if train:
                 self.optimizer.zero_grad()
 
-            fc_arg = fc_targets if self.use_precomputed_fc else None
-
             if train:
                 simulated = self.model.forward(
                     initial_state=initial_state,
@@ -338,7 +333,7 @@ class Trainer:
                     control=ctrl_arg,
                 )
                 simulated = self._denoise_pred(simulated, dt, training=True)
-                loss, loss_components = self.loss_fn(simulated, target_window, fc_target=fc_arg)
+                loss, loss_components = self.loss_fn(simulated, target_window)
             else:
                 with torch.no_grad():
                     simulated = self.model.forward(
@@ -353,7 +348,7 @@ class Trainer:
                         control=ctrl_arg,
                     )
                     simulated = self._denoise_pred(simulated, dt, training=False)
-                    loss, loss_components = self.loss_fn(simulated, target_window, fc_target=fc_arg)
+                    loss, loss_components = self.loss_fn(simulated, target_window)
 
             if not torch.isfinite(simulated.real).all():
                 raise RuntimeError(
@@ -549,9 +544,8 @@ class Trainer:
         """
         accumulator = _MetricAccumulator()
         for batch in test_loader:
-            windows, fc_targets, _, control = batch
+            windows, _fc, _, control = batch
             windows = windows.to(self.device)
-            fc_targets = fc_targets.to(self.device)
             control = control.to(self.device)
             ctrl_arg = control if control.shape[-1] > 0 else None
 
@@ -586,8 +580,7 @@ class Trainer:
                 accumulator.update(sample_metrics)
 
             # Batch-level loss and components
-            fc_arg = fc_targets if self.use_precomputed_fc else None
-            loss, loss_components = self.loss_fn(simulated, target_window, fc_target=fc_arg)
+            loss, loss_components = self.loss_fn(simulated, target_window)
             batch_loss_metrics: Dict[str, float] = {"loss": float(loss.item())}
             for name, value in loss_components.items():
                 batch_loss_metrics[name] = float(value.item())

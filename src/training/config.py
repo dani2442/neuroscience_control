@@ -70,9 +70,6 @@ class TrainingConfig:
     denoise_f_hi: float = 0.08
     # Whether to denoise model predictions during training
     denoise_predictions: bool = False
-    # Whether FC losses use the precomputed per-subject FC from the dataloader
-    # (True) or compute FC from the short simulation window (False)
-    use_precomputed_fc: bool = False
 
     # Dynamics metrics settings
     tr: float = 0.72
@@ -88,10 +85,10 @@ class TrainingConfig:
     n_epochs: int = 20
     lr: float = 1e-3
     loss_weights: dict = field(default_factory=lambda: {
-        "fc_correlation": 0.5, "fc_mse": 1.0, "l2": 0.0,
+        "fc_correlation": 1.0, "fc_mse": 1.0, "l2": 0.0,
         "amplitude": 1.0, "omega": 1.0, "power_spectrum": 0.0,
         "temporal_correlation": 0.0, "autocorrelation": 0.0,
-        "fcd": 1.0, "phfcd": 1.0, "phase_fc_correlation": 0.0,
+        "fcd": 1.0, "phfcd": 1.0, "phase_fc_correlation": 1.0,
         "metastability": 1.0, "fdm": 0.25,
     })
     early_stopping_patience: int = 15

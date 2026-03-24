@@ -135,8 +135,6 @@ _TR_KWARGS_KEYS = {"amplitude", "omega"}
 # Keys whose constructor accepts (n_pairs, max_lag, sigma)
 _FDM_KWARGS_KEYS = {"fdm"}
 
-# Keys whose forward() accepts an optional fc_target kwarg
-_FC_KEYS = {"fc_correlation", "fc_mse"}
 
 
 # ---------------------------------------------------------------------------
@@ -203,16 +201,12 @@ class CompositeLoss(nn.Module):
         self,
         ts_pred: torch.Tensor,
         ts_target: torch.Tensor,
-        fc_target: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """Compute the weighted composite loss.
 
         Args:
             ts_pred: ``(batch, n_rois, T)`` complex analytic signal.
             ts_target: ``(batch, n_rois, T)`` complex analytic signal.
-            fc_target: Optional precomputed ``(batch, n_rois, n_rois)`` FC
-                matrices.  When provided, FC-based loss terms use these
-                instead of computing FC from the short *ts_target* window.
 
         Returns:
             total: weighted scalar loss for back-propagation.
@@ -224,10 +218,7 @@ class CompositeLoss(nn.Module):
         components: Dict[str, torch.Tensor] = {}
 
         for name, weight in self.weights.items():
-            if name in _FC_KEYS and fc_target is not None:
-                value = self.terms[name](ts_pred, ts_target, fc_target=fc_target)
-            else:
-                value = self.terms[name](ts_pred, ts_target)
+            value = self.terms[name](ts_pred, ts_target)
             components[f"loss_{name}"] = value
             total = total + weight * value
 
