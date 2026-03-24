@@ -64,11 +64,15 @@ from src.utils.runtime import (
     wandb_log_figure,
     wandb_summary_update,
 )
+from src.utils.evaluation import (
+    EVAL_METRIC_KEYS,
+    evaluate_model_loader_metrics,
+    to_float_metric,
+)
 from src.utils.visualization import (
     FIGURES_DIR,
     create_comparison_report,
     plot_fc_comparison,
-    plot_model_comparison,
     plot_timeseries,
 )
 
@@ -399,44 +403,50 @@ def run_update_tables(
 # 2. compare_models
 # ===================================================================
 
-def _load_data(data_path: str, device: str):
-    """Load dataset from a .mat file."""
-    from src.dataset import NeuroscienceDataset
-
-    print_section("Loading Data")
-    dataset = NeuroscienceDataset(filepath=data_path, normalize=True, device=device)
-    print(f"Loaded dataset:")
-    print(f"  - Number of subjects: {dataset.n_subjects}")
-    print(f"  - Number of ROIs: {dataset.n_rois}")
-    print(f"  - Number of timepoints: {dataset.n_timepoints}")
-    return dataset
-
-
-def _load_models(hopf_checkpoint: str | None, nsde_checkpoint: str | None, n_rois: int, device: str):
-    """Load trained models from checkpoints."""
+def _load_all_checkpoints(
+    checkpoints: list[str],
+    n_rois: int,
+    device: str,
+) -> dict[str, Any]:
+    """Load all model checkpoints, returning {label: model}."""
     from src.models import load_model_from_checkpoint
 
     print_section("Loading Models")
     models: dict[str, Any] = {}
-
-    for label, ckpt, tag in [
-        ("Coupled Hopf", hopf_checkpoint, "Hopf"),
-        ("Neural SDE", nsde_checkpoint, "Neural SDE"),
-    ]:
-        if not ckpt or not Path(ckpt).exists():
-            print(f"Warning: {tag} checkpoint not found at {ckpt}")
+    for ckpt_path in checkpoints:
+        p = Path(ckpt_path)
+        if not p.exists():
+            print(f"  Warning: checkpoint not found: {p}")
             continue
-        print(f"Loading {tag} model from {ckpt}")
         try:
-            model, model_name, _ = load_model_from_checkpoint(ckpt, device=device)
+            model, mtype, _ = load_model_from_checkpoint(str(p), device=device)
+            label = _short_model_label(p.stem)
             if model.n_rois != n_rois:
-                print(f"Warning: {model_name} ROI mismatch ({model.n_rois} != {n_rois}); skipping.")
+                print(f"  Warning: {label} ROI mismatch ({model.n_rois} != {n_rois}); skipping.")
             else:
                 models[label] = model
-                print(f"  - {tag} model loaded successfully")
+                print(f"  Loaded '{label}' ({mtype}) from {p.name}")
         except Exception as exc:
-            print(f"Warning: Failed to load {tag} checkpoint: {exc}")
+            print(f"  Warning: failed to load {p.name}: {exc}")
     return models
+
+
+def _as_numeric(metrics: dict[str, object]) -> dict[str, float]:
+    return {k: v for k, v in ((k, to_float_metric(v)) for k, v in metrics.items()) if v is not None}
+
+
+def _format_metrics_mean_std(metrics: dict[str, object]) -> dict[str, str]:
+    numeric = _as_numeric(metrics)
+    formatted: dict[str, str] = {}
+    for key in sorted(numeric):
+        if key.endswith("_std"):
+            continue
+        std_key = f"{key}_std"
+        if std_key in numeric:
+            formatted[key] = f"{numeric[key]:.6f} ± {numeric[std_key]:.6f}"
+        else:
+            formatted[key] = f"{numeric[key]:.6f}"
+    return formatted
 
 
 def _fc_corr_and_mse(fc_pred: "torch.Tensor", fc_target: "torch.Tensor"):
@@ -452,46 +462,15 @@ def _fc_corr_and_mse(fc_pred: "torch.Tensor", fc_target: "torch.Tensor"):
     return corr, mse
 
 
-def _evaluate_models(models: dict, dataset, target_fc, n_timepoints: int, n_simulations: int = 10):
-    """Evaluate all models and compute FC metrics."""
-    print_section("Evaluating Models")
-    all_results: dict[str, dict[str, float]] = {}
-    n_eval = min(n_simulations, dataset.n_subjects)
-    initial_states = dataset.timeseries[:n_eval, :, 0]
-
-    for name, model in models.items():
-        print(f"\nEvaluating {name}...")
-        with torch.no_grad():
-            ts = model.forward(initial_state=initial_states, n_steps=n_timepoints)
-            fc_pred = model.compute_fc(ts)
-            all_fc_corrs, all_fc_mses = [], []
-            for i in range(n_eval):
-                corr, mse = _fc_corr_and_mse(fc_pred[i:i+1], target_fc.unsqueeze(0))
-                all_fc_corrs.append(corr)
-                all_fc_mses.append(mse)
-
-        results = {
-            "fc_correlation": float(np.mean(all_fc_corrs)),
-            "fc_correlation_std": float(np.std(all_fc_corrs)),
-            "fc_mse": float(np.mean(all_fc_mses)),
-            "fc_mse_std": float(np.std(all_fc_mses)),
-        }
-        all_results[name] = results
-        print(f"  fc_correlation: {results['fc_correlation']:.4f} ± {results['fc_correlation_std']:.4f}")
-        print(f"  fc_mse: {results['fc_mse']:.4f} ± {results['fc_mse_std']:.4f}")
-    return all_results
-
-
 def _generate_comparison_figures(
     models: dict,
     dataset,
     target_fc,
-    results: dict,
     n_timepoints: int,
     use_wandb: bool = False,
     save_dir: Path | None = None,
 ):
-    """Generate all comparison figures (FC, timeseries, bar, report)."""
+    """Generate all comparison figures (FC, timeseries, report)."""
     print_section("Generating Comparison Figures")
     out_dir = save_dir if save_dir is not None else FIGURES_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -525,14 +504,6 @@ def _generate_comparison_figures(
         wandb_log_figure(f"figures/{name}_timeseries", fig, use_wandb=use_wandb)
         plt.close()
 
-    fig = plot_model_comparison(
-        results, metric_names=["fc_correlation", "fc_mse"],
-        save_path=str(out_dir / "model_comparison_metrics.pdf"), use_pdf=True,
-    )
-    figures["comparison"] = fig
-    wandb_log_figure("figures/model_comparison", fig, use_wandb=use_wandb)
-    plt.close()
-
     fig = create_comparison_report(
         models=models, target_fc=target_fc, n_timepoints=n_timepoints,
         initial_state=initial_state, save_dir=str(out_dir), use_pdf=True,
@@ -545,55 +516,150 @@ def _generate_comparison_figures(
     return figures
 
 
-def _save_comparison_results(results: dict, save_path: str) -> None:
-    """Save comparison results to JSON."""
+def _save_comparison_results(
+    test_inter_results: dict[str, dict[str, float]],
+    test_intra_results: dict[str, dict[str, float]],
+    save_path: str,
+) -> None:
+    """Save comparison results (both splits) to JSON."""
     save_path = Path(save_path)
     save_path.parent.mkdir(parents=True, exist_ok=True)
     serializable = {
-        mn: {k: float(v) for k, v in metrics.items()}
-        for mn, metrics in results.items()
+        "test_inter": {
+            mn: {k: float(v) for k, v in metrics.items()}
+            for mn, metrics in test_inter_results.items()
+        },
+        "test_intra": {
+            mn: {k: float(v) for k, v in metrics.items()}
+            for mn, metrics in test_intra_results.items()
+        },
     }
     with open(save_path, "w") as f:
         json.dump(serializable, f, indent=2)
     print(f"Results saved to {save_path}")
 
 
-def _print_comparison_summary(results: dict) -> None:
-    """Print comparison summary table."""
-    print("\n" + "=" * 60)
-    print("COMPARISON SUMMARY")
-    print("=" * 60 + "\n" + "-" * 40)
-    print(f"{'Model':<20} {'fc_correlation':<15} {'fc_mse':<15}")
-    print("-" * 40)
+def _print_comparison_table(
+    results: dict[str, dict[str, float]],
+    split_label: str,
+) -> None:
+    """Print a full metric comparison table for one test split."""
+    metric_keys = list(EVAL_METRIC_KEYS)
+    print(f"\n{'=' * 60}")
+    print(f"  {split_label}")
+    print(f"{'=' * 60}")
+
+    col_w = 14
+    header = f"{'Model':<25}" + "".join(f"{k:>{col_w}}" for k in metric_keys)
+    print(header)
+    print("-" * len(header))
+
     for name, m in results.items():
-        fc_corr = f"{m['fc_correlation']:.4f} ± {m['fc_correlation_std']:.4f}"
-        fc_mse = f"{m['fc_mse']:.4f} ± {m['fc_mse_std']:.4f}"
-        print(f"{name:<20} {fc_corr:<15} {fc_mse:<15}")
-    print("-" * 40)
-    best = max(results, key=lambda x: results[x]["fc_correlation"])
-    print(f"\nBest model (by fc_correlation): {best}")
-    print(f"  fc_correlation: {results[best]['fc_correlation']:.4f}")
+        numeric = _as_numeric(m)
+        cells = f"{name:<25}"
+        for k in metric_keys:
+            val = numeric.get(k, float("nan"))
+            std = numeric.get(f"{k}_std")
+            if std is not None and not math.isnan(std):
+                cells += f"{val:>{col_w}.4f}"
+            elif math.isnan(val):
+                cells += f"{'nan':>{col_w}}"
+            else:
+                cells += f"{val:>{col_w}.4f}"
+        print(cells)
+
+    # Print best model by fc_correlation
+    fc_vals = {n: _as_numeric(m).get("fc_correlation", float("nan")) for n, m in results.items()}
+    fc_vals = {n: v for n, v in fc_vals.items() if not math.isnan(v)}
+    if fc_vals:
+        best = max(fc_vals, key=fc_vals.get)
+        print(f"\n  Best model (by fc_correlation): {best} = {fc_vals[best]:.4f}")
 
 
 def run_compare_models(
-    data_path: str = "data/ts_young/ts_young_TR0.72.mat",
-    hopf_checkpoint: str | None = "checkpoints/hopf_best.pt",
-    nsde_checkpoint: str | None = "checkpoints/nsde_best.pt",
+    dataset_type: str = "ts_young",
+    checkpoint_dir: str = "checkpoints",
+    checkpoints: list[str] | None = None,
     device: str = "auto",
     no_wandb: bool = True,
     wandb_project: str = "neuroscience-control",
     run_name: str = "model_comparison",
-    n_simulations: int = 10,
     output_path: str = "results/comparison_results.json",
     save_dir: Path | None = None,
+    skip_figures: bool = False,
+    # Dataset config overrides (forwarded to load_dataset via cfg)
+    data_path: str | None = None,
+    lsd_data_dir: str | None = None,
 ) -> dict | None:
-    """Compare trained Hopf and Neural SDE models."""
+    """Compare trained models using the same evaluation as train_models.py.
+
+    Loads data with ``load_dataset`` + ``create_data_loaders`` and evaluates
+    every discovered checkpoint with ``evaluate_model_loader_metrics`` on both
+    the inter-patient and intra-patient test loaders.
+    """
+    from src.dataset import load_dataset, create_data_loaders
+    from src.training import HopfConfig
+
     print_section("MODEL COMPARISON")
     ensure_proxy_env()
     device = resolve_device(device)
     seed_all(42)
     use_wandb = not no_wandb
-    figures_dir = save_dir if save_dir is not None else FIGURES_DIR
+    figures_dir = save_dir if save_dir is not None else FIGURES_DIR / dataset_type
+
+    # Build a config for dataset loading (same defaults as training)
+    cfg = HopfConfig()
+    cfg.dataset_type = dataset_type
+    if data_path is not None:
+        cfg.data_path = data_path
+    if lsd_data_dir is not None:
+        cfg.lsd_data_dir = lsd_data_dir
+    cfg.use_wandb = use_wandb
+
+    print_section("STEP 1: Loading Data")
+    dataset = load_dataset(cfg, device)
+    window_size = min(cfg.window_size, dataset.n_timepoints // 2)
+    _, _, test_inter_loader, test_intra_loader = create_data_loaders(
+        dataset=dataset,
+        window_size=window_size,
+        batch_size=cfg.batch_size,
+        n_windows_per_epoch=cfg.n_windows_per_epoch,
+        train_ratio=cfg.train_ratio,
+        val_ratio=cfg.val_ratio,
+        seed=cfg.seed,
+        device=device,
+    )
+    print(f"  window_size={window_size}  "
+          f"test_inter={len(test_inter_loader)}  test_intra={len(test_intra_loader)}")
+
+    # Discover and load checkpoints
+    if not checkpoints:
+        checkpoints = _discover_checkpoints(dataset_type, checkpoint_dir)
+    if not checkpoints:
+        print("Error: No checkpoints found. Please check checkpoint paths.")
+        return None
+
+    models = _load_all_checkpoints(checkpoints, n_rois=dataset.n_rois, device=device)
+    if not models:
+        print("Error: No models could be loaded. Please check checkpoint paths.")
+        return None
+
+    print_section("STEP 2: Evaluating Models")
+    test_inter_results: dict[str, dict[str, float]] = {}
+    test_intra_results: dict[str, dict[str, float]] = {}
+
+    for name, model in models.items():
+        print(f"\n  Evaluating {name}...")
+        inter_metrics = evaluate_model_loader_metrics(
+            model, test_inter_loader, cfg, n_steps=window_size, return_std=True,
+        )
+        intra_metrics = evaluate_model_loader_metrics(
+            model, test_intra_loader, cfg, n_steps=window_size, return_std=True,
+        )
+        test_inter_results[name] = _as_numeric(inter_metrics)
+        test_intra_results[name] = _as_numeric(intra_metrics)
+        print(f"    Inter: {_format_metrics_mean_std(inter_metrics)}")
+        print(f"    Intra: {_format_metrics_mean_std(intra_metrics)}")
 
     with managed_wandb_run(
         use_wandb=use_wandb,
@@ -601,32 +667,26 @@ def run_compare_models(
         run_name=run_name,
         tags=["comparison", "evaluation"],
     ):
-        dataset = _load_data(data_path, device)
-        target_fc = dataset.fc_mean
-        n_timepoints = min(dataset.n_timepoints, 200)
+        for model_name, metrics in test_inter_results.items():
+            wandb_log({f"test_inter/{model_name}/{k}": v for k, v in metrics.items()}, use_wandb=use_wandb)
+        for model_name, metrics in test_intra_results.items():
+            wandb_log({f"test_intra/{model_name}/{k}": v for k, v in metrics.items()}, use_wandb=use_wandb)
 
-        models = _load_models(hopf_checkpoint, nsde_checkpoint, n_rois=dataset.n_rois, device=device)
-        if not models:
-            print("Error: No models could be loaded. Please check checkpoint paths.")
-            return None
+        if not skip_figures:
+            _generate_comparison_figures(
+                models, dataset, dataset.fc_mean,
+                min(dataset.n_timepoints, 200),
+                use_wandb=use_wandb, save_dir=figures_dir,
+            )
 
-        results = _evaluate_models(models, dataset, target_fc, n_timepoints, n_simulations=n_simulations)
+    _save_comparison_results(test_inter_results, test_intra_results, output_path)
+    _print_comparison_table(test_inter_results, "INTER-PATIENT TEST SET")
+    _print_comparison_table(test_intra_results, "INTRA-PATIENT TEST SET")
 
-        for model_name, metrics in results.items():
-            wandb_log({f"{model_name}/{k}": v for k, v in metrics.items()}, use_wandb=use_wandb)
-        wandb_summary_update(
-            {"best_model": max(results, key=lambda x: results[x]["fc_correlation"])},
-            use_wandb=use_wandb,
-        )
-
-        _generate_comparison_figures(models, dataset, target_fc, results, n_timepoints, use_wandb=use_wandb, save_dir=figures_dir)
-        _save_comparison_results(results, output_path)
-        _print_comparison_summary(results)
-
-        print_section("COMPARISON COMPLETED SUCCESSFULLY")
-        print(f"\nResults saved to: {output_path}")
-        print(f"Figures saved to: {figures_dir}")
-        return results
+    print_section("COMPARISON COMPLETED SUCCESSFULLY")
+    print(f"\nResults saved to: {output_path}")
+    print(f"Figures saved to: {figures_dir}")
+    return {"test_inter": test_inter_results, "test_intra": test_intra_results}
 
 
 # ===================================================================
@@ -953,7 +1013,6 @@ def run_paper_pipeline(
     explicit_checkpoints: dict[str, str] | None = None,
     data_path: str | None = None,
     lsd_data_dir: str | None = None,
-    n_simulations: int = 10,
     output_path: str = "results/comparison_results.json",
     n_steps: int = 240,
     n_paths: int = 10,
@@ -976,51 +1035,28 @@ def run_paper_pipeline(
         print(f"  Warning: update_paper_tables failed: {exc}")
         results["update_tables"] = f"error: {exc}"
 
-    print_section("Step 2/3: Comparing models (figures)")
+    print_section("Step 2/3: Comparing models (inter + intra patient)")
     checkpoints = _discover_checkpoints(dataset_type, checkpoint_dir, explicit_checkpoints)
 
-    hopf_ckpt = next(
-        (c for c in checkpoints
-         if "hopf" in Path(c).stem and "nsde" not in Path(c).stem
-         and "hybrid" not in Path(c).stem and "gnn" not in Path(c).stem),
-        None,
-    )
-    nsde_ckpt = next((c for c in checkpoints if "nsde" in Path(c).stem), None)
-
-    if hopf_ckpt or nsde_ckpt:
+    if checkpoints:
         try:
-            resolve_data_path = data_path
-            if dataset_type == "lsd" and lsd_data_dir and not data_path:
-                lsd_dir = Path(lsd_data_dir)
-                # Prefer time_series_data.mat; fall back to any other .mat
-                ts_mat = lsd_dir / "time_series_data.mat"
-                if ts_mat.exists():
-                    resolve_data_path = str(ts_mat)
-                else:
-                    mat_files = sorted(lsd_dir.glob("*.mat"))
-                    if mat_files:
-                        resolve_data_path = str(mat_files[0])
-
-            if resolve_data_path:
-                run_compare_models(
-                    data_path=resolve_data_path,
-                    hopf_checkpoint=hopf_ckpt,
-                    nsde_checkpoint=nsde_ckpt,
-                    device=device or "auto",
-                    no_wandb=no_wandb,
-                    n_simulations=n_simulations,
-                    output_path=output_path,
-                    save_dir=dataset_figures_dir,
-                )
-                results["compare_models"] = "ok"
-            else:
-                print("  Skipped: no data path resolved.")
-                results["compare_models"] = "skipped (no data path)"
+            run_compare_models(
+                dataset_type=dataset_type,
+                checkpoint_dir=checkpoint_dir,
+                checkpoints=checkpoints,
+                device=device or "auto",
+                no_wandb=no_wandb,
+                output_path=output_path,
+                save_dir=dataset_figures_dir,
+                data_path=data_path,
+                lsd_data_dir=lsd_data_dir,
+            )
+            results["compare_models"] = "ok"
         except Exception as exc:
             print(f"  Warning: compare_models failed: {exc}")
             results["compare_models"] = f"error: {exc}"
     else:
-        print("  Skipped: no Hopf or Neural SDE checkpoints found.")
+        print("  Skipped: no checkpoints found.")
         results["compare_models"] = "skipped"
 
     if dataset_type == "lsd":
@@ -1065,7 +1101,6 @@ def _run_pipeline(args: argparse.Namespace) -> dict[str, object]:
         checkpoint_dir=getattr(args, "checkpoint_dir", "checkpoints"),
         data_path=getattr(args, "data_path", None),
         lsd_data_dir=getattr(args, "lsd_data_dir", None),
-        n_simulations=getattr(args, "n_simulations", 10),
         output_path=getattr(args, "output_path", "results/comparison_results.json"),
         n_steps=getattr(args, "n_steps", 240),
         n_paths=getattr(args, "n_paths", 10),
@@ -1085,15 +1120,17 @@ def _run_update_tables(args: argparse.Namespace) -> dict[str, object]:
 
 def _run_compare(args: argparse.Namespace) -> dict[str, object]:
     result = run_compare_models(
-        data_path=getattr(args, "data_path", None) or "data/ts_young/ts_young_TR0.72.mat",
-        hopf_checkpoint=getattr(args, "hopf_checkpoint", None),
-        nsde_checkpoint=getattr(args, "nsde_checkpoint", None),
+        dataset_type=getattr(args, "dataset_type", None) or "ts_young",
+        checkpoint_dir=getattr(args, "checkpoint_dir", "checkpoints"),
+        checkpoints=getattr(args, "checkpoints", None),
         device=args.device or "auto",
         no_wandb=args.no_wandb,
         wandb_project=getattr(args, "wandb_project", "neuroscience-control"),
         run_name=getattr(args, "run_name", "model_comparison"),
-        n_simulations=getattr(args, "n_simulations", 10),
         output_path=getattr(args, "output_path", "results/comparison_results.json"),
+        skip_figures=getattr(args, "skip_figures", False),
+        data_path=getattr(args, "data_path", None),
+        lsd_data_dir=getattr(args, "lsd_data_dir", None),
     )
     return {"compare_results": result}
 
@@ -1134,7 +1171,6 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _add_pipeline_args(pipeline)
     pipeline.add_argument("--metrics", type=str, default=None, help="Path to paper metrics JSON")
-    pipeline.add_argument("--n-simulations", type=int, default=10, help="Simulations for compare_models")
     pipeline.add_argument("--output-path", type=str, default="results/comparison_results.json")
     pipeline.add_argument("--n-steps", type=int, default=240, help="Simulation length for compare_conditions")
     pipeline.add_argument("--n-paths", type=int, default=10, help="Initial conditions for compare_conditions")
@@ -1147,13 +1183,13 @@ def _build_parser() -> argparse.ArgumentParser:
     update_tables.add_argument("--dry-run", action="store_true", help="Preview without writing")
 
     # compare
-    compare = subparsers.add_parser("compare", help="Compare Hopf and Neural SDE models (figures)")
-    compare.add_argument("--hopf-checkpoint", type=str, default=None)
-    compare.add_argument("--nsde-checkpoint", type=str, default=None)
-    compare.add_argument("--n-simulations", type=int, default=10)
+    compare = subparsers.add_parser("compare", help="Compare all models (inter + intra patient tables)")
+    compare.add_argument("--checkpoints", nargs="+", type=str, default=None,
+                         help="Explicit checkpoint paths (auto-discovers if omitted)")
     compare.add_argument("--output-path", type=str, default="results/comparison_results.json")
     compare.add_argument("--wandb-project", type=str, default="neuroscience-control")
     compare.add_argument("--run-name", type=str, default="model_comparison")
+    compare.add_argument("--skip-figures", action="store_true", help="Skip figure generation")
     _add_pipeline_args(compare)
 
     # compare-conditions

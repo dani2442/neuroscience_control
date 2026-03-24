@@ -256,9 +256,41 @@ def extract_val_data(
 # Hopf evaluation helpers (moved from train_hopf.py)
 # ---------------------------------------------------------------------------
 
-def split_subject_indices(cfg, n_subjects: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Deterministic train/validation/test subject split."""
+def split_subject_indices(
+    cfg,
+    n_subjects: int,
+    patient_ids: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Deterministic train/validation/test subject split.
+
+    When *patient_ids* is provided (e.g. LSD: 25 patients × 3 conditions),
+    the split is done at the patient level so all conditions for a patient
+    end up in the same partition.
+    """
     generator = torch.Generator().manual_seed(cfg.seed)
+
+    if patient_ids is not None:
+        unique_patients = torch.unique(patient_ids)
+        n_patients = unique_patients.numel()
+        perm = unique_patients[torch.randperm(n_patients, generator=generator)]
+
+        n_train_p = max(1, int(cfg.train_ratio * n_patients))
+        n_val_p = max(1, int(cfg.val_ratio * n_patients))
+        train_patients = set(perm[:n_train_p].tolist())
+        val_patients = set(perm[n_train_p : n_train_p + n_val_p].tolist())
+        test_patients = set(perm[n_train_p + n_val_p :].tolist())
+        if not test_patients:
+            test_patients = val_patients
+
+        pid = patient_ids.cpu()
+        train_idx = torch.tensor([i for i, p in enumerate(pid.tolist()) if p in train_patients], dtype=torch.long)
+        val_idx = torch.tensor([i for i, p in enumerate(pid.tolist()) if p in val_patients], dtype=torch.long)
+        test_idx = torch.tensor([i for i, p in enumerate(pid.tolist()) if p in test_patients], dtype=torch.long)
+
+        print(f"  Patient-level split: {len(train_patients)} train / {len(val_patients)} val / "
+              f"{len(test_patients)} test patients  →  {train_idx.numel()}/{val_idx.numel()}/{test_idx.numel()} timeseries")
+        return train_idx, val_idx, test_idx
+
     indices = torch.randperm(n_subjects, generator=generator)
     n_train = max(1, int(cfg.train_ratio * n_subjects))
     n_val = max(1, int(cfg.val_ratio * n_subjects))

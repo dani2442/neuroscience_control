@@ -12,6 +12,7 @@ from .data_loader import (
 )
 from .preprocessing import (
     RandomWindowDataset,
+    compute_split_indices,
     create_data_loaders,
     compute_omega_from_timeseries,
 )
@@ -26,6 +27,7 @@ __all__ = [
     "hilbert_transform",
     "LSD_CONDITION_MAP",
     "RandomWindowDataset",
+    "compute_split_indices",
     "create_data_loaders",
     "compute_omega_from_timeseries",
 ]

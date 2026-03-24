@@ -127,7 +127,7 @@ def _extract_with_nilearn_masker(
 def load_lsd_data(
     data_dir: str = "data/lsd",
     condition_map: Dict[str, int] | None = None,
-) -> Tuple[np.ndarray, np.ndarray, list[str]]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, list[str]]:
     """Load LSD pharmacological dataset.
 
     Returns
@@ -136,6 +136,9 @@ def load_lsd_data(
         Concatenated timeseries across all conditions.
     control : ndarray, shape ``(total_subjects,)``
         Integer control label for each subject (see *condition_map*).
+    patient_ids : ndarray, shape ``(total_subjects,)``
+        Integer patient identifier (0..n_patients-1) for each row, so that
+        all conditions for the same physical patient share the same id.
     condition_names : list[str]
         Ordered condition names for reference.
     """
@@ -150,6 +153,7 @@ def load_lsd_data(
     condition_names: list[str] = []
     all_ts: list[np.ndarray] = []
     all_ctrl: list[np.ndarray] = []
+    all_patient_ids: list[np.ndarray] = []
 
     for i in range(n_conditions):
         cond_name = str(data_names["conditionNames"][0, i][0])
@@ -177,10 +181,12 @@ def load_lsd_data(
 
         all_ts.append(cond_data)
         all_ctrl.append(np.full(n_subs, ctrl_val, dtype=np.int64))
+        all_patient_ids.append(np.arange(n_subs, dtype=np.int64))
 
     timeseries = np.concatenate(all_ts, axis=0)  # (total_subjects, n_rois, n_timepoints)
     control = np.concatenate(all_ctrl, axis=0)  # (total_subjects,)
-    return timeseries, control, condition_names
+    patient_ids = np.concatenate(all_patient_ids, axis=0)  # (total_subjects,)
+    return timeseries, control, patient_ids, condition_names
 
 
 def compute_fc_from_timeseries(timeseries: torch.Tensor) -> torch.Tensor:
@@ -289,6 +295,7 @@ class NeuroscienceDataset(Dataset):
         n_subjects = int(self.timeseries.shape[0])
         self.control = torch.zeros(n_subjects, 0, device=device)
         self.n_control_dims = 0
+        self.patient_ids = None
 
     # ------------------------------------------------------------------
     # Shared initialisation helpers
@@ -307,6 +314,7 @@ class NeuroscienceDataset(Dataset):
         denoise_f_lo: float,
         denoise_f_hi: float,
         control: np.ndarray | None = None,
+        patient_ids: np.ndarray | None = None,
     ) -> "NeuroscienceDataset":
         if raw_ts.ndim != 3:
             raise ValueError(f"Expected raw_ts shape (subjects, rois, timepoints), got {raw_ts.shape}.")
@@ -318,6 +326,8 @@ class NeuroscienceDataset(Dataset):
             raw_ts = raw_ts[:max_subjects]
             if control is not None:
                 control = control[:max_subjects]
+            if patient_ids is not None:
+                patient_ids = patient_ids[:max_subjects]
 
         obj = cls.__new__(cls)
         Dataset.__init__(obj)
@@ -344,6 +354,13 @@ class NeuroscienceDataset(Dataset):
                 )
             obj.control = torch.tensor(control_arr, dtype=torch.float32, device=device)
             obj.n_control_dims = int(obj.control.shape[1])
+
+        # Patient-level grouping (e.g. LSD: 25 patients × 3 conditions = 75 rows).
+        # When set, data splitting should be done at the patient level.
+        if patient_ids is not None:
+            obj.patient_ids = torch.tensor(np.asarray(patient_ids), dtype=torch.long, device=device)
+        else:
+            obj.patient_ids = None
 
         return obj
 
@@ -392,7 +409,7 @@ class NeuroscienceDataset(Dataset):
         condition_map: Optional[Dict[str, int]] = None,
     ) -> "NeuroscienceDataset":
         """Create a dataset from the LSD pharmacological experiment."""
-        raw_ts, raw_ctrl, cond_names = load_lsd_data(data_dir, condition_map)
+        raw_ts, raw_ctrl, raw_patient_ids, cond_names = load_lsd_data(data_dir, condition_map)
         obj = cls._from_raw_timeseries(
             raw_ts,
             normalize=normalize,
@@ -403,8 +420,11 @@ class NeuroscienceDataset(Dataset):
             denoise_f_lo=denoise_f_lo,
             denoise_f_hi=denoise_f_hi,
             control=raw_ctrl,
+            patient_ids=raw_patient_ids,
         )
-        print(f"LSD dataset: conditions={cond_names}, control_values={sorted(set(raw_ctrl.tolist()))}")
+        n_patients = len(set(raw_patient_ids.tolist()))
+        print(f"LSD dataset: conditions={cond_names}, control_values={sorted(set(raw_ctrl.tolist()))}, "
+              f"n_patients={n_patients}, n_timeseries={len(raw_ts)}")
         return obj
 
     # ------------------------------------------------------------------

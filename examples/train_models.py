@@ -29,15 +29,14 @@ import matplotlib
 matplotlib.use("Agg")
 import torch
 import wandb
-from torch.utils.data import DataLoader
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from examples.cli_args import add_dataset_args, DATASET_ARG_NAMES
-from src.dataset import NeuroscienceDataset, RandomWindowDataset, compute_omega_from_timeseries, load_dataset
-from src.dataset import create_data_loaders
+from src.dataset import compute_omega_from_timeseries, load_dataset
+from src.dataset import compute_split_indices, create_data_loaders
 from src.models import build_model
 from src.training import (
     GNNHopfConfig,
@@ -65,7 +64,6 @@ from src.utils import (
     resolve_device,
     save_checkpoint,
     seed_all,
-    split_subject_indices,
     to_float_metric,
     wandb_log,
     wandb_summary_update,
@@ -142,27 +140,6 @@ def _make_backprop_namespace_from_paper_args(args: argparse.Namespace, model_nam
 # ---------------------------------------------------------------------------
 # Shared training helpers
 # ---------------------------------------------------------------------------
-
-def _create_validation_loader(
-    dataset: NeuroscienceDataset,
-    cfg: HopfConfig,
-    device: str,
-    val_idx: torch.Tensor,
-) -> DataLoader:
-    window_size = min(cfg.window_size, dataset.n_timepoints // 2)
-    n_val_win = max(cfg.batch_size, cfg.n_windows_per_epoch // 2)
-    val_idx = torch.as_tensor(val_idx, device=dataset.timeseries.device, dtype=torch.long)
-    ctrl = getattr(dataset, "control", None)
-    val_ctrl = ctrl[val_idx] if ctrl is not None else None
-    val_dataset = RandomWindowDataset(
-        dataset.timeseries[val_idx],
-        dataset.fc_matrices[val_idx],
-        window_size=window_size,
-        n_windows=n_val_win,
-        device=device,
-        control=val_ctrl,
-    )
-    return DataLoader(val_dataset, batch_size=cfg.batch_size, shuffle=False, drop_last=True)
 
 
 def _save_figures(model, val_loader, cfg, ds_tag: str, name_prefix: str, title: str,
@@ -315,9 +292,24 @@ def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
     print(f"  omega: shape={omega.shape}, "
           f"range=[{omega.min().item() / 6.2832:.4f}, {omega.max().item() / 6.2832:.4f}] Hz")
 
-    train_idx, val_idx, test_idx = split_subject_indices(cfg, dataset.n_subjects)
-    val_loader = _create_validation_loader(dataset, cfg, device, val_idx)
-    test_loader = _create_validation_loader(dataset, cfg, device, test_idx)
+    # Use the same split as backprop (patient-aware when applicable)
+    window_size = min(cfg.window_size, dataset.n_timepoints // 2)
+    train_loader, val_loader, test_inter_loader, test_intra_loader = create_data_loaders(
+        dataset=dataset,
+        window_size=window_size,
+        batch_size=cfg.batch_size,
+        n_windows_per_epoch=cfg.n_windows_per_epoch,
+        train_ratio=cfg.train_ratio,
+        val_ratio=cfg.val_ratio,
+        seed=cfg.seed,
+        device=device,
+    )
+    # Also get raw train indices for grid_search_hopf inputs
+    train_idx, _, _ = compute_split_indices(
+        dataset, train_ratio=cfg.train_ratio, val_ratio=cfg.val_ratio, seed=cfg.seed,
+    )
+    print(f"  window_size={window_size}  train={len(train_loader)}  val={len(val_loader)}"
+          f"  test_inter={len(test_inter_loader)}  test_intra={len(test_intra_loader)}")
 
     print_section("STEP 2: Training Coupled Hopf Model (Grid Search)")
     init_wandb_run(
@@ -337,7 +329,8 @@ def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
     best_params: dict[str, float] = {}
     final_metrics: dict[str, float] = {}
     train_metrics: dict[str, float] = {}
-    test_metrics: dict[str, float] = {}
+    test_inter_metrics: dict[str, float] = {}
+    test_intra_metrics: dict[str, float] = {}
     try:
         n_timepoints = min(dataset.n_timepoints, 200)
         train_fc = dataset.fc_matrices[train_idx].mean(dim=0)
@@ -358,8 +351,7 @@ def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
         }
 
         n_combos = len(cfg.g_values) * len(cfg.a_values) * len(cfg.kappa_values)
-        print(f"Grid search over {n_combos} combinations  "
-              f"(train={len(train_idx)}, val={len(val_idx)}, test={len(test_idx)})")
+        print(f"Grid search over {n_combos} combinations  (train={len(train_idx)} timeseries)")
 
         best_params, hopf_model = grid_search_hopf(
             target_fc=train_fc,
@@ -384,11 +376,8 @@ def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
             denoise_f_hi=cfg.denoise_f_hi,
         )
 
-        train_loader_eval = _create_validation_loader(dataset, cfg, device, train_idx)
-        train_win = getattr(getattr(train_loader_eval, "dataset", None), "window_size", None)
-        val_win = getattr(getattr(val_loader, "dataset", None), "window_size", None)
-        train_metrics = evaluate_model_loader_metrics(hopf_model, train_loader_eval, cfg, n_steps=train_win)
-        val_metrics = evaluate_model_loader_metrics(hopf_model, val_loader, cfg, n_steps=val_win)
+        train_metrics = evaluate_model_loader_metrics(hopf_model, train_loader, cfg, n_steps=window_size)
+        val_metrics = evaluate_model_loader_metrics(hopf_model, val_loader, cfg, n_steps=window_size)
         print(f"Train metrics: {train_metrics}")
         print(f"Validation metrics: {val_metrics}")
 
@@ -418,24 +407,28 @@ def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
         wandb_summary_update({f"final_{k}": v for k, v in final_metrics.items()}, use_wandb=cfg.use_wandb)
         log_hopf_best_params(hopf_model, use_wandb=cfg.use_wandb)
 
-        test_win = getattr(getattr(test_loader, "dataset", None), "window_size", None)
-        test_metrics = evaluate_model_loader_metrics(hopf_model, test_loader, cfg, n_steps=test_win, return_std=True)
-        print(f"Test metrics (mean ± std): {_format_metrics_mean_std(test_metrics)}")
+        test_inter_metrics = evaluate_model_loader_metrics(hopf_model, test_inter_loader, cfg, n_steps=window_size, return_std=True)
+        test_intra_metrics = evaluate_model_loader_metrics(hopf_model, test_intra_loader, cfg, n_steps=window_size, return_std=True)
+        print(f"Test inter metrics (mean ± std): {_format_metrics_mean_std(test_inter_metrics)}")
+        print(f"Test intra metrics (mean ± std): {_format_metrics_mean_std(test_intra_metrics)}")
     finally:
         finish_wandb_run()
 
-    _save_individual_metrics("hopf_grid", _as_numeric(test_metrics), {}, ds_tag)
+    _save_individual_metrics("hopf_grid", _as_numeric(test_inter_metrics), _as_numeric(test_intra_metrics), ds_tag)
 
     print(f"\n{'='*60}\nHOPF GRID SEARCH COMPLETED SUCCESSFULLY\n{'='*60}")
     print(f"\nBest params: {best_params}")
     print(f"Train metrics: {train_metrics}")
     print(f"Final metrics: {final_metrics}")
-    print(f"Test metrics (mean ± std): {_format_metrics_mean_std(test_metrics)}")
+    print(f"Test inter metrics (mean ± std): {_format_metrics_mean_std(test_inter_metrics)}")
+    print(f"Test intra metrics (mean ± std): {_format_metrics_mean_std(test_intra_metrics)}")
     print(f"Checkpoint: {checkpoint}  |  Figures: {FIGURES_DIR / ds_tag}")
 
     return {
         "run": "hopf_grid",
-        "paper_metrics": _as_numeric(test_metrics),
+        "model": hopf_model,
+        "test_inter_metrics": _as_numeric(test_inter_metrics),
+        "test_intra_metrics": _as_numeric(test_intra_metrics),
         "train_metrics": _as_numeric(train_metrics),
         "params": {k: float(v) for k, v in best_params.items()},
         "checkpoint": str(checkpoint) if checkpoint is not None else None,
@@ -494,7 +487,7 @@ def _run_paper_suite(args: argparse.Namespace) -> dict[str, object]:
     report: dict[str, dict[str, float]] = {}
 
     grid_result = _run_hopf_grid(args)
-    report["hopf_grid"] = grid_result["paper_metrics"]
+    report["hopf_grid"] = grid_result["test_inter_metrics"]
 
     cfg_temp = HopfConfig()
     _apply_dataset_cfg_overrides(cfg_temp, args)

@@ -89,6 +89,59 @@ class RandomWindowDataset(Dataset):
         return window, self.fc_matrices[subj], subj, self.control[subj]
 
 
+def compute_split_indices(
+    dataset: "NeuroscienceDataset",
+    train_ratio: float = 0.7,
+    val_ratio: float = 0.15,
+    seed: int = 42,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Deterministic train/val/test split indices.
+
+    When the dataset has ``patient_ids`` (e.g. LSD with 25 patients × 3
+    conditions), the split is done at the patient level so that all conditions
+    for the same physical patient stay in the same partition.  Otherwise falls
+    back to a standard per-timeseries split.
+
+    Returns numpy arrays of timeseries indices for train, val, and test.
+    """
+    rng = np.random.RandomState(seed)
+
+    if getattr(dataset, "patient_ids", None) is not None:
+        patient_ids = dataset.patient_ids  # (n_subjects,) long tensor
+        unique_patients = torch.unique(patient_ids).cpu().numpy()
+        n_patients = len(unique_patients)
+        perm = rng.permutation(n_patients)
+
+        n_train_p = max(1, int(train_ratio * n_patients))
+        n_val_p = max(1, int(val_ratio * n_patients))
+        train_patients = set(unique_patients[perm[:n_train_p]].tolist())
+        val_patients = set(unique_patients[perm[n_train_p:n_train_p + n_val_p]].tolist())
+        test_patients = set(unique_patients[perm[n_train_p + n_val_p:]].tolist())
+        if not test_patients:
+            test_patients = val_patients
+
+        pid_np = patient_ids.cpu().numpy()
+        train_idx = np.where(np.isin(pid_np, list(train_patients)))[0]
+        val_idx = np.where(np.isin(pid_np, list(val_patients)))[0]
+        test_idx = np.where(np.isin(pid_np, list(test_patients)))[0]
+
+        print(f"  Patient-level split: {len(train_patients)} train / {len(val_patients)} val / "
+              f"{len(test_patients)} test patients  →  {len(train_idx)}/{len(val_idx)}/{len(test_idx)} timeseries")
+    else:
+        n_subjects = dataset.n_subjects
+        indices = rng.permutation(n_subjects)
+
+        n_train = max(1, int(train_ratio * n_subjects))
+        n_val = max(1, int(val_ratio * n_subjects))
+        train_idx = indices[:n_train]
+        val_idx = indices[n_train:n_train + n_val]
+        test_idx = indices[n_train + n_val:]
+        if len(test_idx) == 0:
+            test_idx = val_idx  # fallback
+
+    return train_idx, val_idx, test_idx
+
+
 def create_data_loaders(
     dataset: "NeuroscienceDataset",
     window_size: int,
@@ -101,21 +154,15 @@ def create_data_loaders(
 ) -> Tuple[DataLoader, DataLoader, DataLoader, DataLoader]:
     """Create train/val/test_inter/test_intra loaders with random windowing.
 
-    Subject-level inter-patient split (train_idx vs test_idx) plus a temporal
-    intra-patient split: first half of training-subject timeseries → training,
-    second half → intra-patient test loader.
-    """
-    rng = np.random.RandomState(seed)
-    n_subjects = dataset.n_subjects
-    indices = rng.permutation(n_subjects)
+    Uses :func:`compute_split_indices` for the split (patient-aware when
+    ``dataset.patient_ids`` is set).
 
-    n_train = max(1, int(train_ratio * n_subjects))
-    n_val = max(1, int(val_ratio * n_subjects))
-    train_idx = indices[:n_train]
-    val_idx = indices[n_train:n_train + n_val]
-    test_idx = indices[n_train + n_val:]
-    if len(test_idx) == 0:
-        test_idx = val_idx  # fallback
+    Also creates a temporal intra-patient split: first half of training-subject
+    timeseries → training, second half → intra-patient test loader.
+    """
+    train_idx, val_idx, test_idx = compute_split_indices(
+        dataset, train_ratio, val_ratio, seed,
+    )
 
     # Extract per-subject control tensor (may be empty dim-1 for uncontrolled)
     ctrl = getattr(dataset, "control", None)
