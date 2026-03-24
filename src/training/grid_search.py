@@ -8,22 +8,18 @@ from pathlib import Path
 import json
 from tqdm import tqdm
 
-from ..dataset import fft_bandpass_3d
 from ..models.hopf_model import CoupledHopfModel
 from ..models.base_model import BaseNeuroscienceModel
-from ..metrics import (
-    FCCorrelation, FCMSE,
-    FCD, Metastability, PhFCD, PhaseFC,
-    PowerSpectrumDistance, TemporalCorrelation, AutocorrelationDistance,
-    fisher_batch_average,
+from .evaluation import (
+    EVAL_METRIC_KEYS,
+    MetricAccumulator,
+    build_eval_metrics,
+    composite_metric_score,
+    evaluate_fc_metrics,
+    evaluate_timeseries_metrics,
+    rollout_model,
 )
-
-
-# Metrics where a *higher* value is better; all others are lower-is-better.
-_HIGHER_IS_BETTER = frozenset({"fc_correlation", "phase_fc_correlation"})
-
-# Evaluation modules that don't need timeseries dynamics (FC + timeseries quality)
-_BASE_MODULES = [FCCorrelation(), FCMSE(), PowerSpectrumDistance(), TemporalCorrelation(), AutocorrelationDistance()]
+from .losses import CompositeLoss
 
 
 class GridSearch:
@@ -32,14 +28,8 @@ class GridSearch:
     Evaluates model performance across a grid of hyperparameters
     using batch simulation with data-derived initial states.
 
-    Supports composite scoring via ``metric_weights`` in :meth:`search`.
-    When weights are provided for FCD and/or metastability the search
-    optimises the weighted sum
-
-        score = Σ_k  sign_k × w_k × metric_k
-
-    where *sign_k* is +1 for higher-is-better metrics (FC correlation)
-    and −1 for lower-is-better metrics (FCD MSE, metastability difference).
+    Supports either the same composite loss used by backpropagation or
+    a legacy metric-weighted score for FC-only / metric-only searches.
     """
 
     def __init__(
@@ -57,22 +47,12 @@ class GridSearch:
         self.best_params: Optional[Dict[str, Any]] = None
         self.best_metrics: Optional[Dict[str, float]] = None
         self.best_score: float = -float('inf')
+        self.objective_name: str = "fc_correlation"
 
     def _generate_param_combinations(self) -> List[Dict[str, Any]]:
         keys = list(self.param_grid.keys())
         values = list(self.param_grid.values())
         return [dict(zip(keys, combo)) for combo in product(*values)]
-
-    @staticmethod
-    def _denoise(simulated: torch.Tensor, dt: float,
-                 denoise_f_lo: Optional[float], denoise_f_hi: Optional[float]) -> torch.Tensor:
-        """Apply bandpass denoising (same as Trainer._denoise_pred for val/test)."""
-        if denoise_f_lo is None or denoise_f_hi is None:
-            return simulated
-        if torch.is_complex(simulated):
-            filtered_real = fft_bandpass_3d(simulated.real, dt, denoise_f_lo, denoise_f_hi)
-            return torch.complex(filtered_real, simulated.imag)
-        return fft_bandpass_3d(simulated, dt, denoise_f_lo, denoise_f_hi)
 
     def evaluate_params(
         self,
@@ -88,12 +68,13 @@ class GridSearch:
         control: Optional[torch.Tensor] = None,
         denoise_f_lo: Optional[float] = None,
         denoise_f_hi: Optional[float] = None,
+        loss_fn: Optional[CompositeLoss] = None,
+        n_simulations: int = 1,
     ) -> Dict[str, float]:
         """Evaluate a model with given initial states.
 
-        Uses the same ``module.evaluate()`` pattern as the Trainer.  When
-        *target_timeseries* is provided all metrics (FC, timeseries quality,
-        and dynamics) are computed; otherwise only FC metrics are returned.
+        Uses the same rollout, denoising, metric suite, and optional
+        composite loss as :class:`Trainer`.
 
         Args:
             model: Model to evaluate.
@@ -110,86 +91,62 @@ class GridSearch:
             control: Optional control input.
             denoise_f_lo: Low-frequency cutoff for bandpass denoising.
             denoise_f_hi: High-frequency cutoff for bandpass denoising.
+            loss_fn: Optional composite loss built from training loss weights.
+            n_simulations: Number of repeated stochastic rollouts.
         """
         batch_size = initial_states.shape[0]
-        with torch.no_grad():
-            timeseries = model.forward(
-                initial_state=initial_states, n_steps=n_timepoints, dt=dt,
-                control=control,
+        num_simulations = max(1, n_simulations)
+        metrics_accumulator = MetricAccumulator()
+        eval_modules = None
+        if target_timeseries is not None:
+            eval_modules = build_eval_metrics(
+                tr=tr,
+                fcd_win_sec=fcd_win_sec,
+                fcd_step_sec=fcd_step_sec,
             )
-            timeseries = self._denoise(timeseries, dt, denoise_f_lo, denoise_f_hi)
+            target_ts = target_timeseries[:batch_size, :, :n_timepoints]
 
-        sums: Dict[str, float] = {}
-        sum_sq: Dict[str, float] = {}
-        counts: Dict[str, int] = {}
+        for _ in range(num_simulations):
+            with torch.no_grad():
+                timeseries = rollout_model(
+                    model,
+                    initial_states,
+                    n_timepoints,
+                    dt,
+                    control=control,
+                    denoise_f_lo=denoise_f_lo,
+                    denoise_f_hi=denoise_f_hi,
+                )
 
-        with torch.no_grad():
-            if target_timeseries is not None:
-                # All metrics via the same module.evaluate() pattern as Trainer
-                target_ts = target_timeseries[:batch_size, :, :n_timepoints]
-                dyn_modules = [
-                    FCD(tr=tr, fcd_win_sec=fcd_win_sec, fcd_step_sec=fcd_step_sec),
-                    PhFCD(), Metastability(), PhaseFC(),
-                ]
-                eval_modules = _BASE_MODULES + dyn_modules
-                for i in range(batch_size):
-                    sample_metrics: Dict[str, float] = {}
-                    for module in eval_modules:
-                        sample_metrics.update(module.evaluate(timeseries[i:i+1], target_ts[i:i+1]))
-                    for k, v in sample_metrics.items():
-                        if v is None or (isinstance(v, float) and np.isnan(v)):
-                            continue
-                        sums[k] = sums.get(k, 0.0) + v
-                        sum_sq[k] = sum_sq.get(k, 0.0) + v * v
-                        counts[k] = counts.get(k, 0) + 1
-            else:
-                # FC-only: compare simulated FC against provided target_fc
-                from ..metrics.fc_metrics import compute_static_fc
-                from ..metrics._utils import upper_tri_vec
+            with torch.no_grad():
+                if target_timeseries is not None and eval_modules is not None:
+                    metrics = evaluate_timeseries_metrics(
+                        timeseries,
+                        target_ts,
+                        eval_modules,
+                    )
+                    if loss_fn is not None:
+                        loss, loss_components = loss_fn(timeseries, target_ts)
+                        metrics["loss"] = float(loss.item())
+                        for name, value in loss_components.items():
+                            metrics[name] = float(value.item())
+                else:
+                    metrics = evaluate_fc_metrics(timeseries, target_fc)
 
-                fc_sim = fisher_batch_average(compute_static_fc(timeseries))
-                fc_tgt = fisher_batch_average(target_fc)
-                pred_flat = upper_tri_vec(fc_sim, k=1)
-                targ_flat = upper_tri_vec(fc_tgt, k=1)
-                pred_c = pred_flat - pred_flat.mean()
-                targ_c = targ_flat - targ_flat.mean()
-                num = (pred_c * targ_c).sum()
-                den = torch.sqrt((pred_c**2).sum() * (targ_c**2).sum()) + 1e-8
-                fc_corr = (num / den).item()
-                fc_mse = ((pred_flat - targ_flat) ** 2).mean().item()
-                for k, v in [("fc_correlation", fc_corr), ("fc_mse", fc_mse)]:
-                    sums[k] = sums.get(k, 0.0) + v
-                    sum_sq[k] = sum_sq.get(k, 0.0) + v * v
-                    counts[k] = counts.get(k, 0) + 1
+            metrics_accumulator.update(metrics)
 
-        metrics: Dict[str, float] = {}
-        for k in sums:
-            n = counts[k]
-            mean = sums[k] / n
-            metrics[k] = mean
-            if n > 1:
-                metrics[f"{k}_std"] = np.sqrt(max(0.0, sum_sq[k] / n - mean * mean))
-        return metrics
+        if target_timeseries is not None:
+            extra_keys = tuple(loss_fn.component_names) if loss_fn is not None else ()
+            all_keys = sorted(
+                set(EVAL_METRIC_KEYS)
+                | set(("loss",) if loss_fn is not None else ())
+                | set(extra_keys)
+                | set(metrics_accumulator.sums.keys())
+            )
+        else:
+            all_keys = sorted(set(("fc_correlation", "fc_mse")) | set(metrics_accumulator.sums.keys()))
 
-    @staticmethod
-    def _composite_score(
-        metrics: Dict[str, float],
-        metric_weights: Dict[str, float],
-    ) -> float:
-        """Compute a weighted composite score.
-
-        Higher-is-better metrics (in ``_HIGHER_IS_BETTER``) contribute
-        positively; all other metrics contribute negatively.
-        NaN / missing metrics are silently skipped.
-        """
-        score = 0.0
-        for key, weight in metric_weights.items():
-            val = metrics.get(key, float("nan"))
-            if not np.isfinite(val):
-                continue
-            sign = 1.0 if key in _HIGHER_IS_BETTER else -1.0
-            score += sign * weight * val
-        return score
+        return metrics_accumulator.summary(keys=all_keys, include_std=num_simulations > 1)
 
     def search(
         self,
@@ -201,19 +158,37 @@ class GridSearch:
         dt: float = 0.72,
         metric: str = "fc_correlation",
         metric_weights: Optional[Dict[str, float]] = None,
+        loss_weights: Optional[Dict[str, float]] = None,
         verbose: bool = True,
         eval_kwargs: Optional[Dict[str, Any]] = None,
+        loss_kwargs: Optional[Dict[str, Any]] = None,
     ) -> Tuple[Dict[str, Any], Dict[str, float]]:
         combinations = self._generate_param_combinations()
         if not combinations:
             raise ValueError("Parameter grid produced no combinations.")
 
+        self.results = []
+        self.best_params = None
+        self.best_metrics = None
+
         if verbose:
             print(f"Grid search over {len(combinations)} parameter combinations")
             combinations = tqdm(combinations)
 
-        _eval_kwargs = eval_kwargs or {}
-        use_composite = metric_weights is not None
+        _eval_kwargs = dict(eval_kwargs or {})
+        eval_n_simulations = int(_eval_kwargs.pop("n_simulations", 1))
+        _loss_kwargs = loss_kwargs or {}
+        use_loss_objective = loss_weights is not None and _eval_kwargs.get("target_timeseries") is not None
+        loss_fn = CompositeLoss(weights=loss_weights, **_loss_kwargs) if use_loss_objective else None
+        use_metric_score = metric_weights is not None
+        self.best_score = float("inf") if use_loss_objective else -float("inf")
+
+        if use_loss_objective:
+            self.objective_name = "loss"
+        elif use_metric_score:
+            self.objective_name = "metric_score"
+        else:
+            self.objective_name = metric
 
         for params in combinations:
             full_kwargs = {**model_kwargs, **params, 'device': self.device}
@@ -221,21 +196,33 @@ class GridSearch:
 
             metrics = self.evaluate_params(
                 model, target_fc, initial_states, n_timepoints, dt,
+                loss_fn=loss_fn,
+                n_simulations=eval_n_simulations,
                 **_eval_kwargs,
             )
             self.results.append({'params': params, 'metrics': metrics})
 
-            if use_composite:
-                score = self._composite_score(metrics, metric_weights)
+            if use_loss_objective:
+                if "loss" not in metrics:
+                    raise KeyError("Composite loss objective requested but 'loss' was not computed.")
+                score = metrics["loss"]
+                is_better = self.best_metrics is None or (
+                    np.isfinite(score) and (not np.isfinite(self.best_score) or score < self.best_score)
+                )
+            elif use_metric_score:
+                score = composite_metric_score(metrics, metric_weights)
+                is_better = self.best_metrics is None or (
+                    np.isfinite(score) and (not np.isfinite(self.best_score) or score > self.best_score)
+                )
             else:
                 if metric not in metrics:
                     raise KeyError(f"Metric '{metric}' not found in evaluated metrics.")
                 score = metrics[metric]
+                is_better = self.best_metrics is None or (
+                    np.isfinite(score) and (not np.isfinite(self.best_score) or score > self.best_score)
+                )
 
-            # Always accept the first candidate, then compare finite scores.
-            if self.best_metrics is None or (
-                np.isfinite(score) and (not np.isfinite(self.best_score) or score > self.best_score)
-            ):
+            if is_better:
                 self.best_score = score
                 self.best_params = params
                 self.best_metrics = metrics
@@ -254,6 +241,7 @@ class GridSearch:
             'best_params': self.best_params,
             'best_metrics': self.best_metrics,
             'best_score': self.best_score,
+            'objective_name': self.objective_name,
         }
         filepath = self.save_dir / "grid_search_results.json"
         with open(filepath, 'w') as f:
@@ -278,11 +266,15 @@ def grid_search_hopf(
     fcd_win_sec: float = 60.0,
     fcd_step_sec: float = 2.0,
     metric_weights: Optional[Dict[str, float]] = None,
+    loss_weights: Optional[Dict[str, float]] = None,
     noise_sigma: float = 0.0,
     n_control_dims: int = 0,
     control: Optional[torch.Tensor] = None,
     denoise_f_lo: Optional[float] = None,
     denoise_f_hi: Optional[float] = None,
+    fdm_n_pairs: int = 32,
+    fdm_max_lag: int = 50,
+    fdm_sigma: float = 1.0,
 ) -> Tuple[Dict[str, Any], CoupledHopfModel]:
     """Grid search for Hopf model parameters.
 
@@ -301,9 +293,10 @@ def grid_search_hopf(
         tr: Repetition time (seconds) for FCD window sizing.
         fcd_win_sec: FCD window length (seconds).
         fcd_step_sec: FCD window step (seconds).
-        metric_weights: Optional dict mapping metric names to weights for
-            composite scoring (e.g. ``{"fc_correlation": 1.0,
-            "fcd_mse": 0.5, "metastability_diff": 0.5}``).
+        metric_weights: Optional legacy metric-weighted search objective.
+        loss_weights: Optional training loss weights. When provided together
+            with *target_timeseries*, grid search ranks candidates by the same
+            composite loss used for backpropagation.
         noise_sigma: Noise scale for SDE diffusion (0.0 = deterministic ODE).
 
     Returns:
@@ -361,12 +354,24 @@ def grid_search_hopf(
         n_timepoints=n_timepoints,
         dt=dt,
         metric_weights=metric_weights,
+        loss_weights=loss_weights,
         eval_kwargs=eval_kwargs,
+        loss_kwargs={
+            "tr": tr,
+            "fcd_win_sec": fcd_win_sec,
+            "fcd_step_sec": fcd_step_sec,
+            "fdm_n_pairs": fdm_n_pairs,
+            "fdm_max_lag": fdm_max_lag,
+            "fdm_sigma": fdm_sigma,
+        },
     )
 
     print(f"\nBest parameters: {best_params}")
-    print(f"Best fc_correlation: {best_metrics['fc_correlation']:.4f} "
-          f"± {best_metrics.get('fc_correlation_std', float('nan')):.4f}")
+    if "loss" in best_metrics:
+        print(f"Best loss: {best_metrics['loss']:.4f}")
+    if "fc_correlation" in best_metrics:
+        print(f"Best fc_correlation: {best_metrics['fc_correlation']:.4f} "
+              f"± {best_metrics.get('fc_correlation_std', float('nan')):.4f}")
 
     best_model = CoupledHopfModel(
         n_rois=n_rois,

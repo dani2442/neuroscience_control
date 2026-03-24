@@ -11,8 +11,15 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import torch
 
-from ..dataset import fft_bandpass_3d
 from ..metrics import fisher_batch_average
+from ..training.evaluation import (
+    EVAL_METRIC_KEYS,
+    MetricAccumulator,
+    accumulate_timeseries_metrics,
+    build_eval_metrics,
+    rollout_model,
+    to_float_metric,
+)
 
 from .visualization import (
     FIGURES_DIR,
@@ -26,21 +33,6 @@ from .runtime import (
     wandb_log_figure,
     wandb_summary_update,
 )
-
-
-# ---------------------------------------------------------------------------
-# Metric helpers
-# ---------------------------------------------------------------------------
-
-def to_float_metric(value: Any) -> float | None:
-    """Convert supported metric values (Tensor, int, …) to float for logging."""
-    if isinstance(value, torch.Tensor):
-        value = value.item()
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
 
 def prefixed_metrics(prefix: str, metrics: dict[str, float]) -> dict[str, float]:
     """Attach a namespace *prefix/* and keep only numeric entries."""
@@ -305,18 +297,6 @@ def split_subject_indices(
     return train_idx, val_idx, test_idx
 
 
-def _denoise_simulated(simulated: torch.Tensor, dt: float, cfg) -> torch.Tensor:
-    """Apply the same bandpass denoising that Trainer uses for val/test."""
-    f_lo = getattr(cfg, "denoise_f_lo", None)
-    f_hi = getattr(cfg, "denoise_f_hi", None)
-    if f_lo is None or f_hi is None:
-        return simulated
-    if torch.is_complex(simulated):
-        filtered_real = fft_bandpass_3d(simulated.real, dt, f_lo, f_hi)
-        return torch.complex(filtered_real, simulated.imag)
-    return fft_bandpass_3d(simulated, dt, f_lo, f_hi)
-
-
 def _forward_for_metrics(
     model,
     initial_state: torch.Tensor,
@@ -325,20 +305,20 @@ def _forward_for_metrics(
     control: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Forward helper used to keep metric simulation settings identical."""
-    kwargs: dict[str, Any] = dict(
-        initial_state=initial_state,
-        n_steps=n_steps,
-        dt=cfg.tr,
+    return rollout_model(
+        model,
+        initial_state,
+        n_steps,
+        cfg.tr,
+        control=control,
         sde_type=getattr(cfg, "sde_type", "ito"),
         method=getattr(cfg, "sde_method", "euler"),
         dt_min=getattr(cfg, "dt_min", 0.1),
         use_adjoint=getattr(cfg, "use_adjoint", False),
         adjoint_method=getattr(cfg, "adjoint_method", None),
+        denoise_f_lo=getattr(cfg, "denoise_f_lo", None),
+        denoise_f_hi=getattr(cfg, "denoise_f_hi", None),
     )
-    if control is not None:
-        kwargs["control"] = control
-    simulated = model.forward(**kwargs)
-    return _denoise_simulated(simulated, cfg.tr, cfg)
 
 
 def as_numeric_metrics(metrics: dict[str, object]) -> dict[str, float]:
@@ -360,126 +340,74 @@ def format_metrics_mean_std(metrics: dict[str, object]) -> dict[str, str]:
             formatted[key] = f"{numeric[key]:.3f}"
     return formatted
 
-
-EVAL_METRIC_KEYS = (
-    "fc_correlation",
-    "fc_mse",
-    "temporal_correlation",
-    "power_spectrum_distance",
-    "autocorr_distance",
-    "fcd_ks",
-    "phfcd_ks",
-    "phase_fc_correlation",
-    "metastability_diff",
-)
-
-
 def evaluate_model_loader_metrics(
     model,
     loader,
     cfg,
     *,
     n_steps: int | None = None,
+    n_simulations: int | None = None,
     return_std: bool = False,
 ) -> dict[str, float]:
     """
     Evaluate a model on the provided data loader.
 
-    Uses the same ``module.evaluate()`` pattern as :class:`Trainer`.
-    When *return_std* is True, metrics are computed **per sample** (not per
-    batch) so that the reported standard deviations reflect true cross-sample
-    variability rather than the much smaller variability between batch-level
-    means.
+    Uses the same batch-level ``module.evaluate()`` pattern as :class:`Trainer`.
+    When multiple simulations are requested, the whole loader is evaluated
+    repeatedly and the reported mean/std are taken across simulation runs.
 
     Args:
         model: Model to evaluate
         loader: DataLoader
         cfg: Config containing simulation settings
         n_steps: Optional simulation length override
+        n_simulations: Optional number of repeated stochastic evaluations.
+                       Defaults to ``cfg.n_simulations`` when present.
         return_std: If True, also return <metric>_std keys computed across
-                    individual samples
+                    repeated simulation runs
 
     Returns:
         Dictionary of metric_name → mean (and optionally metric_name_std → std)
     """
-    from ..metrics import (
-        FCCorrelation, FCMSE,
-        FCD, PhFCD, Metastability, PhaseFC,
-        PowerSpectrumDistance, TemporalCorrelation, AutocorrelationDistance,
+    eval_modules = build_eval_metrics(
+        tr=cfg.tr,
+        fcd_win_sec=cfg.fcd_win_sec,
+        fcd_step_sec=cfg.fcd_step_sec,
     )
+    num_simulations = max(1, n_simulations or getattr(cfg, "n_simulations", 1))
+    simulation_accumulator = MetricAccumulator()
 
-    eval_modules = [
-        FCCorrelation(), FCMSE(),
-        PowerSpectrumDistance(), TemporalCorrelation(), AutocorrelationDistance(),
-        FCD(tr=cfg.tr, fcd_win_sec=cfg.fcd_win_sec, fcd_step_sec=cfg.fcd_step_sec),
-        PhFCD(), Metastability(), PhaseFC(),
-    ]
-
-    sums: dict[str, float] = {}
-    counts: dict[str, int] = {}
-    sample_values: dict[str, list[float]] = {}  # per-sample values for std
-
-    for batch in loader:
-        if len(batch) == 4:
-            windows, _, _, control = batch
-        else:
-            windows, _, _ = batch
-            control = None
-        windows = windows.to(model.device)
-        if control is not None:
-            control = control.to(model.device)
-            if control.shape[-1] == 0:
-                control = None
-
-        batch_steps = windows.shape[2]
-        n_sim_steps = min(batch_steps, n_steps) if n_steps is not None else batch_steps
-        target_window = windows[:, :, :n_sim_steps]
-        initial_state = target_window[:, :, 0]
-
-        with torch.no_grad():
-            simulated = _forward_for_metrics(model, initial_state, n_sim_steps, cfg, control=control)
-
-            if return_std:
-                # Per-sample metrics for proper std computation
-                B = simulated.shape[0]
-                for i in range(B):
-                    sim_i = simulated[i : i + 1]
-                    tgt_i = target_window[i : i + 1]
-                    sample_metrics: dict[str, float] = {}
-                    for module in eval_modules:
-                        sample_metrics.update(module.evaluate(sim_i, tgt_i))
-                    for key, value in sample_metrics.items():
-                        numeric = to_float_metric(value)
-                        if numeric is None or math.isnan(numeric):
-                            continue
-                        sums[key] = sums.get(key, 0.0) + numeric
-                        counts[key] = counts.get(key, 0) + 1
-                        sample_values.setdefault(key, []).append(numeric)
+    for _ in range(num_simulations):
+        batch_accumulator = MetricAccumulator()
+        for batch in loader:
+            if len(batch) == 4:
+                windows, _, _, control = batch
             else:
-                # Batch-level aggregate (faster, no std needed)
-                batch_metrics: dict[str, float] = {}
-                for module in eval_modules:
-                    batch_metrics.update(module.evaluate(simulated, target_window))
-                for key, value in batch_metrics.items():
-                    numeric = to_float_metric(value)
-                    if numeric is None or math.isnan(numeric):
-                        continue
-                    sums[key] = sums.get(key, 0.0) + numeric
-                    counts[key] = counts.get(key, 0) + 1
+                windows, _, _ = batch
+                control = None
+            windows = windows.to(model.device)
+            if control is not None:
+                control = control.to(model.device)
+                if control.shape[-1] == 0:
+                    control = None
+
+            batch_steps = windows.shape[2]
+            n_sim_steps = min(batch_steps, n_steps) if n_steps is not None else batch_steps
+            target_window = windows[:, :, :n_sim_steps]
+            initial_state = target_window[:, :, 0]
+
+            with torch.no_grad():
+                simulated = _forward_for_metrics(model, initial_state, n_sim_steps, cfg, control=control)
+                accumulate_timeseries_metrics(
+                    batch_accumulator,
+                    simulated,
+                    target_window,
+                    eval_modules,
+                    per_sample=False,
+                )
+
+        simulation_accumulator.update(batch_accumulator.summary())
 
     # Return all computed metrics (use EVAL_METRIC_KEYS for formatted reports).
-    all_keys = sorted(set(EVAL_METRIC_KEYS) | set(sums.keys()))
-    result = {
-        key: (sums[key] / counts[key]) if counts.get(key, 0) > 0 else float("nan")
-        for key in all_keys
-    }
-
-    if return_std:
-        for key in all_keys:
-            vals = sample_values.get(key, [])
-            if len(vals) > 1:
-                result[f"{key}_std"] = torch.tensor(vals).std().item()
-            else:
-                result[f"{key}_std"] = float("nan")
-
-    return result
+    all_keys = sorted(set(EVAL_METRIC_KEYS) | set(simulation_accumulator.sums.keys()))
+    return simulation_accumulator.summary(keys=all_keys, include_std=return_std)

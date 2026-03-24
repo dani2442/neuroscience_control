@@ -1,7 +1,6 @@
 """Trainer class for backpropagation-based training."""
 
 import dataclasses
-import math
 import time
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -11,58 +10,18 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 import wandb
 
-from ..dataset import fft_bandpass_3d
 from ..models.base_model import BaseNeuroscienceModel
-from ..metrics import (
-    FCCorrelation, FCMSE,
-    PowerSpectrumDistance, TemporalCorrelation, AutocorrelationDistance,
-    FCD, PhFCD, Metastability, PhaseFC,
-)
 from ..metrics.metrics_store import MetricsStore
 from .config import TrainingConfig
-from .losses import CompositeLoss
-
-# Evaluation metric keys produced by each module's evaluate() call
-_EVAL_METRIC_KEYS = (
-    "fc_correlation", "fc_mse",
-    "power_spectrum_distance", "temporal_correlation", "autocorr_distance",
-    "fcd_ks", "fcd_mse", "phfcd_ks", "phfcd_mse", "phase_fc_correlation", "metastability_diff",
+from .evaluation import (
+    EVAL_METRIC_KEYS,
+    MetricAccumulator,
+    accumulate_timeseries_metrics,
+    build_eval_metrics,
+    evaluate_timeseries_metrics,
+    rollout_model,
 )
-
-
-class _MetricAccumulator:
-    def __init__(self) -> None:
-        self.sums: Dict[str, float] = {}
-        self.sum_squares: Dict[str, float] = {}
-        self.counts: Dict[str, int] = {}
-
-    def update(self, metrics: Dict[str, float]) -> None:
-        for key, value in metrics.items():
-            if value is None:
-                continue
-            if isinstance(value, float) and math.isnan(value):
-                continue
-            if isinstance(value, torch.Tensor):
-                value = value.item()
-            numeric = float(value)
-            self.sums[key] = self.sums.get(key, 0.0) + numeric
-            self.sum_squares[key] = self.sum_squares.get(key, 0.0) + (numeric * numeric)
-            self.counts[key] = self.counts.get(key, 0) + 1
-
-    def average(self, key: str) -> float:
-        count = self.counts.get(key, 0)
-        if count == 0:
-            return float("nan")
-        return self.sums[key] / count
-
-    def std(self, key: str) -> float:
-        count = self.counts.get(key, 0)
-        if count == 0:
-            return float("nan")
-        mean = self.sums[key] / count
-        mean_square = self.sum_squares[key] / count
-        variance = max(0.0, mean_square - (mean * mean))
-        return math.sqrt(variance)
+from .losses import CompositeLoss
 
 
 class Trainer:
@@ -123,12 +82,11 @@ class Trainer:
         )
 
         # Evaluation metric modules (always compute all, for logging)
-        self.eval_metrics: List[torch.nn.Module] = [
-            FCCorrelation(), FCMSE(),
-            PowerSpectrumDistance(), TemporalCorrelation(), AutocorrelationDistance(),
-            FCD(tr=tr, fcd_win_sec=fcd_win_sec, fcd_step_sec=fcd_step_sec),
-            PhFCD(), Metastability(), PhaseFC(),
-        ]
+        self.eval_metrics: List[torch.nn.Module] = build_eval_metrics(
+            tr=tr,
+            fcd_win_sec=fcd_win_sec,
+            fcd_step_sec=fcd_step_sec,
+        )
 
         # Set up optimizer
         if optimizer is None:
@@ -155,18 +113,6 @@ class Trainer:
         self.wandb_run = None
         if self.use_wandb and cfg is not None:
             self._init_wandb(cfg)
-
-    def _denoise_pred(self, simulated: torch.Tensor, dt: float, training: bool = False) -> torch.Tensor:
-        """Apply FFT bandpass filter to predicted signal (val/test always and only training when denoise_predictions==True)."""
-        if self.cfg is None:
-            return simulated
-        if training and not self.cfg.denoise_predictions:
-            return simulated
-        f_lo, f_hi = self.cfg.denoise_f_lo, self.cfg.denoise_f_hi
-        if torch.is_complex(simulated):
-            filtered_real = fft_bandpass_3d(simulated.real, dt, f_lo, f_hi)
-            return torch.complex(filtered_real, simulated.imag)
-        return fft_bandpass_3d(simulated, dt, f_lo, f_hi)
 
     def _init_wandb(self, cfg: TrainingConfig):
         """Initialize wandb with proxy settings."""
@@ -205,7 +151,7 @@ class Trainer:
 
     def _normalize_epoch_metrics(self, metrics: Dict[str, float]) -> Dict[str, float]:
         """Ensure a consistent set of epoch metrics for wandb logging."""
-        all_keys = ("loss",) + _EVAL_METRIC_KEYS + tuple(self.loss_fn.component_names)
+        all_keys = ("loss",) + EVAL_METRIC_KEYS + tuple(self.loss_fn.component_names)
         normalized = {key: metrics.get(key, float("nan")) for key in dict.fromkeys(all_keys)}
         for key, value in metrics.items():
             if key not in normalized:
@@ -270,11 +216,10 @@ class Trainer:
         loss: torch.Tensor,
         loss_components: Dict[str, torch.Tensor],
     ) -> Dict[str, float]:
-        metrics: Dict[str, float] = {"loss": float(loss.item())}
+        metrics = evaluate_timeseries_metrics(ts_pred, ts_target, self.eval_metrics)
+        metrics["loss"] = float(loss.item())
         for name, value in loss_components.items():
             metrics[name] = float(value.item())
-        for module in self.eval_metrics:
-            metrics.update(module.evaluate(ts_pred, ts_target))
         return metrics
 
     def _run_epoch(
@@ -292,7 +237,7 @@ class Trainer:
         else:
             self.model.eval()
 
-        accumulator = _MetricAccumulator()
+        accumulator = MetricAccumulator()
         iterable = loader
         if verbose:
             phase = "train" if train else "val"
@@ -320,34 +265,44 @@ class Trainer:
             if train:
                 self.optimizer.zero_grad()
 
+            denoise_f_lo = None
+            denoise_f_hi = None
+            if self.cfg is not None and (not train or self.cfg.denoise_predictions):
+                denoise_f_lo = self.cfg.denoise_f_lo
+                denoise_f_hi = self.cfg.denoise_f_hi
+
             if train:
-                simulated = self.model.forward(
-                    initial_state=initial_state,
-                    n_steps=n_sim_steps,
-                    dt=dt,
+                simulated = rollout_model(
+                    self.model,
+                    initial_state,
+                    n_sim_steps,
+                    dt,
+                    control=ctrl_arg,
                     sde_type=self.sde_type,
                     method=self.sde_method,
                     dt_min=self.dt_min,
                     use_adjoint=self.use_adjoint,
                     adjoint_method=self.adjoint_method,
-                    control=ctrl_arg,
+                    denoise_f_lo=denoise_f_lo,
+                    denoise_f_hi=denoise_f_hi,
                 )
-                simulated = self._denoise_pred(simulated, dt, training=True)
                 loss, loss_components = self.loss_fn(simulated, target_window)
             else:
                 with torch.no_grad():
-                    simulated = self.model.forward(
-                        initial_state=initial_state,
-                        n_steps=n_sim_steps,
-                        dt=dt,
+                    simulated = rollout_model(
+                        self.model,
+                        initial_state,
+                        n_sim_steps,
+                        dt,
+                        control=ctrl_arg,
                         sde_type=self.sde_type,
                         method=self.sde_method,
                         dt_min=self.dt_min,
                         use_adjoint=self.use_adjoint,
                         adjoint_method=self.adjoint_method,
-                        control=ctrl_arg,
+                        denoise_f_lo=denoise_f_lo,
+                        denoise_f_hi=denoise_f_hi,
                     )
-                    simulated = self._denoise_pred(simulated, dt, training=False)
                     loss, loss_components = self.loss_fn(simulated, target_window)
 
             if not torch.isfinite(simulated.real).all():
@@ -382,7 +337,7 @@ class Trainer:
                 }
                 iterable.set_postfix(postfix)
 
-        all_keys = sorted(set(("loss",) + _EVAL_METRIC_KEYS + tuple(self.loss_fn.component_names))
+        all_keys = sorted(set(("loss",) + EVAL_METRIC_KEYS + tuple(self.loss_fn.component_names))
                           | set(accumulator.sums.keys()))
         return {name: accumulator.average(name) for name in all_keys}
 
@@ -539,59 +494,64 @@ class Trainer:
     ) -> Dict[str, float]:
         """Evaluate on test set.
 
-        Metrics are computed **per sample** so that reported standard
-        deviations reflect true cross-sample variability.
+        Metrics are computed at the batch level and aggregated across
+        repeated stochastic rollouts when configured.
         """
-        accumulator = _MetricAccumulator()
-        for batch in test_loader:
-            windows, _fc, _, control = batch
-            windows = windows.to(self.device)
-            control = control.to(self.device)
-            ctrl_arg = control if control.shape[-1] > 0 else None
+        num_simulations = max(1, getattr(self.cfg, "n_simulations", 1))
+        simulation_accumulator = MetricAccumulator()
 
-            n_timepoints = windows.shape[2]
-            n_sim_steps = min(n_steps, n_timepoints)
-            if n_sim_steps <= 0:
-                raise ValueError(f"n_steps must be >= 1, got {n_steps}")
+        for _ in range(num_simulations):
+            batch_accumulator = MetricAccumulator()
+            for batch in test_loader:
+                windows, _fc, _, control = batch
+                windows = windows.to(self.device)
+                control = control.to(self.device)
+                ctrl_arg = control if control.shape[-1] > 0 else None
 
-            target_window = windows[:, :, :n_sim_steps]
-            initial_state = target_window[:, :, 0]
-            simulated = self.model.forward(
-                initial_state=initial_state,
-                n_steps=n_sim_steps,
-                dt=dt,
-                sde_type=self.sde_type,
-                method=self.sde_method,
-                dt_min=self.dt_min,
-                use_adjoint=self.use_adjoint,
-                adjoint_method=self.adjoint_method,
-                control=ctrl_arg,
-            )
-            simulated = self._denoise_pred(simulated, dt)
+                n_timepoints = windows.shape[2]
+                n_sim_steps = min(n_steps, n_timepoints)
+                if n_sim_steps <= 0:
+                    raise ValueError(f"n_steps must be >= 1, got {n_steps}")
 
-            # Per-sample metrics for proper std computation
-            B = simulated.shape[0]
-            for i in range(B):
-                sim_i = simulated[i : i + 1]
-                tgt_i = target_window[i : i + 1]
-                sample_metrics: Dict[str, float] = {}
-                for module in self.eval_metrics:
-                    sample_metrics.update(module.evaluate(sim_i, tgt_i))
-                accumulator.update(sample_metrics)
+                target_window = windows[:, :, :n_sim_steps]
+                initial_state = target_window[:, :, 0]
+                simulated = rollout_model(
+                    self.model,
+                    initial_state,
+                    n_sim_steps,
+                    dt,
+                    control=ctrl_arg,
+                    sde_type=self.sde_type,
+                    method=self.sde_method,
+                    dt_min=self.dt_min,
+                    use_adjoint=self.use_adjoint,
+                    adjoint_method=self.adjoint_method,
+                    denoise_f_lo=self.cfg.denoise_f_lo if self.cfg is not None else None,
+                    denoise_f_hi=self.cfg.denoise_f_hi if self.cfg is not None else None,
+                )
 
-            # Batch-level loss and components
-            loss, loss_components = self.loss_fn(simulated, target_window)
-            batch_loss_metrics: Dict[str, float] = {"loss": float(loss.item())}
-            for name, value in loss_components.items():
-                batch_loss_metrics[name] = float(value.item())
-            accumulator.update(batch_loss_metrics)
+                accumulate_timeseries_metrics(
+                    batch_accumulator,
+                    simulated,
+                    target_window,
+                    self.eval_metrics,
+                    per_sample=False,
+                )
+
+                loss, loss_components = self.loss_fn(simulated, target_window)
+                batch_loss_metrics: Dict[str, float] = {"loss": float(loss.item())}
+                for name, value in loss_components.items():
+                    batch_loss_metrics[name] = float(value.item())
+                batch_accumulator.update(batch_loss_metrics)
+
+            simulation_accumulator.update(batch_accumulator.summary())
 
         all_keys = sorted(
-            set(("loss",) + _EVAL_METRIC_KEYS + tuple(self.loss_fn.component_names))
-            | set(accumulator.sums.keys())
+            set(("loss",) + EVAL_METRIC_KEYS + tuple(self.loss_fn.component_names))
+            | set(simulation_accumulator.sums.keys())
         )
-        metrics = {name: accumulator.average(name) for name in all_keys}
-        metrics.update({f"{name}_std": accumulator.std(name) for name in all_keys})
+        metrics = {name: simulation_accumulator.average(name) for name in all_keys}
+        metrics.update({f"{name}_std": simulation_accumulator.std(name) for name in all_keys})
         self.metrics_store.log_test(metrics, label=label)
 
         self._log_wandb(metrics, step=0, prefix=label)

@@ -13,7 +13,7 @@ uniformly sampled data.
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -74,6 +74,36 @@ def _windowed_fc_vectors(
     return zscore(V, dim=1)
 
 
+def _batched_fcd_matrices(
+    x: torch.Tensor,
+    win_len: int,
+    win_step: int,
+) -> Optional[torch.Tensor]:
+    """Batched FCD matrices for real time series ``(B, T, N)``."""
+    if x.ndim != 3:
+        raise ValueError(f"Expected batched input (B, T, N), got shape {tuple(x.shape)}.")
+
+    B, T, N = x.shape
+    if N < 2 or T < win_len or win_step <= 0:
+        return None
+
+    windows = x.unfold(dimension=1, size=win_len, step=win_step).movedim(-1, -2)
+    if windows.shape[1] == 0:
+        return None
+
+    windows_z = zscore(windows, dim=2)
+    fc_windows = torch.matmul(windows_z.transpose(-1, -2), windows_z) / max(win_len - 1, 1)
+
+    idx = torch.triu_indices(N, N, offset=1, device=x.device)
+    vecs = fc_windows[..., idx[0], idx[1]]
+    n_features = vecs.shape[-1]
+    if n_features <= 1:
+        return None
+
+    vecs = zscore(vecs, dim=2)
+    return torch.matmul(vecs, vecs.transpose(-1, -2)) / max(n_features - 1, 1)
+
+
 def fcd_matrix(
     x: torch.Tensor, win_len: int, win_step: int,
 ) -> Optional[torch.Tensor]:
@@ -82,11 +112,10 @@ def fcd_matrix(
     Args:
         x: ``(T, N)`` real tensor.
     """
-    V = _windowed_fc_vectors(x, win_len, win_step)
-    if V is None:
+    batched = _batched_fcd_matrices(x.unsqueeze(0), win_len, win_step)
+    if batched is None:
         return None
-    n_features = V.shape[1]
-    return (V @ V.T) / max(n_features - 1, 1)
+    return batched[0]
 
 
 def fcd_distribution(
@@ -161,8 +190,25 @@ def phase_coherence_matrix(phases: torch.Tensor) -> torch.Tensor:
     Returns:
         ``(T, N, N)`` phase coherence matrices.
     """
-    diff = phases.unsqueeze(2) - phases.unsqueeze(1)
+    diff = phases.unsqueeze(-1) - phases.unsqueeze(-2)
     return torch.cos(diff)
+
+
+def _batched_phfcd_matrices(phases: torch.Tensor) -> Optional[torch.Tensor]:
+    """Batched phFCD matrices for phase angles ``(B, T, N)``."""
+    if phases.ndim != 3:
+        raise ValueError(f"Expected batched input (B, T, N), got shape {tuple(phases.shape)}.")
+
+    B, T, N = phases.shape
+    if N < 2:
+        return None
+
+    P = phase_coherence_matrix(phases)
+    idx = torch.triu_indices(N, N, offset=1, device=phases.device)
+    vecs = P[..., idx[0], idx[1]]
+    norms = torch.linalg.norm(vecs, dim=-1, keepdim=True).clamp(min=1e-12)
+    vecs_normed = vecs / norms
+    return torch.matmul(vecs_normed, vecs_normed.transpose(-1, -2))
 
 
 def phfcd_matrix(phases: torch.Tensor) -> Optional[torch.Tensor]:
@@ -187,18 +233,10 @@ def phfcd_matrix(phases: torch.Tensor) -> Optional[torch.Tensor]:
     Returns:
         ``(T, T)`` phFCD matrix, or ``None`` if fewer than 2 ROIs.
     """
-    T, N = phases.shape
-    if N < 2:
+    batched = _batched_phfcd_matrices(phases.unsqueeze(0))
+    if batched is None:
         return None
-
-    P = phase_coherence_matrix(phases)
-
-    idx = torch.triu_indices(N, N, offset=1, device=phases.device)
-    vecs = P[:, idx[0], idx[1]]  # (T, M)
-
-    norms = torch.linalg.norm(vecs, dim=1, keepdim=True).clamp(min=1e-12)
-    vecs_normed = vecs / norms
-    return vecs_normed @ vecs_normed.T
+    return batched[0]
 
 
 def phfcd_distribution(phases: torch.Tensor) -> torch.Tensor:
@@ -356,9 +394,9 @@ def metastability_value(ts: torch.Tensor) -> torch.Tensor:
             "metastability_value expects complex input; "
             "got real tensor.  Ensure data/model output is complex."
         )
-    phases = torch.angle(ts).permute(0, 2, 1)
-    vals = torch.stack([kuramoto_metastability(phases[b]) for b in range(phases.shape[0])])
-    return vals.mean()
+    phases = torch.angle(ts)
+    order = torch.abs(torch.exp(1j * phases).mean(dim=1))
+    return order.std(dim=1).mean()
 
 
 # ---------------------------------------------------------------------------
@@ -390,19 +428,11 @@ class FCD(nn.Module):
         win_step = int(round(self.fcd_step_sec / self.tr))
         if win_len < 10 or win_step <= 0:
             return torch.zeros((), device=pred.device, dtype=pred.dtype)
-        losses: list[torch.Tensor] = []
-        for b in range(batch):
-            pred_fcd = fcd_matrix(pred[b].T, win_len, win_step)
-            targ_fcd = fcd_matrix(target[b].T, win_len, win_step)
-            if pred_fcd is None or targ_fcd is None:
-                continue
-            n = min(pred_fcd.shape[0], targ_fcd.shape[0])
-            if n <= 1:
-                continue
-            losses.append(((pred_fcd[:n, :n] - targ_fcd[:n, :n]) ** 2).mean())
-        if not losses:
+        pred_fcd = _batched_fcd_matrices(pred.transpose(1, 2), win_len, win_step)
+        targ_fcd = _batched_fcd_matrices(target.transpose(1, 2), win_len, win_step)
+        if pred_fcd is None or targ_fcd is None:
             return torch.zeros((), device=pred.device, dtype=pred.dtype)
-        return torch.stack(losses).mean()
+        return (pred_fcd - targ_fcd).pow(2).mean(dim=(-1, -2)).mean()
 
     @torch.no_grad()
     def evaluate(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> dict:
@@ -414,25 +444,22 @@ class FCD(nn.Module):
         targ_real = to_real(ts_target_b[:B, :, :T])
         win_len = int(round(self.fcd_win_sec / self.tr))
         win_step = int(round(self.fcd_step_sec / self.tr))
+        fcd_mse = torch.zeros((), device=pred_real.device, dtype=pred_real.dtype)
         fcd_ks = float("nan")
-        if win_len >= 10 and (T - win_len) > 10 and win_step > 0:
-            pred_dists: List[torch.Tensor] = []
-            targ_dists: List[torch.Tensor] = []
-            valid = True
-            for b in range(B):
-                pd = fcd_distribution(pred_real[b].T, win_len, win_step)
-                td = fcd_distribution(targ_real[b].T, win_len, win_step)
-                if pd.numel() == 0 or td.numel() == 0:
-                    valid = False
-                    break
-                pred_dists.append(pd)
-                targ_dists.append(td)
-            if valid and pred_dists:
-                fcd_ks = float(ks_distance_2samp(torch.cat(pred_dists), torch.cat(targ_dists)).item())
-        return {
-            "fcd_mse": self(ts_pred, ts_target).item(),
-            "fcd_ks": fcd_ks,
-        }
+        if win_len >= 10 and win_step > 0:
+            pred_fcd = _batched_fcd_matrices(pred_real.transpose(1, 2), win_len, win_step)
+            targ_fcd = _batched_fcd_matrices(targ_real.transpose(1, 2), win_len, win_step)
+            if pred_fcd is not None and targ_fcd is not None:
+                fcd_mse = (pred_fcd - targ_fcd).pow(2).mean(dim=(-1, -2)).mean()
+                if (T - win_len) > 10:
+                    pred_dists = upper_tri_vec(pred_fcd, k=1)
+                    targ_dists = upper_tri_vec(targ_fcd, k=1)
+                    if pred_dists.numel() > 0 and targ_dists.numel() > 0:
+                        fcd_ks = float(
+                            ks_distance_2samp(pred_dists.reshape(-1), targ_dists.reshape(-1)).item()
+                        )
+
+        return {"fcd_mse": fcd_mse.item(), "fcd_ks": fcd_ks}
 
 
 class PhFCD(nn.Module):
@@ -450,21 +477,11 @@ class PhFCD(nn.Module):
         pred, target = pred[:B, :, :T], target[:B, :, :T]
         if not torch.is_complex(pred) or not torch.is_complex(target):
             return torch.zeros((), device=pred.device, dtype=pred.real.dtype)
-        losses: list[torch.Tensor] = []
-        for b in range(B):
-            pred_phases = torch.angle(pred[b]).T
-            targ_phases = torch.angle(target[b]).T
-            pred_phfcd = phfcd_matrix(pred_phases)
-            targ_phfcd = phfcd_matrix(targ_phases)
-            if pred_phfcd is None or targ_phfcd is None:
-                continue
-            n = min(pred_phfcd.shape[0], targ_phfcd.shape[0])
-            if n <= 1:
-                continue
-            losses.append(((pred_phfcd[:n, :n] - targ_phfcd[:n, :n]) ** 2).mean())
-        if not losses:
+        pred_phfcd = _batched_phfcd_matrices(torch.angle(pred).transpose(1, 2))
+        targ_phfcd = _batched_phfcd_matrices(torch.angle(target).transpose(1, 2))
+        if pred_phfcd is None or targ_phfcd is None:
             return torch.zeros((), device=pred.device, dtype=pred.real.dtype)
-        return torch.stack(losses).mean()
+        return (pred_phfcd - targ_phfcd).pow(2).mean(dim=(-1, -2)).mean()
 
     @torch.no_grad()
     def evaluate(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> dict:
@@ -473,27 +490,20 @@ class PhFCD(nn.Module):
         B = min(pred.shape[0], target.shape[0])
         T = min(pred.shape[2], target.shape[2])
         pred, target = pred[:B, :, :T], target[:B, :, :T]
+        phfcd_mse = torch.zeros((), device=pred.device, dtype=pred.real.dtype)
         phfcd_ks = float("nan")
         if torch.is_complex(pred) and torch.is_complex(target):
-            pred_ph_dists: List[torch.Tensor] = []
-            targ_ph_dists: List[torch.Tensor] = []
-            valid = True
-            for b in range(B):
-                pd_ph = phfcd_distribution(torch.angle(pred[b]).T)
-                td_ph = phfcd_distribution(torch.angle(target[b]).T)
-                if pd_ph.numel() == 0 or td_ph.numel() == 0:
-                    valid = False
-                    break
-                pred_ph_dists.append(pd_ph)
-                targ_ph_dists.append(td_ph)
-            if valid and pred_ph_dists:
-                phfcd_ks = float(ks_distance_2samp(
-                    torch.cat(pred_ph_dists), torch.cat(targ_ph_dists)
-                ).item())
-        return {
-            "phfcd_mse": self(ts_pred, ts_target).item(),
-            "phfcd_ks": phfcd_ks,
-        }
+            pred_phfcd = _batched_phfcd_matrices(torch.angle(pred).transpose(1, 2))
+            targ_phfcd = _batched_phfcd_matrices(torch.angle(target).transpose(1, 2))
+            if pred_phfcd is not None and targ_phfcd is not None:
+                phfcd_mse = (pred_phfcd - targ_phfcd).pow(2).mean(dim=(-1, -2)).mean()
+                pred_ph_dists = upper_tri_vec(pred_phfcd, k=1)
+                targ_ph_dists = upper_tri_vec(targ_phfcd, k=1)
+                if pred_ph_dists.numel() > 0 and targ_ph_dists.numel() > 0:
+                    phfcd_ks = float(
+                        ks_distance_2samp(pred_ph_dists.reshape(-1), targ_ph_dists.reshape(-1)).item()
+                    )
+        return {"phfcd_mse": phfcd_mse.item(), "phfcd_ks": phfcd_ks}
 
 
 class Metastability(nn.Module):

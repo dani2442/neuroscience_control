@@ -191,6 +191,8 @@ def _post_training(
     *,
     is_hopf: bool = False,
     best_params: dict[str, float] | None = None,
+    precomputed_train_metrics: dict[str, float] | None = None,
+    precomputed_val_metrics: dict[str, float] | None = None,
 ) -> dict[str, object]:
     """Shared evaluation, save, figure-gen, and reporting for every model.
 
@@ -200,8 +202,12 @@ def _post_training(
     print_section("Evaluating & Saving")
 
     # --- evaluate all splits consistently ---
-    train_metrics = evaluate_model_loader_metrics(model, train_loader, cfg, n_steps=window_size)
-    val_metrics = evaluate_model_loader_metrics(model, val_loader, cfg, n_steps=window_size)
+    train_metrics = precomputed_train_metrics or evaluate_model_loader_metrics(
+        model, train_loader, cfg, n_steps=window_size, n_simulations=1,
+    )
+    val_metrics = precomputed_val_metrics or evaluate_model_loader_metrics(
+        model, val_loader, cfg, n_steps=window_size, n_simulations=1,
+    )
     test_inter_metrics = evaluate_model_loader_metrics(
         model, test_inter_loader, cfg, n_steps=window_size, return_std=True,
     )
@@ -375,18 +381,6 @@ def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
         initial_states = dataset.timeseries[eval_train_idx, :, 0]
         target_ts = dataset.timeseries[eval_train_idx, :, :n_timepoints]
 
-        _LOSS_TO_GRID = {
-            "fc_correlation": "fc_correlation",
-            "fcd": "fcd_mse",
-            "phfcd": "phfcd_mse",
-            "metastability": "metastability_diff",
-        }
-        metric_weights = {
-            grid_k: cfg.loss_weights[loss_k]
-            for loss_k, grid_k in _LOSS_TO_GRID.items()
-            if cfg.loss_weights.get(loss_k)
-        }
-
         n_combos = len(cfg.g_values) * len(cfg.a_values) * len(cfg.kappa_values)
         print(f"Grid search over {n_combos} combinations  (train={len(train_idx)} timeseries)")
 
@@ -406,16 +400,31 @@ def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
             tr=cfg.tr,
             fcd_win_sec=cfg.fcd_win_sec,
             fcd_step_sec=cfg.fcd_step_sec,
-            metric_weights=metric_weights or None,
+            loss_weights=cfg.loss_weights,
             noise_sigma=cfg.noise_sigma,
             n_control_dims=dataset.n_control_dims,
             denoise_f_lo=cfg.denoise_f_lo,
             denoise_f_hi=cfg.denoise_f_hi,
+            fdm_n_pairs=cfg.fdm_n_pairs,
+            fdm_max_lag=cfg.fdm_max_lag,
+            fdm_sigma=cfg.fdm_sigma,
         )
 
         # Log grid-search-specific wandb info before _post_training
-        train_metrics_quick = evaluate_model_loader_metrics(hopf_model, train_loader, cfg, n_steps=window_size)
-        val_metrics_quick = evaluate_model_loader_metrics(hopf_model, val_loader, cfg, n_steps=window_size)
+        train_metrics_quick = evaluate_model_loader_metrics(
+            hopf_model,
+            train_loader,
+            cfg,
+            n_steps=window_size,
+            n_simulations=1,
+        )
+        val_metrics_quick = evaluate_model_loader_metrics(
+            hopf_model,
+            val_loader,
+            cfg,
+            n_steps=window_size,
+            n_simulations=1,
+        )
         wandb_log(
             {
                 "epoch": 0,
@@ -434,6 +443,8 @@ def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
         hopf_model, "hopf_grid", "Coupled Hopf (Grid Search)", cfg, ds_tag,
         train_loader, val_loader, test_inter_loader, test_intra_loader,
         window_size, args, is_hopf=True, best_params=best_params,
+        precomputed_train_metrics=train_metrics_quick,
+        precomputed_val_metrics=val_metrics_quick,
     )
 
 
