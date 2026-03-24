@@ -16,6 +16,7 @@ from ..training.evaluation import (
     EVAL_METRIC_KEYS,
     MetricAccumulator,
     accumulate_timeseries_metrics,
+    apply_denoise,
     build_eval_metrics,
     rollout_model,
     to_float_metric,
@@ -114,6 +115,8 @@ def generate_multigrid_figure(
     use_adjoint: bool = False,
     adjoint_method: str | None = "adjoint_euler",
     control: torch.Tensor | None = None,
+    denoise_f_lo: float | None = None,
+    denoise_f_hi: float | None = None,
     *,
     n_rois: int = 12,
     n_cols: int = 4,
@@ -149,9 +152,13 @@ def generate_multigrid_figure(
     with torch.no_grad():
         sim_ts = model.forward(**fwd_kwargs)
     # sim_ts: (n_simulations, n_rois, n_timepoints)
+    sim_ts = apply_denoise(sim_ts, dt, denoise_f_lo, denoise_f_hi)
+
+    # Denoise the real reference signal for consistent comparison
+    real_ts_plot = apply_denoise(real_ts.unsqueeze(0), dt, denoise_f_lo, denoise_f_hi).squeeze(0)
 
     fig = plot_simulation_multigrid(
-        real_timeseries=real_ts.real,
+        real_timeseries=real_ts_plot.real,
         simulated_runs=sim_ts.real,
         n_rois=n_rois,
         n_cols=n_cols,
@@ -346,25 +353,21 @@ def evaluate_model_loader_metrics(
     cfg,
     *,
     n_steps: int | None = None,
-    n_simulations: int | None = None,
     return_std: bool = False,
 ) -> dict[str, float]:
     """
     Evaluate a model on the provided data loader.
 
     Uses the same batch-level ``module.evaluate()`` pattern as :class:`Trainer`.
-    When multiple simulations are requested, the whole loader is evaluated
-    repeatedly and the reported mean/std are taken across simulation runs.
+    Reported means/stds are computed across loader batches.
 
     Args:
         model: Model to evaluate
         loader: DataLoader
         cfg: Config containing simulation settings
         n_steps: Optional simulation length override
-        n_simulations: Optional number of repeated stochastic evaluations.
-                       Defaults to ``cfg.n_simulations`` when present.
         return_std: If True, also return <metric>_std keys computed across
-                    repeated simulation runs
+                    loader batches
 
     Returns:
         Dictionary of metric_name → mean (and optionally metric_name_std → std)
@@ -374,40 +377,35 @@ def evaluate_model_loader_metrics(
         fcd_win_sec=cfg.fcd_win_sec,
         fcd_step_sec=cfg.fcd_step_sec,
     )
-    num_simulations = max(1, n_simulations or getattr(cfg, "n_simulations", 1))
-    simulation_accumulator = MetricAccumulator()
+    batch_accumulator = MetricAccumulator()
 
-    for _ in range(num_simulations):
-        batch_accumulator = MetricAccumulator()
-        for batch in loader:
-            if len(batch) == 4:
-                windows, _, _, control = batch
-            else:
-                windows, _, _ = batch
+    for batch in loader:
+        if len(batch) == 4:
+            windows, _, _, control = batch
+        else:
+            windows, _, _ = batch
+            control = None
+        windows = windows.to(model.device)
+        if control is not None:
+            control = control.to(model.device)
+            if control.shape[-1] == 0:
                 control = None
-            windows = windows.to(model.device)
-            if control is not None:
-                control = control.to(model.device)
-                if control.shape[-1] == 0:
-                    control = None
 
-            batch_steps = windows.shape[2]
-            n_sim_steps = min(batch_steps, n_steps) if n_steps is not None else batch_steps
-            target_window = windows[:, :, :n_sim_steps]
-            initial_state = target_window[:, :, 0]
+        batch_steps = windows.shape[2]
+        n_sim_steps = min(batch_steps, n_steps) if n_steps is not None else batch_steps
+        target_window = windows[:, :, :n_sim_steps]
+        initial_state = target_window[:, :, 0]
 
-            with torch.no_grad():
-                simulated = _forward_for_metrics(model, initial_state, n_sim_steps, cfg, control=control)
-                accumulate_timeseries_metrics(
-                    batch_accumulator,
-                    simulated,
-                    target_window,
-                    eval_modules,
-                    per_sample=False,
-                )
-
-        simulation_accumulator.update(batch_accumulator.summary())
+        with torch.no_grad():
+            simulated = _forward_for_metrics(model, initial_state, n_sim_steps, cfg, control=control)
+            accumulate_timeseries_metrics(
+                batch_accumulator,
+                simulated,
+                target_window,
+                eval_modules,
+                per_sample=False,
+            )
 
     # Return all computed metrics (use EVAL_METRIC_KEYS for formatted reports).
-    all_keys = sorted(set(EVAL_METRIC_KEYS) | set(simulation_accumulator.sums.keys()))
-    return simulation_accumulator.summary(keys=all_keys, include_std=return_std)
+    all_keys = sorted(set(EVAL_METRIC_KEYS) | set(batch_accumulator.sums.keys()))
+    return batch_accumulator.summary(keys=all_keys, include_std=return_std)

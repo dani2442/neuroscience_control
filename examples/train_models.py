@@ -234,6 +234,7 @@ def _post_training(
     _save_figures(
         model, val_loader, cfg, ds_tag, model_key, title, args,
         sde_type=cfg.sde_type, method=cfg.sde_method, dt_min=cfg.dt_min,
+        denoise_f_lo=cfg.denoise_f_lo, denoise_f_hi=cfg.denoise_f_hi,
     )
     if is_hopf:
         log_hopf_best_params(model, use_wandb=cfg.use_wandb)

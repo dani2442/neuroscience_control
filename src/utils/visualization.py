@@ -631,7 +631,7 @@ def create_comparison_report(
         
         # Compute FC metrics (Pearson correlation and MSE on upper triangle)
         p = upper_tri_vec(fc_pred, k=1)
-        t = upper_tri_vec(target_fc.unsqueeze(0), k=1)
+        t = upper_tri_vec(fisher_batch_average(target_fc).unsqueeze(0), k=1)
         pc, tc = p - p.mean(dim=1, keepdim=True), t - t.mean(dim=1, keepdim=True)
         fc_corr = ((pc * tc).sum(dim=1) / (
             torch.sqrt((pc**2).sum(dim=1) * (tc**2).sum(dim=1)) + 1e-8

@@ -41,12 +41,12 @@ def add_dataset_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--dataset-type",
         type=str,
-        default=None,
+        default="lsd",
         choices=["ts_young", "mat", "lsd", "nilearn", "openneuro", "datalad", "bids"],
         help="Dataset backend to use.",
     )
-    parser.add_argument("--data-path", type=str, default=None, help="Path to local .mat dataset.")
-    parser.add_argument("--lsd-data-dir", type=str, default=None, help="Directory containing LSD .mat files.")
+    parser.add_argument("--data-path", type=str, default="data/lsd/time_series_data.mat", help="Path to local .mat dataset.")
+    parser.add_argument("--lsd-data-dir", type=str, default="data/lsd", help="Directory containing LSD .mat files.")
     parser.add_argument("--max-subjects", type=int, default=None, help="Limit number of subjects loaded (None = all).")
     parser.add_argument(
         "--nilearn-dataset",

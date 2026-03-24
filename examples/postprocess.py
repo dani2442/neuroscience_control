@@ -55,6 +55,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from examples.cli_args import add_dataset_args
 from src.metrics import fisher_batch_average
+from src.metrics.metrics_store import MetricsStore
 from src.utils.runtime import (
     ensure_proxy_env,
     managed_wandb_run,
@@ -463,12 +464,13 @@ def _generate_comparison_figures(
     out_dir = save_dir if save_dir is not None else FIGURES_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
     figures: dict[str, Any] = {}
-    initial_state = dataset.timeseries[:1, :, 0]
+    n_paths = min(10, dataset.timeseries.shape[0])
+    initial_state = dataset.timeseries[:n_paths, :, 0]
 
     for name, model in models.items():
         with torch.no_grad():
             ts = model.forward(initial_state=initial_state, n_steps=n_timepoints)
-            fc_pred = model.compute_fc(ts)[0]
+            fc_pred = model.compute_fc(ts)  # (n_paths, n_rois, n_rois) — fisher_batch_average applied in plot_fc_comparison
 
         stem = f"{name.lower().replace(' ', '_')}_fc_comparison"
         fig = plot_fc_comparison(
@@ -662,7 +664,7 @@ def run_compare_models(
 
         if not skip_figures:
             _generate_comparison_figures(
-                models, dataset, dataset.fc_mean,
+                models, dataset, dataset.fc_matrices,
                 min(dataset.n_timepoints, 200),
                 use_wandb=use_wandb, save_dir=figures_dir,
             )
@@ -956,6 +958,10 @@ def run_compare_conditions(
             fc_per_model[mname], model_name=mname, baseline_ctrl=0,
             save_path=figures_dir / "lsd" / f"fc_delta_{mname.lower().replace(' ', '_')}.pdf",
         )
+    _plot_fc_diff(
+        empirical_fc_per_ctrl, model_name="Empirical", baseline_ctrl=0,
+        save_path=figures_dir / "lsd" / "fc_delta_empirical.pdf",
+    )
     _plot_fc_corr_bar(cond_metrics, save_path=figures_dir / "lsd" / "control_fc_corr.pdf")
 
     print_section("Saving metrics and LaTeX table")
@@ -986,6 +992,114 @@ def run_compare_conditions(
             corr = cond_metrics[mname].get(cv, {}).get("fc_corr", float("nan"))
             row += f"  {corr:>14.4f}"
         print(row)
+
+
+# ===================================================================
+# 4. plot_metrics_over_epochs
+# ===================================================================
+
+#: Metrics to include in the epoch-curve figure (key, y-axis label).
+_EPOCH_METRICS: list[tuple[str, str]] = [
+    ("loss",                  "Loss"),
+    ("fc_correlation",        "FC Corr ↑"),
+    ("fc_mse",                "FC MSE ↓"),
+    ("fcd_ks",                "FCD KS ↓"),
+    ("phase_fc_correlation",  "phFC Corr ↑"),
+    ("phfcd_ks",              "phFCD KS ↓"),
+    ("metastability_diff",    "Meta |Δ| ↓"),
+    ("temporal_correlation",  "TS Corr ↑"),
+    ("power_spectrum_distance", "TS PSD ↓"),
+    ("autocorr_distance",     "Autocorr ↓"),
+]
+
+
+def _plot_metrics_epochs(
+    dataset_type: str,
+    metrics_dir: str = "results/metrics",
+    save_dir: Path | None = None,
+) -> None:
+    """Load the latest metrics JSON for each model matching *dataset_type*
+    and plot every key metric over epochs (log y-axis where applicable).
+    """
+    metrics_root = Path(metrics_dir)
+    out_dir = save_dir if save_dir is not None else FIGURES_DIR / dataset_type
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    model_stores: dict[str, MetricsStore] = {}
+    for subdir in sorted(metrics_root.iterdir()):
+        if not subdir.is_dir() or dataset_type not in subdir.name:
+            continue
+        jsons = sorted(subdir.glob("*.json"))
+        if not jsons:
+            continue
+        latest = jsons[-1]
+        try:
+            store = MetricsStore.load(str(latest))
+        except Exception as exc:
+            print(f"  Warning: could not load {latest}: {exc}")
+            continue
+        label = _short_model_label(subdir.name)
+        model_stores[label] = store
+        print(f"  Loaded metrics for '{label}' from {latest.name} "
+              f"({len(store.val_metrics)} epochs)")
+
+    if not model_stores:
+        print(f"  No metrics found for dataset_type='{dataset_type}' in {metrics_root}")
+        return
+
+    n_metrics = len(_EPOCH_METRICS)
+    n_cols = 3
+    n_rows = math.ceil(n_metrics / n_cols)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows))
+    axes_flat = axes.flatten()
+
+    colors = plt.cm.tab10.colors  # type: ignore[attr-defined]
+
+    for ax_idx, (mkey, mlabel) in enumerate(_EPOCH_METRICS):
+        ax = axes_flat[ax_idx]
+        has_data = False
+        all_pos = True
+        for ci, (label, store) in enumerate(model_stores.items()):
+            val_vals = store.get_metric_history(mkey, "val")
+            if not val_vals:
+                continue
+            epochs = [e["epoch"] for e in store.val_metrics if mkey in e]
+            clean = [(ep, v) for ep, v in zip(epochs, val_vals) if v is not None and not math.isnan(v)]
+            if not clean:
+                continue
+            ep_arr, v_arr = zip(*clean)
+            ax.plot(ep_arr, v_arr, label=label, color=colors[ci % len(colors)], linewidth=1.5)
+            has_data = True
+            if any(v <= 0 for v in v_arr):
+                all_pos = False
+
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel(mlabel)
+        ax.set_title(mlabel)
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=7)
+        if has_data and all_pos:
+            ax.set_yscale("log")
+
+    for ax_idx in range(n_metrics, len(axes_flat)):
+        axes_flat[ax_idx].set_visible(False)
+
+    plt.suptitle(f"Validation metrics over epochs — {dataset_type}", fontsize=13)
+    plt.tight_layout()
+    save_path = out_dir / "metrics_over_epochs.pdf"
+    fig.savefig(save_path, bbox_inches="tight", dpi=150)
+    plt.close(fig)
+    print(f"  Saved metrics over epochs → {save_path}")
+
+
+def run_plot_metrics(
+    dataset_type: str = "ts_young",
+    metrics_dir: str = "results/metrics",
+    save_dir: Path | None = None,
+) -> None:
+    """Entry point for the ``plot-metrics`` CLI sub-command."""
+    print_section("PLOT METRICS OVER EPOCHS")
+    _plot_metrics_epochs(dataset_type=dataset_type, metrics_dir=metrics_dir, save_dir=save_dir)
 
 
 # ===================================================================
@@ -1123,6 +1237,15 @@ def _run_compare(args: argparse.Namespace) -> dict[str, object]:
     return {"compare_results": result}
 
 
+def _run_plot_metrics(args: argparse.Namespace) -> dict[str, object]:
+    run_plot_metrics(
+        dataset_type=getattr(args, "dataset_type", None) or "ts_young",
+        metrics_dir=getattr(args, "metrics_dir", "results/metrics"),
+        save_dir=Path(args.output_dir) if getattr(args, "output_dir", None) else None,
+    )
+    return {"plot_metrics": "done"}
+
+
 def _run_compare_conditions(args: argparse.Namespace) -> dict[str, object]:
     run_compare_conditions(
         checkpoints=getattr(args, "checkpoints", None),
@@ -1160,8 +1283,8 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_pipeline_args(pipeline)
     pipeline.add_argument("--metrics", type=str, default=None, help="Path to paper metrics JSON")
     pipeline.add_argument("--output-path", type=str, default="results/comparison_results.json")
-    pipeline.add_argument("--n-steps", type=int, default=240, help="Simulation length for compare_conditions")
-    pipeline.add_argument("--n-paths", type=int, default=10, help="Initial conditions for compare_conditions")
+    pipeline.add_argument("--n-steps", type=int, default=100, help="Simulation length for compare_conditions")
+    pipeline.add_argument("--n-paths", type=int, default=32, help="Initial conditions for compare_conditions")
 
     # update-tables
     update_tables = subparsers.add_parser("update-tables", help="Patch LaTeX tables from metrics JSON")
@@ -1180,6 +1303,12 @@ def _build_parser() -> argparse.ArgumentParser:
     compare.add_argument("--skip-figures", action="store_true", help="Skip figure generation")
     _add_pipeline_args(compare)
 
+    # plot-metrics
+    plot_metrics = subparsers.add_parser("plot-metrics", help="Plot validation metrics over epochs for each model")
+    plot_metrics.add_argument("--metrics-dir", type=str, default="results/metrics")
+    plot_metrics.add_argument("--output-dir", type=str, default=None)
+    add_dataset_args(plot_metrics)
+
     # compare-conditions
     compare_cond = subparsers.add_parser("compare-conditions", help="Compare model FC under LSD control conditions")
     compare_cond.add_argument("--checkpoints", nargs="+", type=str, default=None)
@@ -1195,13 +1324,19 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> dict[str, object]:
     parser = _build_parser()
+
+    if len(sys.argv) == 1:
+        sys.argv.append("pipeline")
     args = parser.parse_args(argv)
+
+    
 
     dispatch = {
         "pipeline": _run_pipeline,
         "update-tables": _run_update_tables,
         "compare": _run_compare,
         "compare-conditions": _run_compare_conditions,
+        "plot-metrics": _run_plot_metrics,
     }
     return dispatch[args.command](args)
 
