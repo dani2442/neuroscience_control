@@ -11,6 +11,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import torch
 
+from ..dataset import fft_bandpass_3d
+
 from .visualization import (
     FIGURES_DIR,
     plot_fc_comparison,
@@ -270,6 +272,18 @@ def split_subject_indices(cfg, n_subjects: int) -> tuple[torch.Tensor, torch.Ten
     return train_idx, val_idx, test_idx
 
 
+def _denoise_simulated(simulated: torch.Tensor, dt: float, cfg) -> torch.Tensor:
+    """Apply the same bandpass denoising that Trainer uses for val/test."""
+    f_lo = getattr(cfg, "denoise_f_lo", None)
+    f_hi = getattr(cfg, "denoise_f_hi", None)
+    if f_lo is None or f_hi is None:
+        return simulated
+    if torch.is_complex(simulated):
+        filtered_real = fft_bandpass_3d(simulated.real, dt, f_lo, f_hi)
+        return torch.complex(filtered_real, simulated.imag)
+    return fft_bandpass_3d(simulated, dt, f_lo, f_hi)
+
+
 def _forward_for_metrics(
     model,
     initial_state: torch.Tensor,
@@ -290,7 +304,8 @@ def _forward_for_metrics(
     )
     if control is not None:
         kwargs["control"] = control
-    return model.forward(**kwargs)
+    simulated = model.forward(**kwargs)
+    return _denoise_simulated(simulated, cfg.tr, cfg)
 
 
 EVAL_METRIC_KEYS = (

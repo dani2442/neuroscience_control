@@ -380,6 +380,8 @@ def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
             metric_weights=metric_weights or None,
             noise_sigma=cfg.noise_sigma,
             n_control_dims=dataset.n_control_dims,
+            denoise_f_lo=cfg.denoise_f_lo,
+            denoise_f_hi=cfg.denoise_f_hi,
         )
 
         train_loader_eval = _create_validation_loader(dataset, cfg, device, train_idx)

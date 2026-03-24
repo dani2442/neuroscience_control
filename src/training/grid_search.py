@@ -8,6 +8,7 @@ from pathlib import Path
 import json
 from tqdm import tqdm
 
+from ..dataset import fft_bandpass_3d
 from ..models.hopf_model import CoupledHopfModel
 from ..models.base_model import BaseNeuroscienceModel
 from ..metrics import (
@@ -61,6 +62,17 @@ class GridSearch:
         values = list(self.param_grid.values())
         return [dict(zip(keys, combo)) for combo in product(*values)]
 
+    @staticmethod
+    def _denoise(simulated: torch.Tensor, dt: float,
+                 denoise_f_lo: Optional[float], denoise_f_hi: Optional[float]) -> torch.Tensor:
+        """Apply bandpass denoising (same as Trainer._denoise_pred for val/test)."""
+        if denoise_f_lo is None or denoise_f_hi is None:
+            return simulated
+        if torch.is_complex(simulated):
+            filtered_real = fft_bandpass_3d(simulated.real, dt, denoise_f_lo, denoise_f_hi)
+            return torch.complex(filtered_real, simulated.imag)
+        return fft_bandpass_3d(simulated, dt, denoise_f_lo, denoise_f_hi)
+
     def evaluate_params(
         self,
         model: BaseNeuroscienceModel,
@@ -73,6 +85,8 @@ class GridSearch:
         fcd_win_sec: float = 60.0,
         fcd_step_sec: float = 2.0,
         control: Optional[torch.Tensor] = None,
+        denoise_f_lo: Optional[float] = None,
+        denoise_f_hi: Optional[float] = None,
     ) -> Dict[str, float]:
         """Evaluate a model with given initial states.
 
@@ -93,6 +107,8 @@ class GridSearch:
             fcd_win_sec: FCD window length in seconds.
             fcd_step_sec: FCD window step in seconds.
             control: Optional control input.
+            denoise_f_lo: Low-frequency cutoff for bandpass denoising.
+            denoise_f_hi: High-frequency cutoff for bandpass denoising.
         """
         batch_size = initial_states.shape[0]
         with torch.no_grad():
@@ -100,6 +116,7 @@ class GridSearch:
                 initial_state=initial_states, n_steps=n_timepoints, dt=dt,
                 control=control,
             )
+            timeseries = self._denoise(timeseries, dt, denoise_f_lo, denoise_f_hi)
 
         sums: Dict[str, float] = {}
         sum_sq: Dict[str, float] = {}
@@ -263,6 +280,8 @@ def grid_search_hopf(
     noise_sigma: float = 0.0,
     n_control_dims: int = 0,
     control: Optional[torch.Tensor] = None,
+    denoise_f_lo: Optional[float] = None,
+    denoise_f_hi: Optional[float] = None,
 ) -> Tuple[Dict[str, Any], CoupledHopfModel]:
     """Grid search for Hopf model parameters.
 
@@ -329,6 +348,9 @@ def grid_search_hopf(
         )
     if control is not None:
         eval_kwargs["control"] = control
+    if denoise_f_lo is not None and denoise_f_hi is not None:
+        eval_kwargs["denoise_f_lo"] = denoise_f_lo
+        eval_kwargs["denoise_f_hi"] = denoise_f_hi
 
     best_params, best_metrics = grid_search.search(
         model_class=CoupledHopfModel,
