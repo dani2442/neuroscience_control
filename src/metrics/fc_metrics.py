@@ -9,7 +9,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from ._utils import ensure_batch, to_real, upper_tri_vec
+from ._utils import ensure_batch, fisher_batch_average, to_real, upper_tri_vec
 
 
 def compute_static_fc(ts: torch.Tensor) -> torch.Tensor:
@@ -47,8 +47,11 @@ class FCCorrelation(nn.Module):
     ``forward()`` returns the loss (lower is better).
     ``evaluate()`` returns ``{"fc_correlation": float}`` (higher is better).
 
-    When *fc_target* is provided (precomputed per-subject FC), it is used
-    directly instead of computing FC from *ts_target*.
+    Batched FC tensors are reduced to a single group FC matrix via
+    Fisher-z averaging across batch before comparison.
+
+    When *fc_target* is provided (precomputed per-subject or group FC),
+    it is used directly instead of computing FC from *ts_target*.
     """
 
     def forward(
@@ -57,18 +60,18 @@ class FCCorrelation(nn.Module):
         ts_target: torch.Tensor,
         fc_target: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        fc_pred = compute_static_fc(ts_pred)
+        fc_pred = fisher_batch_average(compute_static_fc(ts_pred))
         if fc_target is None:
             fc_target = compute_static_fc(ts_target)
+        fc_target = fisher_batch_average(fc_target)
 
-        pred_flat = upper_tri_vec(to_real(fc_pred), k=1)
-        targ_flat = upper_tri_vec(to_real(fc_target), k=1)
-        pred_c = pred_flat - pred_flat.mean(dim=1, keepdim=True)
-        targ_c = targ_flat - targ_flat.mean(dim=1, keepdim=True)
-        num = (pred_c * targ_c).sum(dim=1)
-        den = torch.sqrt((pred_c ** 2).sum(dim=1) * (targ_c ** 2).sum(dim=1)) + 1e-8
-        corr = (num / den).mean()
-        return 1.0 - corr
+        pred_flat = upper_tri_vec(fc_pred, k=1)
+        targ_flat = upper_tri_vec(fc_target, k=1)
+        pred_c = pred_flat - pred_flat.mean()
+        targ_c = targ_flat - targ_flat.mean()
+        num = (pred_c * targ_c).sum()
+        den = torch.sqrt((pred_c ** 2).sum() * (targ_c ** 2).sum()) + 1e-8
+        return 1.0 - num / den
 
     @torch.no_grad()
     def evaluate(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> dict:
@@ -80,8 +83,11 @@ class FCMSE(nn.Module):
 
     ``forward()`` returns the loss. ``evaluate()`` returns ``{"fc_mse": float}``.
 
-    When *fc_target* is provided (precomputed per-subject FC), it is used
-    directly instead of computing FC from *ts_target*.
+    Batched FC tensors are reduced to a single group FC matrix via
+    Fisher-z averaging across batch before comparison.
+
+    When *fc_target* is provided (precomputed per-subject or group FC),
+    it is used directly instead of computing FC from *ts_target*.
     """
 
     def forward(
@@ -90,11 +96,12 @@ class FCMSE(nn.Module):
         ts_target: torch.Tensor,
         fc_target: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        fc_pred = compute_static_fc(ts_pred)
+        fc_pred = fisher_batch_average(compute_static_fc(ts_pred))
         if fc_target is None:
             fc_target = compute_static_fc(ts_target)
-        pred_flat = upper_tri_vec(to_real(fc_pred), k=1)
-        targ_flat = upper_tri_vec(to_real(fc_target), k=1)
+        fc_target = fisher_batch_average(fc_target)
+        pred_flat = upper_tri_vec(fc_pred, k=1)
+        targ_flat = upper_tri_vec(fc_target, k=1)
         return ((pred_flat - targ_flat) ** 2).mean()
 
     @torch.no_grad()

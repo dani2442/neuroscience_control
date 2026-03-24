@@ -37,6 +37,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from examples.cli_args import add_dataset_args, DATASET_ARG_NAMES
 from src.dataset import compute_omega_from_timeseries, load_dataset
 from src.dataset import compute_split_indices, create_data_loaders
+from src.metrics import fisher_batch_average
 from src.models import build_model
 from src.training import (
     GNNHopfConfig,
@@ -369,7 +370,7 @@ def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
     best_params: dict[str, float] = {}
     try:
         n_timepoints = min(dataset.n_timepoints, 200)
-        train_fc = dataset.fc_matrices[train_idx].mean(dim=0)
+        train_fc = fisher_batch_average(dataset.fc_matrices[train_idx])
         eval_train_idx = train_idx[:min(cfg.n_simulations, len(train_idx))]
         initial_states = dataset.timeseries[eval_train_idx, :, 0]
         target_ts = dataset.timeseries[eval_train_idx, :, :n_timepoints]

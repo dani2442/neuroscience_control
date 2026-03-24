@@ -18,7 +18,14 @@ from typing import List, Optional
 import torch
 import torch.nn as nn
 
-from ._utils import align_batch_and_time, ensure_batch, to_real, upper_tri_vec, zscore
+from ._utils import (
+    align_batch_and_time,
+    ensure_batch,
+    fisher_batch_average,
+    to_real,
+    upper_tri_vec,
+    zscore,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -512,8 +519,8 @@ class PhaseFC(nn.Module):
     """
 
     def forward(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> torch.Tensor:
-        fc_pred = phase_coherence_fc(ts_pred).mean(dim=0)
-        fc_target = phase_coherence_fc(ts_target).mean(dim=0)
+        fc_pred = fisher_batch_average(phase_coherence_fc(ts_pred))
+        fc_target = fisher_batch_average(phase_coherence_fc(ts_target))
         v_pred = upper_tri_vec(fc_pred, k=1)
         v_target = upper_tri_vec(fc_target, k=1)
         if v_pred.numel() < 2:

@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import torch
 
 from ..dataset import fft_bandpass_3d
+from ..metrics import fisher_batch_average
 
 from .visualization import (
     FIGURES_DIR,
@@ -91,7 +92,7 @@ def generate_fc_figure(
     with torch.no_grad():
         fc_ts = model.forward(**fwd_kwargs)
         fc_pred = model.compute_fc(fc_ts)
-        fc_mean = fc_pred.mean(dim=0)
+        fc_mean = fisher_batch_average(fc_pred)
 
     fig = plot_fc_comparison(
         fc_mean,
@@ -247,7 +248,7 @@ def extract_val_data(
     if val_timeseries.shape[0] == 0:
         raise ValueError("Validation loader dataset is empty; cannot generate final figures.")
 
-    target_fc = val_fc_matrices.mean(dim=0)
+    target_fc = fisher_batch_average(val_fc_matrices)
     n_timepoints = min(val_timeseries.shape[2], max_timepoints)
     return val_timeseries, val_fc_matrices, target_fc, n_timepoints
 

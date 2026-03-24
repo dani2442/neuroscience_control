@@ -8,7 +8,7 @@ from typing import Dict, List, Optional, Tuple, Any
 from pathlib import Path
 
 from ..metrics.metrics_store import MetricsStore
-from ..metrics._utils import upper_tri_vec
+from ..metrics._utils import fisher_batch_average, upper_tri_vec
 
 # Default figures directory for paper
 FIGURES_DIR = Path("paper/images")
@@ -62,10 +62,8 @@ def plot_fc_comparison(
     Returns:
         Matplotlib figure
     """
-    if fc_pred.dim() > 2:
-        fc_pred = fc_pred[0]
-    if fc_target.dim() > 2:
-        fc_target = fc_target[0]
+    fc_pred = fisher_batch_average(fc_pred)
+    fc_target = fisher_batch_average(fc_target)
     
     fc_pred_np = fc_pred.detach().cpu().numpy()
     fc_target_np = fc_target.detach().cpu().numpy()

@@ -65,6 +65,45 @@ def zscore(x: torch.Tensor, dim: int = 0, eps: float = 1e-12) -> torch.Tensor:
     return (x - mu) / sd
 
 
+def fisher_batch_average(
+    matrices: torch.Tensor,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """Average correlation-like matrices across batch in Fisher-z space.
+
+    The off-diagonal entries are clipped to ``(-1 + eps, 1 - eps)``,
+    transformed with ``atanh``, averaged across the leading batch
+    dimension, and mapped back with ``tanh``. The diagonal is restored
+    from the arithmetic batch mean so identity diagonals remain exact.
+
+    Args:
+        matrices: ``(batch, n, n)`` or ``(n, n)`` tensor.
+        eps: Numerical guard for ``atanh`` near ``±1``.
+
+    Returns:
+        ``(n, n)`` tensor.
+    """
+    matrices = to_real(matrices)
+    if matrices.ndim == 2:
+        return matrices
+    if matrices.ndim != 3:
+        raise ValueError(
+            "Expected correlation matrices with shape (batch, n, n) or (n, n), "
+            f"got {matrices.shape}."
+        )
+
+    clipped = matrices.clamp(min=-1.0 + eps, max=1.0 - eps)
+    fisher_mean = torch.atanh(clipped).mean(dim=0)
+    averaged = torch.tanh(fisher_mean)
+
+    diag = matrices.diagonal(dim1=-2, dim2=-1).mean(dim=0)
+    diag_matrix = torch.diag_embed(diag)
+    off_diag_mask = (~torch.eye(
+        averaged.shape[-1], dtype=torch.bool, device=averaged.device
+    )).to(averaged.dtype)
+    return averaged * off_diag_mask + diag_matrix
+
+
 # ---------------------------------------------------------------------------
 # Matrix helpers
 # ---------------------------------------------------------------------------

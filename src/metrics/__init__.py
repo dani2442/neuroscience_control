@@ -5,6 +5,7 @@ from .fc_metrics import (
     FCCorrelation,
     FCMSE,
 )
+from ._utils import fisher_batch_average
 from .timeseries_metrics import (
     AutocorrelationDistance,
     PowerSpectrumDistance,
@@ -32,6 +33,7 @@ from .metrics_store import MetricsStore
 __all__ = [
     # Low-level helpers
     "compute_static_fc",
+    "fisher_batch_average",
     "compute_ref_amplitude",
     "compute_ref_omega",
     "ks_distance_2samp",

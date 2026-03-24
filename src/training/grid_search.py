@@ -15,6 +15,7 @@ from ..metrics import (
     FCCorrelation, FCMSE,
     FCD, Metastability, PhFCD, PhaseFC,
     PowerSpectrumDistance, TemporalCorrelation, AutocorrelationDistance,
+    fisher_batch_average,
 )
 
 
@@ -144,22 +145,22 @@ class GridSearch:
             else:
                 # FC-only: compare simulated FC against provided target_fc
                 from ..metrics.fc_metrics import compute_static_fc
-                from ..metrics._utils import upper_tri_vec, to_real
-                fc_tgt = to_real(target_fc.unsqueeze(0))
+                from ..metrics._utils import upper_tri_vec
+
+                fc_sim = fisher_batch_average(compute_static_fc(timeseries))
+                fc_tgt = fisher_batch_average(target_fc)
+                pred_flat = upper_tri_vec(fc_sim, k=1)
                 targ_flat = upper_tri_vec(fc_tgt, k=1)
-                for i in range(batch_size):
-                    fc_sim = to_real(compute_static_fc(timeseries[i:i+1]))
-                    pred_flat = upper_tri_vec(fc_sim, k=1)
-                    pred_c = pred_flat - pred_flat.mean(dim=1, keepdim=True)
-                    targ_c = targ_flat - targ_flat.mean(dim=1, keepdim=True)
-                    num = (pred_c * targ_c).sum(dim=1)
-                    den = (torch.sqrt((pred_c**2).sum(dim=1) * (targ_c**2).sum(dim=1)) + 1e-8)
-                    fc_corr = (num / den).mean().item()
-                    fc_mse = ((pred_flat - targ_flat) ** 2).mean().item()
-                    for k, v in [("fc_correlation", fc_corr), ("fc_mse", fc_mse)]:
-                        sums[k] = sums.get(k, 0.0) + v
-                        sum_sq[k] = sum_sq.get(k, 0.0) + v * v
-                        counts[k] = counts.get(k, 0) + 1
+                pred_c = pred_flat - pred_flat.mean()
+                targ_c = targ_flat - targ_flat.mean()
+                num = (pred_c * targ_c).sum()
+                den = torch.sqrt((pred_c**2).sum() * (targ_c**2).sum()) + 1e-8
+                fc_corr = (num / den).item()
+                fc_mse = ((pred_flat - targ_flat) ** 2).mean().item()
+                for k, v in [("fc_correlation", fc_corr), ("fc_mse", fc_mse)]:
+                    sums[k] = sums.get(k, 0.0) + v
+                    sum_sq[k] = sum_sq.get(k, 0.0) + v * v
+                    counts[k] = counts.get(k, 0) + 1
 
         metrics: Dict[str, float] = {}
         for k in sums:

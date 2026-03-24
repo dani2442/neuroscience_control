@@ -54,6 +54,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from examples.cli_args import add_dataset_args
+from src.metrics import fisher_batch_average
 from src.utils.runtime import (
     ensure_proxy_env,
     managed_wandb_run,
@@ -727,7 +728,7 @@ def _simulate_fc(model, initial_states, ctrl_val: int, n_steps: int, dt: float, 
     with torch.no_grad():
         ts = model.forward(**fwd_kwargs)
         fc_per_subject = model.compute_fc(ts)
-    return fc_per_subject.mean(dim=0)
+    return fisher_batch_average(fc_per_subject)
 
 
 def _fc_to_numpy(fc: torch.Tensor) -> np.ndarray:
@@ -893,7 +894,7 @@ def run_compare_conditions(
         if mask.sum() == 0:
             print(f"  Warning: no subjects for ctrl={cv}, skipping.")
             continue
-        empirical_fc_per_ctrl[cv] = dataset.fc_matrices[mask].mean(dim=0)
+        empirical_fc_per_ctrl[cv] = fisher_batch_average(dataset.fc_matrices[mask])
         print(f"  Empirical FC ctrl={cv}: {mask.sum().item()} subjects")
 
     n_p = min(n_paths, dataset.n_subjects)
