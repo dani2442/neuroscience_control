@@ -10,6 +10,7 @@ import torch
 from .base_model import BaseNeuroscienceModel
 from .hopf_model import CoupledHopfModel
 from .hybrid_hopf_model import HybridHopfModel
+from .hybrid_neural_model import HybridHopfNeuralModel
 from .gnn_hopf_model import GNNHopfModel
 from .neural_sde import NeuralSDE
 
@@ -17,6 +18,7 @@ from .neural_sde import NeuralSDE
 MODEL_REGISTRY = {
     "CoupledHopfModel": CoupledHopfModel,
     "HybridHopfModel": HybridHopfModel,
+    "HybridHopfNeuralModel": HybridHopfNeuralModel,
     "GNNHopfModel": GNNHopfModel,
     "NeuralSDE": NeuralSDE,
 }

@@ -309,6 +309,7 @@ class HybridHopfModel(BaseNeuroscienceModel):
         self.noise_sigma = noise_sigma
         self.learnable_a = learnable_a
         self.learnable_g = learnable_g
+        self.learnable_kappa = learnable_kappa
         self.learnable_omega = learnable_omega
         self.coupling_hidden_dim = coupling_hidden_dim
         self.coupling_n_layers = coupling_n_layers
@@ -396,6 +397,7 @@ class HybridHopfModel(BaseNeuroscienceModel):
     def _update_sde_func_params(self):
         self.sde_func.a = self.a
         self.sde_func.global_coupling = self.g
+        self.sde_func.kappa = self.kappa
         self.sde_func.omega = self.omega
         self.sde_func.key_net = self.key_net
         self.sde_func.output_net = self.output_net
@@ -487,6 +489,7 @@ class HybridHopfModel(BaseNeuroscienceModel):
             "noise_sigma": float(self.noise_sigma),
             "learnable_a": bool(self.learnable_a),
             "learnable_g": bool(self.learnable_g),
+            "learnable_kappa": bool(self.learnable_kappa),
             "learnable_omega": bool(self.learnable_omega),
             "coupling_hidden_dim": int(self.coupling_hidden_dim),
             "coupling_n_layers": int(self.coupling_n_layers),
@@ -494,6 +497,7 @@ class HybridHopfModel(BaseNeuroscienceModel):
             "d_key": int(self.d_key),
             "initial_a": float(self.a.detach().mean().cpu().item()),
             "initial_g": float(self.g.detach().cpu().item()),
+            "initial_kappa": float(self.kappa.detach().cpu().item()),
             "n_control_dims": int(self.n_control_dims),
         }
 

@@ -340,6 +340,26 @@ def _forward_for_metrics(
     return _denoise_simulated(simulated, cfg.tr, cfg)
 
 
+def as_numeric_metrics(metrics: dict[str, object]) -> dict[str, float]:
+    """Convert all metric values to float, dropping unconvertible entries."""
+    return {k: v for k, v in ((k, to_float_metric(v)) for k, v in metrics.items()) if v is not None}
+
+
+def format_metrics_mean_std(metrics: dict[str, object]) -> dict[str, str]:
+    """Format metrics as ``mean ± std`` strings (skip ``_std`` keys)."""
+    numeric = as_numeric_metrics(metrics)
+    formatted: dict[str, str] = {}
+    for key in sorted(numeric):
+        if key.endswith("_std"):
+            continue
+        std_key = f"{key}_std"
+        if std_key in numeric:
+            formatted[key] = f"{numeric[key]:.3f} ± {numeric[std_key]:.3f}"
+        else:
+            formatted[key] = f"{numeric[key]:.3f}"
+    return formatted
+
+
 EVAL_METRIC_KEYS = (
     "fc_correlation",
     "fc_mse",

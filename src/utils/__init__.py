@@ -29,6 +29,8 @@ from .runtime import (
 from .evaluation import (
     to_float_metric,
     prefixed_metrics,
+    as_numeric_metrics,
+    format_metrics_mean_std,
     EVAL_METRIC_KEYS,
     generate_fc_figure,
     generate_multigrid_figure,
@@ -36,7 +38,7 @@ from .evaluation import (
     log_hopf_best_params,
     extract_val_data,
     split_subject_indices,
-    evaluate_model_loader_metrics
+    evaluate_model_loader_metrics,
 )
 __all__ = [
     "plot_fc_comparison",
@@ -64,6 +66,8 @@ __all__ = [
     "managed_wandb_run",
     "to_float_metric",
     "prefixed_metrics",
+    "as_numeric_metrics",
+    "format_metrics_mean_std",
     "EVAL_METRIC_KEYS",
     "generate_fc_figure",
     "generate_multigrid_figure",

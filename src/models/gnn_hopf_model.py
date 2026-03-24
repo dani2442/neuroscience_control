@@ -201,6 +201,7 @@ class GNNHopfModel(BaseNeuroscienceModel):
         self.noise_sigma = noise_sigma
         self.learnable_a = learnable_a
         self.learnable_g = learnable_g
+        self.learnable_kappa = learnable_kappa
         self.learnable_omega = learnable_omega
         self.node_hidden_dim = node_hidden_dim
         self.node_n_layers = node_n_layers
@@ -280,6 +281,7 @@ class GNNHopfModel(BaseNeuroscienceModel):
     def _update_sde_func_params(self):
         self.sde_func.a = self.a
         self.sde_func.global_coupling = self.g
+        self.sde_func.kappa = self.kappa
         self.sde_func.omega = self.omega
         self.sde_func.coupling_matrix = self.coupling_matrix
         self.sde_func.node_net = self.node_net
@@ -363,11 +365,13 @@ class GNNHopfModel(BaseNeuroscienceModel):
             "noise_sigma": float(self.noise_sigma),
             "learnable_a": bool(self.learnable_a),
             "learnable_g": bool(self.learnable_g),
+            "learnable_kappa": bool(self.learnable_kappa),
             "learnable_omega": bool(self.learnable_omega),
             "node_hidden_dim": int(self.node_hidden_dim),
             "node_n_layers": int(self.node_n_layers),
             "initial_a": float(self.a.detach().mean().cpu().item()),
             "initial_g": float(self.g.detach().cpu().item()),
+            "initial_kappa": float(self.kappa.detach().cpu().item()),
             "n_control_dims": int(self.n_control_dims),
         }
 

@@ -51,10 +51,12 @@ from src.training.losses import compute_ref_amplitude, compute_ref_omega
 from src.utils import (
     FIGURES_DIR,
     EVAL_METRIC_KEYS,
+    as_numeric_metrics,
     ensure_proxy_env,
     evaluate_model_loader_metrics,
     extract_val_data,
     finish_wandb_run,
+    format_metrics_mean_std,
     generate_fc_figure,
     generate_multigrid_figure,
     init_wandb_run,
@@ -168,22 +170,92 @@ def _save_figures(model, val_loader, cfg, ds_tag: str, name_prefix: str, title: 
     )
 
 
-def _as_numeric(metrics: dict[str, object]) -> dict[str, float]:
-    return {k: v for k, v in ((k, to_float_metric(v)) for k, v in metrics.items()) if v is not None}
+# ---------------------------------------------------------------------------
+# Shared post-training evaluation
+# ---------------------------------------------------------------------------
 
 
-def _format_metrics_mean_std(metrics: dict[str, object]) -> dict[str, str]:
-    numeric = _as_numeric(metrics)
-    formatted: dict[str, str] = {}
-    for key in sorted(numeric):
-        if key.endswith("_std"):
-            continue
-        std_key = f"{key}_std"
-        if std_key in numeric:
-            formatted[key] = f"{numeric[key]:.6f} ± {numeric[std_key]:.6f}"
-        else:
-            formatted[key] = f"{numeric[key]:.6f}"
-    return formatted
+def _post_training(
+    model,
+    model_key: str,
+    title: str,
+    cfg,
+    ds_tag: str,
+    train_loader,
+    val_loader,
+    test_inter_loader,
+    test_intra_loader,
+    window_size: int,
+    args: argparse.Namespace,
+    *,
+    is_hopf: bool = False,
+    best_params: dict[str, float] | None = None,
+) -> dict[str, object]:
+    """Shared evaluation, save, figure-gen, and reporting for every model.
+
+    Both grid-search and backprop paths call this after training is finished
+    so that losses, metrics, saving, and reporting are identical.
+    """
+    print_section("Evaluating & Saving")
+
+    # --- evaluate all splits consistently ---
+    train_metrics = evaluate_model_loader_metrics(model, train_loader, cfg, n_steps=window_size)
+    val_metrics = evaluate_model_loader_metrics(model, val_loader, cfg, n_steps=window_size)
+    test_inter_metrics = evaluate_model_loader_metrics(
+        model, test_inter_loader, cfg, n_steps=window_size, return_std=True,
+    )
+    test_intra_metrics = evaluate_model_loader_metrics(
+        model, test_intra_loader, cfg, n_steps=window_size, return_std=True,
+    )
+
+    # --- wandb summary ---
+    wandb_summary_update(
+        {f"final_{k}": v for k, v in val_metrics.items()},
+        use_wandb=cfg.use_wandb,
+    )
+
+    # --- save checkpoint ---
+    checkpoint_path = save_checkpoint(
+        model,
+        checkpoint_name=f"{ds_tag}_{model_key}.pt",
+        artifact_name=f"{ds_tag}_{model_key}",
+        checkpoint_dir=cfg.checkpoint_dir,
+        use_wandb=cfg.use_wandb,
+    )
+
+    # --- figures ---
+    _save_figures(
+        model, val_loader, cfg, ds_tag, model_key, title, args,
+        sde_type=cfg.sde_type, method=cfg.sde_method, dt_min=cfg.dt_min,
+    )
+    if is_hopf:
+        log_hopf_best_params(model, use_wandb=cfg.use_wandb)
+
+    # --- save individual JSON ---
+    _save_individual_metrics(model_key, test_inter_metrics, test_intra_metrics, ds_tag)
+
+    # --- console report ---
+    print(f"\n{'='*60}")
+    print(f"  {title.upper()} — COMPLETED SUCCESSFULLY")
+    print(f"{'='*60}")
+    if best_params:
+        print(f"Best params: {best_params}")
+    print(f"Train metrics: {format_metrics_mean_std(train_metrics)}")
+    print(f"Val   metrics: {format_metrics_mean_std(val_metrics)}")
+    print(f"Test inter (mean ± std): {format_metrics_mean_std(test_inter_metrics)}")
+    print(f"Test intra (mean ± std): {format_metrics_mean_std(test_intra_metrics)}")
+    print(f"Checkpoint: {checkpoint_path}  |  Figures: {FIGURES_DIR / ds_tag}")
+
+    return {
+        "run": model_key,
+        "model": model,
+        "train_metrics": as_numeric_metrics(train_metrics),
+        "val_metrics": as_numeric_metrics(val_metrics),
+        "test_inter_metrics": as_numeric_metrics(test_inter_metrics),
+        "test_intra_metrics": as_numeric_metrics(test_intra_metrics),
+        "params": {k: float(v) for k, v in best_params.items()} if best_params else None,
+        "checkpoint": str(checkpoint_path) if checkpoint_path is not None else None,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +265,7 @@ def _format_metrics_mean_std(metrics: dict[str, object]) -> dict[str, str]:
 def _run_backprop(args: argparse.Namespace) -> dict[str, object]:
     fdm_weight = getattr(args, "fdm", 0.0) or 0.0
     exp_prefix = f"{args.model}_backprop"
+    title = _MODEL_TITLES.get(args.model, args.model)
     print_section(f"{args.model.upper()} BACKPROP TRAINING")
     cfg, device, ds_tag = _setup_run(_CONFIG_CLS[args.model], args, exp_prefix)
 
@@ -224,10 +297,6 @@ def _run_backprop(args: argparse.Namespace) -> dict[str, object]:
     print(f"  ref_amplitude=[{ref_amplitude.min():.4f}, {ref_amplitude.max():.4f}]")
     print(f"  ref_omega=[{ref_omega.min() / 6.2832:.4f}, {ref_omega.max() / 6.2832:.4f}] Hz")
 
-    checkpoint_path: Path | None = None
-    final_metrics: dict[str, float] = {}
-    test_inter_metrics: dict[str, float] = {}
-    test_intra_metrics: dict[str, float] = {}
     trainer = None
     try:
         trainer = Trainer(
@@ -240,44 +309,16 @@ def _run_backprop(args: argparse.Namespace) -> dict[str, object]:
             n_epochs=cfg.n_epochs, n_steps=window_size, dt=cfg.tr,
             early_stopping_patience=cfg.early_stopping_patience, verbose=True,
         )
-        test_inter_metrics = trainer.test(test_inter_loader, n_steps=window_size, dt=cfg.tr, label="test_inter")
-        test_intra_metrics = trainer.test(test_intra_loader, n_steps=window_size, dt=cfg.tr, label="test_intra")
-
-        print_section("STEP 3: Saving Model and Generating Figures")
-        checkpoint_path = save_checkpoint(
-            model,
-            checkpoint_name=f"{ds_tag}_{args.model}.pt",
-            artifact_name=f"{ds_tag}_{args.model}",
-            checkpoint_dir=cfg.checkpoint_dir,
-            use_wandb=cfg.use_wandb,
-        )
-        final_metrics = evaluate_model_loader_metrics(model, val_loader, cfg, n_steps=window_size)
-        wandb_summary_update({f"final_{k}": v for k, v in final_metrics.items()}, use_wandb=cfg.use_wandb)
-
-        title = _MODEL_TITLES.get(args.model, args.model)
-        _save_figures(model, val_loader, cfg, ds_tag, args.model, f"{title} (Backprop)", args,
-                      sde_type=cfg.sde_type, method=cfg.sde_method, dt_min=cfg.dt_min)
-        if args.model in ("hopf", "hybrid_hopf", "hybrid_neural", "gnn_hopf"):
-            log_hopf_best_params(model, use_wandb=cfg.use_wandb)
     finally:
         if trainer is not None:
             trainer.finish()
 
-    _save_individual_metrics(args.model, test_inter_metrics, test_intra_metrics, ds_tag)
-
-    print(f"\n{'='*60}\n{args.model.upper()} BACKPROP TRAINING COMPLETED SUCCESSFULLY\n{'='*60}")
-    print(f"\nTest inter metrics: {_format_metrics_mean_std(test_inter_metrics)}")
-    print(f"Test intra metrics: {_format_metrics_mean_std(test_intra_metrics)}")
-    print(f"Final metrics: {final_metrics}")
-    print(f"Model saved to: {checkpoint_path}  |  Figures: {FIGURES_DIR / ds_tag}")
-
-    return {
-        "run": f"{args.model}_backprop",
-        "model": model,
-        "test_inter_metrics": _as_numeric(test_inter_metrics),
-        "test_intra_metrics": _as_numeric(test_intra_metrics),
-        "checkpoint": str(checkpoint_path) if checkpoint_path is not None else None,
-    }
+    is_hopf = args.model in ("hopf", "hybrid_hopf", "hybrid_neural", "gnn_hopf")
+    return _post_training(
+        model, args.model, f"{title} (Backprop)", cfg, ds_tag,
+        train_loader, val_loader, test_inter_loader, test_intra_loader,
+        window_size, args, is_hopf=is_hopf,
+    )
 
 
 def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
@@ -325,12 +366,7 @@ def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
         wandb.define_metric("train/*", step_metric="epoch")
         wandb.define_metric("validation/*", step_metric="epoch")
 
-    checkpoint: Path | None = None
     best_params: dict[str, float] = {}
-    final_metrics: dict[str, float] = {}
-    train_metrics: dict[str, float] = {}
-    test_inter_metrics: dict[str, float] = {}
-    test_intra_metrics: dict[str, float] = {}
     try:
         n_timepoints = min(dataset.n_timepoints, 200)
         train_fc = dataset.fc_matrices[train_idx].mean(dim=0)
@@ -376,63 +412,28 @@ def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
             denoise_f_hi=cfg.denoise_f_hi,
         )
 
-        train_metrics = evaluate_model_loader_metrics(hopf_model, train_loader, cfg, n_steps=window_size)
-        val_metrics = evaluate_model_loader_metrics(hopf_model, val_loader, cfg, n_steps=window_size)
-        print(f"Train metrics: {train_metrics}")
-        print(f"Validation metrics: {val_metrics}")
-
+        # Log grid-search-specific wandb info before _post_training
+        train_metrics_quick = evaluate_model_loader_metrics(hopf_model, train_loader, cfg, n_steps=window_size)
+        val_metrics_quick = evaluate_model_loader_metrics(hopf_model, val_loader, cfg, n_steps=window_size)
         wandb_log(
             {
                 "epoch": 0,
                 "best_params/G": float(best_params.get("initial_g", 0.0)),
                 "best_params/a": float(best_params.get("initial_a", 0.0)),
                 "best_params/kappa": float(best_params.get("initial_kappa", best_params.get("kappa", 0.0))),
-                **prefixed_metrics("train", train_metrics),
-                **prefixed_metrics("validation", val_metrics),
+                **prefixed_metrics("train", train_metrics_quick),
+                **prefixed_metrics("validation", val_metrics_quick),
             },
             use_wandb=cfg.use_wandb,
         )
-
-        print_section("STEP 3: Saving Model and Generating Figures")
-        checkpoint = save_checkpoint(
-            hopf_model,
-            checkpoint_name=f"{ds_tag}_hopf_grid.pt",
-            artifact_name=f"{ds_tag}_hopf_grid",
-            checkpoint_dir=cfg.checkpoint_dir,
-            use_wandb=cfg.use_wandb,
-        )
-        _save_figures(hopf_model, val_loader, cfg, ds_tag, "hopf_grid", "Coupled Hopf (Grid)", args)
-
-        final_metrics = val_metrics
-        wandb_summary_update({f"final_{k}": v for k, v in final_metrics.items()}, use_wandb=cfg.use_wandb)
-        log_hopf_best_params(hopf_model, use_wandb=cfg.use_wandb)
-
-        test_inter_metrics = evaluate_model_loader_metrics(hopf_model, test_inter_loader, cfg, n_steps=window_size, return_std=True)
-        test_intra_metrics = evaluate_model_loader_metrics(hopf_model, test_intra_loader, cfg, n_steps=window_size, return_std=True)
-        print(f"Test inter metrics (mean ± std): {_format_metrics_mean_std(test_inter_metrics)}")
-        print(f"Test intra metrics (mean ± std): {_format_metrics_mean_std(test_intra_metrics)}")
     finally:
         finish_wandb_run()
 
-    _save_individual_metrics("hopf_grid", _as_numeric(test_inter_metrics), _as_numeric(test_intra_metrics), ds_tag)
-
-    print(f"\n{'='*60}\nHOPF GRID SEARCH COMPLETED SUCCESSFULLY\n{'='*60}")
-    print(f"\nBest params: {best_params}")
-    print(f"Train metrics: {train_metrics}")
-    print(f"Final metrics: {final_metrics}")
-    print(f"Test inter metrics (mean ± std): {_format_metrics_mean_std(test_inter_metrics)}")
-    print(f"Test intra metrics (mean ± std): {_format_metrics_mean_std(test_intra_metrics)}")
-    print(f"Checkpoint: {checkpoint}  |  Figures: {FIGURES_DIR / ds_tag}")
-
-    return {
-        "run": "hopf_grid",
-        "model": hopf_model,
-        "test_inter_metrics": _as_numeric(test_inter_metrics),
-        "test_intra_metrics": _as_numeric(test_intra_metrics),
-        "train_metrics": _as_numeric(train_metrics),
-        "params": {k: float(v) for k, v in best_params.items()},
-        "checkpoint": str(checkpoint) if checkpoint is not None else None,
-    }
+    return _post_training(
+        hopf_model, "hopf_grid", "Coupled Hopf (Grid Search)", cfg, ds_tag,
+        train_loader, val_loader, test_inter_loader, test_intra_loader,
+        window_size, args, is_hopf=True, best_params=best_params,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -472,8 +473,8 @@ def _save_individual_metrics(
         "dataset_type": ds_tag,
         "model": model_key,
         "metrics": {
-            "test_inter": {k: float(v) for k, v in _as_numeric(test_inter).items()},
-            "test_intra": {k: float(v) for k, v in _as_numeric(test_intra).items()},
+            "test_inter": {k: float(v) for k, v in as_numeric_metrics(test_inter).items()},
+            "test_intra": {k: float(v) for k, v in as_numeric_metrics(test_intra).items()},
         },
     }
     with output.open("w", encoding="utf-8") as fh:

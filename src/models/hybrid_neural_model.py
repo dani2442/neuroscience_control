@@ -191,4 +191,5 @@ class HybridHopfNeuralModel(BaseNeuroscienceModel):
             "initial_sigma": float(sigma.detach().cpu()),
             "drift_hidden_dim": linear_layers[0].out_features if linear_layers else 64,
             "drift_n_layers": len(linear_layers) - 1,
+            "n_control_dims": int(self.sde_func.n_control_dims),
         }

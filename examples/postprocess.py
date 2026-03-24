@@ -66,7 +66,9 @@ from src.utils.runtime import (
 )
 from src.utils.evaluation import (
     EVAL_METRIC_KEYS,
+    as_numeric_metrics,
     evaluate_model_loader_metrics,
+    format_metrics_mean_std,
     to_float_metric,
 )
 from src.utils.visualization import (
@@ -431,22 +433,7 @@ def _load_all_checkpoints(
     return models
 
 
-def _as_numeric(metrics: dict[str, object]) -> dict[str, float]:
-    return {k: v for k, v in ((k, to_float_metric(v)) for k, v in metrics.items()) if v is not None}
-
-
-def _format_metrics_mean_std(metrics: dict[str, object]) -> dict[str, str]:
-    numeric = _as_numeric(metrics)
-    formatted: dict[str, str] = {}
-    for key in sorted(numeric):
-        if key.endswith("_std"):
-            continue
-        std_key = f"{key}_std"
-        if std_key in numeric:
-            formatted[key] = f"{numeric[key]:.6f} ± {numeric[std_key]:.6f}"
-        else:
-            formatted[key] = f"{numeric[key]:.6f}"
-    return formatted
+_as_numeric = as_numeric_metrics  # backward-compat alias used below
 
 
 def _fc_corr_and_mse(fc_pred: "torch.Tensor", fc_target: "torch.Tensor"):
@@ -658,8 +645,8 @@ def run_compare_models(
         )
         test_inter_results[name] = _as_numeric(inter_metrics)
         test_intra_results[name] = _as_numeric(intra_metrics)
-        print(f"    Inter: {_format_metrics_mean_std(inter_metrics)}")
-        print(f"    Intra: {_format_metrics_mean_std(intra_metrics)}")
+        print(f"    Inter: {format_metrics_mean_std(inter_metrics)}")
+        print(f"    Intra: {format_metrics_mean_std(intra_metrics)}")
 
     with managed_wandb_run(
         use_wandb=use_wandb,
