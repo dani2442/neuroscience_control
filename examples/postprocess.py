@@ -12,7 +12,8 @@ Consolidates all post-training steps that produce publication artefacts:
    under pharmacological conditions (u=0 Placebo, u=1 LSD+Ketanserin,
    u=2 LSD) and produces FC grids, ΔFC plots, bar charts, a metrics
    JSON and a LaTeX table fragment.
-4. **pipeline** – runs all three steps above in sequence.
+4. **plot-metrics** – plots validation metrics over epochs for each model.
+5. **pipeline** – runs all four steps above in sequence.
 
 # Run the full post-training pipeline (tables + compare + conditions):
     python examples/postprocess.py pipeline \\
@@ -821,7 +822,7 @@ def _plot_fc_corr_bar(metrics, *, save_path: Path) -> None:
     width = 0.25
     fig, ax = plt.subplots(figsize=(max(6, 2 * len(model_names)), 4))
     for i, cv in enumerate(ctrl_vals):
-        corrs = [metrics[m].get(cv, {}).get("fc_corr", float("nan")) for m in model_names]
+        corrs = [metrics[m].get(cv, {}).get("fc_correlation", float("nan")) for m in model_names]
         ax.bar(x + (i - 1) * width, corrs, width, label=CONDITION_LABELS[cv], color=CONDITION_COLORS[cv], alpha=0.85)
     ax.set_ylabel("FC Pearson correlation ↑")
     ax.set_title("FC fit per model and pharmacological condition")
@@ -855,7 +856,7 @@ def _build_lsd_latex_table(metrics) -> str:
         row = mname.replace("_", " ")
         for cv in ctrl_vals:
             m = cond_metrics.get(cv, {})
-            row += f" & {_fmt_cond(m.get('fc_corr'))} & {_fmt_cond(m.get('fc_mse'))}"
+            row += f" & {_fmt_cond(m.get('fc_correlation'))} & {_fmt_cond(m.get('fc_mse'))}"
         body += row + " \\\\\n"
     col_spec = "l" + "".join([" c c" for _ in ctrl_vals])
     return (
@@ -874,9 +875,27 @@ def run_compare_conditions(
     ctrl_values: list[int] | None = None,
     output_dir: str | None = None,
 ) -> None:
-    """Compare model-simulated FC under different LSD control conditions."""
+    """Compare model-simulated FC under different LSD control conditions.
+
+    For each condition (control value), the evaluation:
+    1. Selects only subjects belonging to that condition.
+    2. Simulates the model from those subjects' initial states with the
+       matching control input.
+    3. Computes the full metric suite (FC, timeseries, dynamics) by
+       comparing simulated trajectories against empirical target windows,
+       using the same ``build_eval_metrics`` + ``accumulate_timeseries_metrics``
+       pattern as :func:`evaluate_model_loader_metrics`.
+    """
     from src.dataset import NeuroscienceDataset
+    from src.metrics import compute_static_fc
     from src.models import load_model_from_checkpoint
+    from src.training.evaluation import (
+        build_eval_metrics,
+        accumulate_timeseries_metrics,
+        MetricAccumulator,
+        rollout_model,
+        EVAL_METRIC_KEYS,
+    )
 
     device = resolve_device(device)
     seed_all(42)
@@ -890,17 +909,19 @@ def run_compare_conditions(
     dataset = NeuroscienceDataset.from_lsd(data_dir=lsd_data_dir, normalize=True, device=device)
     print(f"  subjects={dataset.n_subjects}  ROIs={dataset.n_rois}  T={dataset.n_timepoints}")
 
+    # Group subjects by condition
+    subjects_per_ctrl: dict[int, torch.Tensor] = {}   # indices
     empirical_fc_per_ctrl: dict[int, torch.Tensor] = {}
     for cv in ctrl_values:
         mask = dataset.control[:, 0] == cv
         if mask.sum() == 0:
             print(f"  Warning: no subjects for ctrl={cv}, skipping.")
             continue
+        subjects_per_ctrl[cv] = mask.nonzero(as_tuple=True)[0]
         empirical_fc_per_ctrl[cv] = fisher_batch_average(dataset.fc_matrices[mask])
-        print(f"  Empirical FC ctrl={cv}: {mask.sum().item()} subjects")
+        print(f"  ctrl={cv}: {mask.sum().item()} subjects")
 
-    n_p = min(n_paths, dataset.n_subjects)
-    initial_states = dataset.timeseries[:n_p, :, 0]
+    eval_modules = build_eval_metrics(tr=dataset.dt)
 
     print_section("Loading model checkpoints")
     if not checkpoints:
@@ -933,23 +954,61 @@ def run_compare_conditions(
         print("No models loaded. Exiting.")
         return
 
-    print_section("Simulating FC per condition")
+    print_section("Evaluating per condition (full metric suite)")
     fc_per_model: dict[str, dict[int, torch.Tensor]] = {}
     cond_metrics: dict[str, dict[int, dict[str, float]]] = {}
+
+    sim_steps = min(n_steps, dataset.n_timepoints)
 
     for mname, model in models.items():
         fc_per_model[mname] = {}
         cond_metrics[mname] = {}
         for cv in ctrl_values:
-            if cv not in empirical_fc_per_ctrl:
+            if cv not in subjects_per_ctrl:
                 continue
-            print(f"  {mname}: simulating ctrl={cv} …", end=" ", flush=True)
-            fc_sim = _simulate_fc(model, initial_states, cv, n_steps=n_steps, dt=dataset.dt, device=device)
-            fc_emp = empirical_fc_per_ctrl[cv]
-            corr, mse = _fc_corr_and_mse(fc_sim.unsqueeze(0), fc_emp.unsqueeze(0))
-            fc_per_model[mname][cv] = fc_sim
-            cond_metrics[mname][cv] = {"fc_corr": corr, "fc_mse": mse}
-            print(f"FC corr={corr:.3f}  MSE={mse:.4f}")
+            idx = subjects_per_ctrl[cv]
+            n_subj = min(n_paths, len(idx))
+            subj_idx = idx[:n_subj]
+
+            target_ts = dataset.timeseries[subj_idx, :, :sim_steps]
+            initial_state = target_ts[:, :, 0]
+
+            # Build control tensor matching the condition
+            if getattr(model, "n_control_dims", 0) > 0:
+                ctrl = torch.full(
+                    (n_subj, 1), float(cv),
+                    dtype=torch.float32, device=device,
+                )
+            else:
+                ctrl = None
+
+            print(f"  {mname}: ctrl={cv} ({n_subj} subjects, {sim_steps} steps) …",
+                  end=" ", flush=True)
+
+            with torch.no_grad():
+                simulated = rollout_model(
+                    model, initial_state, sim_steps, dataset.dt,
+                    control=ctrl,
+                )
+                # Compute aggregate FC for grid plots
+                fc_per_subject = compute_static_fc(simulated)
+                fc_per_model[mname][cv] = fisher_batch_average(fc_per_subject)
+
+                # Full metric suite against empirical target timeseries
+                accumulator = MetricAccumulator()
+                accumulate_timeseries_metrics(
+                    accumulator, simulated, target_ts, eval_modules, per_sample=False,
+                )
+                all_keys = sorted(set(EVAL_METRIC_KEYS) | set(accumulator.sums.keys()))
+                batch_metrics = accumulator.summary(keys=all_keys, include_std=True)
+
+            cond_metrics[mname][cv] = {
+                k: v for k, v in batch_metrics.items()
+                if v is not None and not (isinstance(v, float) and math.isnan(v))
+            }
+            fc_corr = batch_metrics.get("fc_correlation", float("nan"))
+            fc_mse = batch_metrics.get("fc_mse", float("nan"))
+            print(f"FC corr={fc_corr:.3f}  MSE={fc_mse:.4f}")
 
     print_section("Generating figures")
     _plot_fc_grid(fc_per_model, empirical_fc_per_ctrl, save_path=figures_dir / "lsd" / "control_fc_grid.pdf")
@@ -967,8 +1026,16 @@ def run_compare_conditions(
     print_section("Saving metrics and LaTeX table")
     results_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = results_dir / "lsd_control_metrics.json"
+    # Convert to JSON-safe format (drop non-serializable values)
+    json_metrics: dict[str, dict[str, dict[str, float]]] = {}
+    for mname, per_cv in cond_metrics.items():
+        json_metrics[mname] = {}
+        for cv, m in per_cv.items():
+            json_metrics[mname][str(cv)] = {
+                k: round(v, 6) for k, v in m.items() if isinstance(v, (int, float))
+            }
     with metrics_path.open("w", encoding="utf-8") as fh:
-        json.dump(cond_metrics, fh, indent=2, sort_keys=True)
+        json.dump(json_metrics, fh, indent=2, sort_keys=True)
     print(f"  Metrics → {metrics_path}")
 
     latex = _build_lsd_latex_table(cond_metrics)
@@ -980,16 +1047,16 @@ def run_compare_conditions(
     print_section("Results summary")
     ctrl_short = {0: "Placebo", 1: "LSD+Ket.", 2: "LSD"}
     header = f"{'Model':<35}" + "".join(
-        f"  {ctrl_short[cv]:>14}" for cv in ctrl_values if cv in empirical_fc_per_ctrl
+        f"  {ctrl_short[cv]:>14}" for cv in ctrl_values if cv in subjects_per_ctrl
     )
     print(header + "  (FC corr ↑)")
     print("-" * len(header))
     for mname in models:
         row = f"{mname:<35}"
         for cv in ctrl_values:
-            if cv not in empirical_fc_per_ctrl:
+            if cv not in subjects_per_ctrl:
                 continue
-            corr = cond_metrics[mname].get(cv, {}).get("fc_corr", float("nan"))
+            corr = cond_metrics[mname].get(cv, {}).get("fc_correlation", float("nan"))
             row += f"  {corr:>14.4f}"
         print(row)
 
@@ -1129,7 +1196,7 @@ def run_paper_pipeline(
         table_label = "tab:model_comparison"
     dataset_figures_dir = FIGURES_DIR / dataset_type
 
-    print_section("Step 1/3: Updating LaTeX tables")
+    print_section("Step 1/4: Updating LaTeX tables")
     try:
         run_update_tables(metrics_json=metrics_json, table_label=table_label)
         results["update_tables"] = "ok"
@@ -1137,7 +1204,7 @@ def run_paper_pipeline(
         print(f"  Warning: update_paper_tables failed: {exc}")
         results["update_tables"] = f"error: {exc}"
 
-    print_section("Step 2/3: Comparing models (inter + intra patient)")
+    print_section("Step 2/4: Comparing models (inter + intra patient)")
     checkpoints = _discover_checkpoints(dataset_type, checkpoint_dir, explicit_checkpoints)
 
     if checkpoints:
@@ -1162,7 +1229,7 @@ def run_paper_pipeline(
         results["compare_models"] = "skipped"
 
     if dataset_type == "lsd":
-        print_section("Step 3/3: Comparing control conditions (LSD)")
+        print_section("Step 3/4: Comparing control conditions (LSD)")
         if checkpoints:
             try:
                 run_compare_conditions(
@@ -1180,8 +1247,16 @@ def run_paper_pipeline(
             print("  Skipped: no LSD checkpoints found.")
             results["compare_control_conditions"] = "skipped"
     else:
-        print_section("Step 3/3: Compare control conditions — skipped (not LSD)")
+        print_section("Step 3/4: Compare control conditions — skipped (not LSD)")
         results["compare_control_conditions"] = "skipped (not LSD)"
+
+    print_section("Step 4/4: Plotting metrics over epochs")
+    try:
+        run_plot_metrics(dataset_type=dataset_type, save_dir=dataset_figures_dir)
+        results["plot_metrics"] = "ok"
+    except Exception as exc:
+        print(f"  Warning: plot_metrics failed: {exc}")
+        results["plot_metrics"] = f"error: {exc}"
 
     print_section("PAPER PIPELINE COMPLETED")
     for step, status in results.items():
