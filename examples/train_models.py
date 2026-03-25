@@ -100,6 +100,8 @@ def _apply_common_cfg_overrides(cfg, args: argparse.Namespace) -> None:
         cfg.device = args.device
     if args.n_epochs is not None:
         cfg.n_epochs = args.n_epochs
+    if args.group_size is not None:
+        cfg.group_size = args.group_size
 
 
 def _apply_dataset_cfg_overrides(cfg, args: argparse.Namespace) -> None:
@@ -203,10 +205,10 @@ def _post_training(
 
     # --- evaluate all splits consistently ---
     train_metrics = precomputed_train_metrics or evaluate_model_loader_metrics(
-        model, train_loader, cfg, n_steps=window_size, n_simulations=1,
+        model, train_loader, cfg, n_steps=window_size,
     )
     val_metrics = precomputed_val_metrics or evaluate_model_loader_metrics(
-        model, val_loader, cfg, n_steps=window_size, n_simulations=1,
+        model, val_loader, cfg, n_steps=window_size,
     )
     test_inter_metrics = evaluate_model_loader_metrics(
         model, test_inter_loader, cfg, n_steps=window_size, return_std=True,
@@ -416,15 +418,13 @@ def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
             hopf_model,
             train_loader,
             cfg,
-            n_steps=window_size,
-            n_simulations=1,
+            n_steps=window_size
         )
         val_metrics_quick = evaluate_model_loader_metrics(
             hopf_model,
             val_loader,
             cfg,
-            n_steps=window_size,
-            n_simulations=1,
+            n_steps=window_size
         )
         wandb_log(
             {
@@ -529,6 +529,7 @@ def _build_parser() -> argparse.ArgumentParser:
         p.add_argument("--device", type=str, default=None, help="Device (auto, cuda, cpu)")
         p.add_argument("--skip-figures", action="store_true", help="Skip final figure generation")
         p.add_argument("--n-epochs", type=int, default=None, help="Override number of training epochs")
+        p.add_argument("--group-size", type=int, default=None, help="Samples per group for metric evaluation (0 = full batch)")
         add_dataset_args(p)
 
     backprop = subparsers.add_parser("backprop", help="Train NSDE/Hopf/Hybrid Hopf with backpropagation")

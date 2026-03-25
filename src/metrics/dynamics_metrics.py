@@ -22,6 +22,7 @@ from ._utils import (
     align_batch_and_time,
     ensure_batch,
     fisher_batch_average,
+    reshape_for_groups,
     to_real,
     upper_tri_vec,
     zscore,
@@ -435,7 +436,7 @@ class FCD(nn.Module):
         return (pred_fcd - targ_fcd).pow(2).mean(dim=(-1, -2)).mean()
 
     @torch.no_grad()
-    def evaluate(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> dict:
+    def evaluate(self, ts_pred: torch.Tensor, ts_target: torch.Tensor, group_size: int = 0) -> dict:
         ts_pred_b = ensure_batch(ts_pred)
         ts_target_b = ensure_batch(ts_target)
         B = min(ts_pred_b.shape[0], ts_target_b.shape[0])
@@ -484,7 +485,7 @@ class PhFCD(nn.Module):
         return (pred_phfcd - targ_phfcd).pow(2).mean(dim=(-1, -2)).mean()
 
     @torch.no_grad()
-    def evaluate(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> dict:
+    def evaluate(self, ts_pred: torch.Tensor, ts_target: torch.Tensor, group_size: int = 0) -> dict:
         pred = ensure_batch(ts_pred)
         target = ensure_batch(ts_target)
         B = min(pred.shape[0], target.shape[0])
@@ -517,7 +518,7 @@ class Metastability(nn.Module):
         return torch.abs(metastability_value(ts_pred) - metastability_value(ts_target))
 
     @torch.no_grad()
-    def evaluate(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> dict:
+    def evaluate(self, ts_pred: torch.Tensor, ts_target: torch.Tensor, group_size: int = 0) -> dict:
         return {"metastability_diff": self(ts_pred, ts_target).item()}
 
 
@@ -528,19 +529,21 @@ class PhaseFC(nn.Module):
     ``evaluate()`` returns ``{"phase_fc_correlation": float}`` (higher is better).
     """
 
-    def forward(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> torch.Tensor:
-        fc_pred = fisher_batch_average(phase_coherence_fc(ts_pred))
-        fc_target = fisher_batch_average(phase_coherence_fc(ts_target))
+    def forward(self, ts_pred: torch.Tensor, ts_target: torch.Tensor, group_size: int = 0) -> torch.Tensor:
+        fc_pred = reshape_for_groups(phase_coherence_fc(ts_pred), group_size)
+        fc_target = reshape_for_groups(phase_coherence_fc(ts_target), group_size)
+        fc_pred = fisher_batch_average(fc_pred)
+        fc_target = fisher_batch_average(fc_target)
         v_pred = upper_tri_vec(fc_pred, k=1)
         v_target = upper_tri_vec(fc_target, k=1)
-        if v_pred.numel() < 2:
+        if v_pred.shape[-1] < 2:
             return torch.tensor(float("nan"), device=ts_pred.device, dtype=ts_pred.real.dtype)
-        p = v_pred - v_pred.mean()
-        t = v_target - v_target.mean()
-        num = (p * t).sum()
-        den = torch.sqrt((p ** 2).sum() * (t ** 2).sum()) + 1e-8
-        return 1.0 - num / den
+        p = v_pred - v_pred.mean(dim=-1, keepdim=True)
+        t = v_target - v_target.mean(dim=-1, keepdim=True)
+        num = (p * t).sum(dim=-1)
+        den = torch.sqrt((p ** 2).sum(dim=-1) * (t ** 2).sum(dim=-1)) + 1e-8
+        return (1.0 - num / den).mean()
 
     @torch.no_grad()
-    def evaluate(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> dict:
-        return {"phase_fc_correlation": 1.0 - self(ts_pred, ts_target).item()}
+    def evaluate(self, ts_pred: torch.Tensor, ts_target: torch.Tensor, group_size: int = 0) -> dict:
+        return {"phase_fc_correlation": 1.0 - self(ts_pred, ts_target, group_size=group_size).item()}

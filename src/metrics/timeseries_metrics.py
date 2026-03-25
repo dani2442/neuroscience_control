@@ -38,7 +38,7 @@ class PowerSpectrumDistance(nn.Module):
         return ((pp - pt) ** 2).mean()
 
     @torch.no_grad()
-    def evaluate(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> dict:
+    def evaluate(self, ts_pred: torch.Tensor, ts_target: torch.Tensor, group_size: int = 0) -> dict:
         return {"power_spectrum_distance": self(ts_pred, ts_target).item()}
 
 
@@ -60,7 +60,7 @@ class TemporalCorrelation(nn.Module):
         return 1.0 - (num / den).mean()
 
     @torch.no_grad()
-    def evaluate(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> dict:
+    def evaluate(self, ts_pred: torch.Tensor, ts_target: torch.Tensor, group_size: int = 0) -> dict:
         return {"temporal_correlation": 1.0 - self(ts_pred, ts_target).item()}
 
 
@@ -76,7 +76,7 @@ class AutocorrelationDistance(nn.Module):
         return (_autocorr(pred, max_lag) - _autocorr(target, max_lag)).pow(2).mean()
 
     @torch.no_grad()
-    def evaluate(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> dict:
+    def evaluate(self, ts_pred: torch.Tensor, ts_target: torch.Tensor, group_size: int = 0) -> dict:
         return {"autocorr_distance": self(ts_pred, ts_target).item()}
 
 

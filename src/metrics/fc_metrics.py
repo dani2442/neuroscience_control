@@ -9,7 +9,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from ._utils import ensure_batch, fisher_batch_average, to_real, upper_tri_vec
+from ._utils import ensure_batch, fisher_batch_average, reshape_for_groups, to_real, upper_tri_vec
 
 
 def compute_static_fc(ts: torch.Tensor) -> torch.Tensor:
@@ -59,23 +59,26 @@ class FCCorrelation(nn.Module):
         ts_pred: torch.Tensor,
         ts_target: torch.Tensor,
         fc_target: torch.Tensor | None = None,
+        group_size: int = 0,
     ) -> torch.Tensor:
-        fc_pred = fisher_batch_average(compute_static_fc(ts_pred))
+        fc_pred = reshape_for_groups(compute_static_fc(ts_pred), group_size)
         if fc_target is None:
             fc_target = compute_static_fc(ts_target)
+        fc_target = reshape_for_groups(fc_target, group_size)
+        fc_pred = fisher_batch_average(fc_pred)
         fc_target = fisher_batch_average(fc_target)
 
         pred_flat = upper_tri_vec(fc_pred, k=1)
         targ_flat = upper_tri_vec(fc_target, k=1)
-        pred_c = pred_flat - pred_flat.mean()
-        targ_c = targ_flat - targ_flat.mean()
-        num = (pred_c * targ_c).sum()
-        den = torch.sqrt((pred_c ** 2).sum() * (targ_c ** 2).sum()) + 1e-8
-        return 1.0 - num / den
+        pred_c = pred_flat - pred_flat.mean(dim=-1, keepdim=True)
+        targ_c = targ_flat - targ_flat.mean(dim=-1, keepdim=True)
+        num = (pred_c * targ_c).sum(dim=-1)
+        den = torch.sqrt((pred_c ** 2).sum(dim=-1) * (targ_c ** 2).sum(dim=-1)) + 1e-8
+        return (1.0 - num / den).mean()
 
     @torch.no_grad()
-    def evaluate(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> dict:
-        return {"fc_correlation": 1.0 - self(ts_pred, ts_target).item()}
+    def evaluate(self, ts_pred: torch.Tensor, ts_target: torch.Tensor, group_size: int = 0) -> dict:
+        return {"fc_correlation": 1.0 - self(ts_pred, ts_target, group_size=group_size).item()}
 
 
 class FCMSE(nn.Module):
@@ -95,15 +98,18 @@ class FCMSE(nn.Module):
         ts_pred: torch.Tensor,
         ts_target: torch.Tensor,
         fc_target: torch.Tensor | None = None,
+        group_size: int = 0,
     ) -> torch.Tensor:
-        fc_pred = fisher_batch_average(compute_static_fc(ts_pred))
+        fc_pred = reshape_for_groups(compute_static_fc(ts_pred), group_size)
         if fc_target is None:
             fc_target = compute_static_fc(ts_target)
+        fc_target = reshape_for_groups(fc_target, group_size)
+        fc_pred = fisher_batch_average(fc_pred)
         fc_target = fisher_batch_average(fc_target)
         pred_flat = upper_tri_vec(fc_pred, k=1)
         targ_flat = upper_tri_vec(fc_target, k=1)
-        return ((pred_flat - targ_flat) ** 2).mean()
+        return ((pred_flat - targ_flat) ** 2).mean(dim=-1).mean()
 
     @torch.no_grad()
-    def evaluate(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> dict:
-        return {"fc_mse": self(ts_pred, ts_target).item()}
+    def evaluate(self, ts_pred: torch.Tensor, ts_target: torch.Tensor, group_size: int = 0) -> dict:
+        return {"fc_mse": self(ts_pred, ts_target, group_size=group_size).item()}

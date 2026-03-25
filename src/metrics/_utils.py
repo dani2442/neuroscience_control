@@ -72,36 +72,66 @@ def fisher_batch_average(
     """Average correlation-like matrices across batch in Fisher-z space.
 
     The off-diagonal entries are clipped to ``(-1 + eps, 1 - eps)``,
-    transformed with ``atanh``, averaged across the leading batch
-    dimension, and mapped back with ``tanh``. The diagonal is restored
-    from the arithmetic batch mean so identity diagonals remain exact.
+    transformed with ``atanh``, averaged across the averaging dimension,
+    and mapped back with ``tanh``. The diagonal is restored from the
+    arithmetic batch mean so identity diagonals remain exact.
+
+    Supports three layouts:
+
+    * ``(n, n)`` — returned unchanged.
+    * ``(batch, n, n)`` — averaged over batch → ``(n, n)``.
+    * ``(groups, samples, n, n)`` — averaged over the *samples* axis
+      → ``(groups, n, n)`` (group-level FC).
 
     Args:
-        matrices: ``(batch, n, n)`` or ``(n, n)`` tensor.
+        matrices: ``(n, n)``, ``(batch, n, n)``, or
+            ``(groups, samples, n, n)`` tensor.
         eps: Numerical guard for ``atanh`` near ``±1``.
 
     Returns:
-        ``(n, n)`` tensor.
+        ``(n, n)`` for 2-D/3-D input, ``(groups, n, n)`` for 4-D input.
     """
     matrices = to_real(matrices)
     if matrices.ndim == 2:
         return matrices
-    if matrices.ndim != 3:
+    if matrices.ndim not in (3, 4):
         raise ValueError(
-            "Expected correlation matrices with shape (batch, n, n) or (n, n), "
-            f"got {matrices.shape}."
+            "Expected correlation matrices with shape (batch, n, n), "
+            f"(groups, samples, n, n), or (n, n), got {matrices.shape}."
         )
 
+    # dim=-3 is the samples-within-group axis for 4-D (…, S, N, N)
+    # and the batch axis for 3-D (B, N, N) — one expression handles both.
+    avg_dim = -3
+
     clipped = matrices.clamp(min=-1.0 + eps, max=1.0 - eps)
-    fisher_mean = torch.atanh(clipped).mean(dim=0)
+    fisher_mean = torch.atanh(clipped).mean(dim=avg_dim)
     averaged = torch.tanh(fisher_mean)
 
-    diag = matrices.diagonal(dim1=-2, dim2=-1).mean(dim=0)
+    # .diagonal() collapses last two dims → one fewer dimension,
+    # so the averaging axis shifts from -3 to -2.
+    diag = matrices.diagonal(dim1=-2, dim2=-1).mean(dim=-2)
     diag_matrix = torch.diag_embed(diag)
     off_diag_mask = (~torch.eye(
         averaged.shape[-1], dtype=torch.bool, device=averaged.device
     )).to(averaged.dtype)
     return averaged * off_diag_mask + diag_matrix
+
+
+def reshape_for_groups(
+    matrices: torch.Tensor,
+    group_size: int,
+) -> torch.Tensor:
+    """Reshape ``(B, ...)`` → ``(G, group_size, ...)`` for group-level averaging.
+
+    Trims trailing samples so that ``B`` is divisible by *group_size*.
+    Returns the input unchanged when *group_size* ≤ 0 or ``B ≤ group_size``.
+    """
+    if group_size <= 0 or matrices.shape[0] <= group_size:
+        return matrices
+    B = matrices.shape[0]
+    G = B // group_size
+    return matrices[: G * group_size].reshape(G, group_size, *matrices.shape[1:])
 
 
 # ---------------------------------------------------------------------------

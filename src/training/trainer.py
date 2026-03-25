@@ -216,7 +216,10 @@ class Trainer:
         loss: torch.Tensor,
         loss_components: Dict[str, torch.Tensor],
     ) -> Dict[str, float]:
-        metrics = evaluate_timeseries_metrics(ts_pred, ts_target, self.eval_metrics)
+        group_size = getattr(self.cfg, "group_size", 0) if self.cfg is not None else 0
+        metrics = evaluate_timeseries_metrics(
+            ts_pred, ts_target, self.eval_metrics, group_size=group_size,
+        )
         metrics["loss"] = float(loss.item())
         for name, value in loss_components.items():
             metrics[name] = float(value.item())
@@ -530,12 +533,13 @@ class Trainer:
                     denoise_f_hi=self.cfg.denoise_f_hi if self.cfg is not None else None,
                 )
 
+                group_size = getattr(self.cfg, "group_size", 0) if self.cfg is not None else 0
                 accumulate_timeseries_metrics(
                     batch_accumulator,
                     simulated,
                     target_window,
                     self.eval_metrics,
-                    per_sample=False,
+                    group_size=group_size,
                 )
 
                 loss, loss_components = self.loss_fn(simulated, target_window)

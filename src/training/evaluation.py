@@ -178,6 +178,7 @@ def evaluate_timeseries_metrics(
     eval_metrics: list[torch.nn.Module],
     *,
     return_std: bool = False,
+    group_size: int = 0,
 ) -> Dict[str, float]:
     """Evaluate the canonical metric suite on a prediction/target pair."""
     accumulator = MetricAccumulator()
@@ -186,7 +187,7 @@ def evaluate_timeseries_metrics(
         ts_pred,
         ts_target,
         eval_metrics,
-        per_sample=False,
+        group_size=group_size,
     )
 
     all_keys = sorted(set(EVAL_METRIC_KEYS) | set(accumulator.sums.keys()))
@@ -199,22 +200,19 @@ def accumulate_timeseries_metrics(
     ts_target: torch.Tensor,
     eval_metrics: list[torch.nn.Module],
     *,
-    per_sample: bool = False,
+    group_size: int = 0,
 ) -> None:
-    """Update an accumulator with either batch-level or per-sample metrics."""
+    """Update an accumulator with metric results.
 
-    if per_sample:
-        batch_size = ts_pred.shape[0]
-        for i in range(batch_size):
-            sample_metrics: Dict[str, float] = {}
-            for module in eval_metrics:
-                sample_metrics.update(module.evaluate(ts_pred[i : i + 1], ts_target[i : i + 1]))
-            accumulator.update(sample_metrics)
-    else:
-        batch_metrics: Dict[str, float] = {}
-        for module in eval_metrics:
-            batch_metrics.update(module.evaluate(ts_pred, ts_target))
-        accumulator.update(batch_metrics)
+    *group_size* is forwarded to each metric's ``evaluate()`` method.
+    Metrics that aggregate across the batch (e.g. FC via Fisher-z
+    averaging) reshape ``(B, …)`` → ``(G, group_size, …)`` internally
+    and average over groups — no Python loop over groups is needed here.
+    """
+    batch_metrics: Dict[str, float] = {}
+    for module in eval_metrics:
+        batch_metrics.update(module.evaluate(ts_pred, ts_target, group_size=group_size))
+    accumulator.update(batch_metrics)
 
 
 def evaluate_fc_metrics(

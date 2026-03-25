@@ -82,17 +82,18 @@ class TrainingConfig:
     coupling_strength: float = 0.1
     
     # Training settings
-    n_epochs: int = 20
+    n_epochs: int = 30
     lr: float = 1e-3
     loss_weights: dict = field(default_factory=lambda: {
         "fc_correlation": 1.0, "fc_mse": 1.0, "l2": 0.0,
-        "amplitude": 1.0, "omega": 1.0, "power_spectrum": 0.0,
+        "amplitude": 1.0, "omega": 0.0, "power_spectrum": 0.0,
         "temporal_correlation": 0.0, "autocorrelation": 0.0,
         "fcd": 1.0, "phfcd": 1.0, "phase_fc_correlation": 1.0,
         "metastability": 1.0, "fdm": 0.25,
     })
     early_stopping_patience: int = 15
     n_steps: int = 50
+    group_size: int = 0  # Samples per group for metric evaluation (0 = full batch)
 
     # FDM loss hyperparameters
     fdm_n_pairs: int = 32

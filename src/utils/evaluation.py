@@ -60,6 +60,8 @@ def generate_fc_figure(
     dt_min: float | None = 0.1,
     use_adjoint: bool = False,
     adjoint_method: str | None = "adjoint_euler",
+    denoise_f_lo: float | None = None,
+    denoise_f_hi: float | None = None,
     *,
     title: str,
     default_name: str,
@@ -84,6 +86,7 @@ def generate_fc_figure(
         fwd_kwargs["control"] = control[:n_fc_paths]
     with torch.no_grad():
         fc_ts = model.forward(**fwd_kwargs)
+        fc_ts = apply_denoise(fc_ts, dt, denoise_f_lo, denoise_f_hi)
         fc_pred = model.compute_fc(fc_ts)
         fc_mean = fisher_batch_average(fc_pred)
 
@@ -377,6 +380,7 @@ def evaluate_model_loader_metrics(
         fcd_win_sec=cfg.fcd_win_sec,
         fcd_step_sec=cfg.fcd_step_sec,
     )
+    group_size = getattr(cfg, "group_size", 0)
     batch_accumulator = MetricAccumulator()
 
     for batch in loader:
@@ -403,7 +407,7 @@ def evaluate_model_loader_metrics(
                 simulated,
                 target_window,
                 eval_modules,
-                per_sample=False,
+                group_size=group_size,
             )
 
     # Return all computed metrics (use EVAL_METRIC_KEYS for formatted reports).

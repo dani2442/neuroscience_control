@@ -33,6 +33,7 @@ dependencies = [
     "numpy>=1.26",
     "plotly>=5.20",
     "scipy>=1.11",
+    "seaborn>=0.13.2",
     "torch>=2.2",
     "torchsde>=0.2.6",
     "tqdm>=4.66",

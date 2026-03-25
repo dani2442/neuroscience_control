@@ -439,19 +439,6 @@ def _load_all_checkpoints(
 _as_numeric = as_numeric_metrics  # backward-compat alias used below
 
 
-def _fc_corr_and_mse(fc_pred: "torch.Tensor", fc_target: "torch.Tensor"):
-    """Upper-triangle Pearson correlation and MSE between two FC matrices."""
-    from src.metrics._utils import upper_tri_vec
-    p = upper_tri_vec(fc_pred, k=1)
-    t = upper_tri_vec(fc_target, k=1)
-    pc, tc = p - p.mean(dim=-1, keepdim=True), t - t.mean(dim=-1, keepdim=True)
-    corr = ((pc * tc).sum(dim=-1) / (
-        (pc**2).sum(dim=-1).sqrt() * (tc**2).sum(dim=-1).sqrt() + 1e-8
-    )).mean().item()
-    mse = ((p - t) ** 2).mean().item()
-    return corr, mse
-
-
 def _generate_comparison_figures(
     models: dict,
     dataset,
@@ -716,24 +703,6 @@ CONDITION_COLORS: dict[int, str] = {
 }
 
 
-def _simulate_fc(model, initial_states, ctrl_val: int, n_steps: int, dt: float, device: str) -> torch.Tensor:
-    """Simulate *model* with constant control u=ctrl_val and return mean FC."""
-    n_paths = initial_states.shape[0]
-    if getattr(model, "n_control_dims", 0) > 0:
-        ctrl = torch.full((n_paths, 1), float(ctrl_val), dtype=torch.float32, device=device)
-    else:
-        ctrl = None
-
-    fwd_kwargs: dict[str, Any] = dict(initial_state=initial_states, n_steps=n_steps, dt=dt)
-    if ctrl is not None:
-        fwd_kwargs["control"] = ctrl
-
-    with torch.no_grad():
-        ts = model.forward(**fwd_kwargs)
-        fc_per_subject = model.compute_fc(ts)
-    return fisher_batch_average(fc_per_subject)
-
-
 def _fc_to_numpy(fc: torch.Tensor) -> np.ndarray:
     arr = fc.detach().cpu().numpy()
     return arr.real if np.iscomplexobj(arr) else arr
@@ -874,6 +843,7 @@ def run_compare_conditions(
     model_labels: list[str] | None = None,
     ctrl_values: list[int] | None = None,
     output_dir: str | None = None,
+    group_size: int = 0,
 ) -> None:
     """Compare model-simulated FC under different LSD control conditions.
 
@@ -997,7 +967,8 @@ def run_compare_conditions(
                 # Full metric suite against empirical target timeseries
                 accumulator = MetricAccumulator()
                 accumulate_timeseries_metrics(
-                    accumulator, simulated, target_ts, eval_modules, per_sample=False,
+                    accumulator, simulated, target_ts, eval_modules,
+                    group_size=group_size,
                 )
                 all_keys = sorted(set(EVAL_METRIC_KEYS) | set(accumulator.sums.keys()))
                 batch_metrics = accumulator.summary(keys=all_keys, include_std=True)
@@ -1185,6 +1156,7 @@ def run_paper_pipeline(
     output_path: str = "results/comparison_results.json",
     n_steps: int = 240,
     n_paths: int = 10,
+    group_size: int = 4,
 ) -> dict[str, Any]:
     """Run the full post-training paper pipeline."""
     print_section("POST-TRAINING PAPER PIPELINE")
@@ -1238,6 +1210,7 @@ def run_paper_pipeline(
                     n_steps=n_steps,
                     n_paths=n_paths,
                     device=device,
+                    group_size=group_size,
                 )
                 results["compare_control_conditions"] = "ok"
             except Exception as exc:
@@ -1281,6 +1254,7 @@ def _run_pipeline(args: argparse.Namespace) -> dict[str, object]:
         output_path=getattr(args, "output_path", "results/comparison_results.json"),
         n_steps=getattr(args, "n_steps", 240),
         n_paths=getattr(args, "n_paths", 10),
+        group_size=getattr(args, "group_size", 4),
     )
     return {"pipeline_results": result}
 
@@ -1331,6 +1305,7 @@ def _run_compare_conditions(args: argparse.Namespace) -> dict[str, object]:
         model_labels=getattr(args, "model_labels", None),
         ctrl_values=getattr(args, "ctrl_values", None),
         output_dir=getattr(args, "output_dir", None),
+        group_size=getattr(args, "group_size", 0),
     )
     return {"compare_conditions": "done"}
 
@@ -1343,6 +1318,7 @@ def _add_pipeline_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--device", type=str, default=None, help="Device (auto, cuda, cpu)")
     p.add_argument("--no-wandb", action="store_true", help="Disable wandb logging")
     p.add_argument("--checkpoint-dir", type=str, default="checkpoints", help="Checkpoint directory")
+    p.add_argument("--group-size", type=int, default=0, help="Samples per group for metric evaluation (0 = full batch)")
     add_dataset_args(p)
 
 
