@@ -78,7 +78,6 @@ from src.utils.visualization import (
     FIGURES_DIR,
     create_comparison_report,
     plot_fc_comparison,
-    plot_timeseries,
 )
 
 
@@ -454,11 +453,14 @@ def _generate_comparison_figures(
     figures: dict[str, Any] = {}
     n_paths = min(10, dataset.timeseries.shape[0])
     initial_state = dataset.timeseries[:n_paths, :, 0]
+    fc_per_model_avg: dict[str, np.ndarray] = {}
 
     for name, model in models.items():
         with torch.no_grad():
             ts = model.forward(initial_state=initial_state, n_steps=n_timepoints)
             fc_pred = model.compute_fc(ts)  # (n_paths, n_rois, n_rois) — fisher_batch_average applied in plot_fc_comparison
+
+        fc_per_model_avg[name] = _fc_to_numpy(fisher_batch_average(fc_pred))
 
         stem = f"{name.lower().replace(' ', '_')}_fc_comparison"
         fig = plot_fc_comparison(
@@ -471,16 +473,11 @@ def _generate_comparison_figures(
         wandb_log_figure(f"figures/{name}_fc_comparison", fig, use_wandb=use_wandb)
         plt.close()
 
-        stem = f"{name.lower().replace(' ', '_')}_timeseries"
-        fig = plot_timeseries(
-            ts[0].real, n_rois=5,
-            title=f"{name} - Simulated Timeseries",
-            save_path=str(out_dir / f"{stem}.pdf"),
-            use_pdf=True,
-        )
-        figures[f"{name}_ts"] = fig
-        wandb_log_figure(f"figures/{name}_timeseries", fig, use_wandb=use_wandb)
-        plt.close()
+    emp_fc_avg = _fc_to_numpy(fisher_batch_average(target_fc))
+    _plot_fc_per_roi(
+        fc_per_model_avg, emp_fc_avg,
+        save_path=out_dir / "fc_per_roi_comparison.pdf",
+    )
 
     fig = create_comparison_report(
         models=models, target_fc=target_fc, n_timepoints=n_timepoints,
@@ -770,8 +767,7 @@ def _plot_fc_diff(fc_per_ctrl, model_name: str, *, baseline_ctrl: int = 0, save_
             ax.text(0.5, 0.5, "N/A", ha="center", va="center", transform=ax.transAxes)
             continue
         diff = _fc_to_numpy(fc) - base_np
-        vmax_d = max(abs(diff.min()), abs(diff.max()), 1e-6)
-        im = ax.imshow(diff, cmap="RdBu_r", vmin=-vmax_d, vmax=vmax_d)
+        im = ax.imshow(diff, cmap="RdBu_r", vmin=-0.5, vmax=0.5)
         plt.colorbar(im, ax=ax, fraction=0.046)
         ax.set_title(f"ΔFC: {CONDITION_LABELS[cv]} − {CONDITION_LABELS[baseline_ctrl]}", fontsize=9)
         ax.set_xlabel("ROI")
@@ -782,6 +778,85 @@ def _plot_fc_diff(fc_per_ctrl, model_name: str, *, baseline_ctrl: int = 0, save_
     fig.savefig(save_path, bbox_inches="tight", dpi=150)
     plt.close(fig)
     print(f"  Saved ΔFC plot → {save_path}")
+
+
+def _plot_fc_per_roi(
+    fc_per_model: dict[str, np.ndarray],
+    empirical_fc: np.ndarray,
+    *,
+    save_path: Path,
+) -> None:
+    """Single plot: mean FC per ROI (averaged over connections) — empirical vs models.
+
+    X-axis = ROI index, y-axis = mean FC of that ROI's row.
+    """
+    fig, ax = plt.subplots(figsize=(10, 4))
+    colors = plt.cm.tab10.colors  # type: ignore[attr-defined]
+    x = np.arange(empirical_fc.shape[0])
+
+    ax.plot(x, empirical_fc.mean(axis=1), color="black", linewidth=1.8, label="Empirical", zorder=3)
+    for mi, (mname, fc_np) in enumerate(fc_per_model.items()):
+        ax.plot(x, fc_np.mean(axis=1), color=colors[mi % len(colors)],
+                linewidth=1.1, alpha=0.85, label=mname)
+
+    ax.axhline(0, color="gray", linewidth=0.5, linestyle="--")
+    ax.set_xlabel("ROI")
+    ax.set_ylabel("Mean FC")
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.25)
+    plt.suptitle("Mean FC per ROI: Empirical vs Simulated", fontsize=12)
+    plt.tight_layout()
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(save_path, bbox_inches="tight", dpi=150)
+    plt.close(fig)
+    print(f"  Saved per-ROI FC comparison → {save_path}")
+
+
+def _plot_fc_delta_per_roi(
+    fc_per_ctrl: dict[int, torch.Tensor],
+    model_name: str,
+    *,
+    baseline_ctrl: int = 0,
+    save_path: Path,
+) -> None:
+    """Single plot: mean ΔFC per ROI (condition − baseline) for one model.
+
+    X-axis = ROI index, y-axis = mean delta-FC of that ROI's row.
+    """
+    baseline_fc = fc_per_ctrl.get(baseline_ctrl)
+    if baseline_fc is None:
+        return
+    base_np = _fc_to_numpy(baseline_fc)
+    ctrl_vals = [cv for cv in sorted(CONDITION_LABELS.keys()) if cv != baseline_ctrl]
+    if not ctrl_vals:
+        return
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    x = np.arange(base_np.shape[0])
+
+    for cv in ctrl_vals:
+        fc = fc_per_ctrl.get(cv)
+        if fc is None:
+            continue
+        delta = _fc_to_numpy(fc) - base_np          # (n_rois, n_rois)
+        label = CONDITION_LABELS[cv].split("(")[0].strip()
+        ax.plot(x, delta.mean(axis=1), color=CONDITION_COLORS[cv],
+                linewidth=1.1, label=f"Δ{label}")
+
+    ax.axhline(0, color="gray", linewidth=0.5, linestyle="--")
+    ax.set_ylim(-0.5, 0.5)
+    ax.set_xlabel("ROI")
+    ax.set_ylabel("Mean ΔFC")
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.25)
+    plt.suptitle(
+        f"{model_name} — Mean ΔFC per ROI (vs {CONDITION_LABELS[baseline_ctrl]})", fontsize=12
+    )
+    plt.tight_layout()
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(save_path, bbox_inches="tight", dpi=150)
+    plt.close(fig)
+    print(f"  Saved mean ΔFC per-ROI → {save_path}")
 
 
 def _plot_fc_corr_bar(metrics, *, save_path: Path) -> None:
@@ -991,6 +1066,15 @@ def run_compare_conditions(
     _plot_fc_diff(
         empirical_fc_per_ctrl, model_name="Empirical", baseline_ctrl=0,
         save_path=figures_dir / "lsd" / "fc_delta_empirical.pdf",
+    )
+    for mname in models:
+        _plot_fc_delta_per_roi(
+            fc_per_model[mname], model_name=mname, baseline_ctrl=0,
+            save_path=figures_dir / "lsd" / f"fc_delta_per_roi_{mname.lower().replace(' ', '_')}.pdf",
+        )
+    _plot_fc_delta_per_roi(
+        empirical_fc_per_ctrl, model_name="Empirical", baseline_ctrl=0,
+        save_path=figures_dir / "lsd" / "fc_delta_per_roi_empirical.pdf",
     )
     _plot_fc_corr_bar(cond_metrics, save_path=figures_dir / "lsd" / "control_fc_corr.pdf")
 

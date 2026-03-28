@@ -144,6 +144,7 @@ def build_model(
             omega=omega,
             initial_a=cfg.initial_a,
             initial_g=cfg.initial_g,
+            initial_sigma=cfg.noise_sigma,
             drift_hidden_dim=cfg.drift_hidden_dim,
             drift_n_layers=cfg.drift_n_layers,
             device=device,
