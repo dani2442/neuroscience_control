@@ -151,14 +151,12 @@ def create_data_loaders(
     val_ratio: float = 0.15,
     seed: int = 42,
     device: str = "cpu",
-) -> Tuple[DataLoader, DataLoader, DataLoader, DataLoader]:
+    use_full_timeseries: bool = False,
+) -> Tuple[DataLoader, DataLoader, DataLoader, Optional[DataLoader]]:
     """Create train/val/test_inter/test_intra loaders with random windowing.
 
     Uses :func:`compute_split_indices` for the split (patient-aware when
     ``dataset.patient_ids`` is set).
-
-    Also creates a temporal intra-patient split: first half of training-subject
-    timeseries → training, second half → intra-patient test loader.
     """
     train_idx, val_idx, test_idx = compute_split_indices(
         dataset, train_ratio, val_ratio, seed,
@@ -184,22 +182,29 @@ def create_data_loaders(
     n_val_win = max(batch_size, n_windows_per_epoch // 4)
     n_test_win = max(batch_size, n_windows_per_epoch // 4)
 
-    # Temporal split for intra-patient test set
+    train_fc = dataset.fc_matrices[train_idx]
+    train_ctrl = ctrl[train_idx] if ctrl is not None else None
+
     T_split = dataset.n_timepoints // 2
-    train_ts  = dataset.timeseries[train_idx, :, :T_split]
-    intra_ts  = dataset.timeseries[train_idx, :, T_split:]
-    train_fc  = dataset.fc_matrices[train_idx]
-    if ctrl is not None:
-        # Control is per-subject (n_subjects, n_control_dims), not time-varying.
-        # Both temporal halves share the same per-subject control.
-        train_ctrl = ctrl[train_idx]
-        intra_ctrl = ctrl[train_idx]
+    if use_full_timeseries:
+        # Use the entire timeseries for training; intra-patient test is not applicable.
+        train_loader = _loader_from_tensors(
+            dataset.timeseries[train_idx], train_fc, train_ctrl, n_windows_per_epoch,
+        )
+        intra_loader = _loader_from_tensors(
+            dataset.timeseries[train_idx, :, T_split:], train_fc, train_ctrl, n_test_win, shuffle=False,
+        )
     else:
-        train_ctrl = intra_ctrl = None
+        train_loader = _loader_from_tensors(
+            dataset.timeseries[train_idx, :, :T_split], train_fc, train_ctrl, n_windows_per_epoch,
+        )
+        intra_loader = _loader_from_tensors(
+            dataset.timeseries[train_idx, :, T_split:], train_fc, train_ctrl, n_test_win, shuffle=False,
+        )
 
     return (
-        _loader_from_tensors(train_ts, train_fc, train_ctrl, n_windows_per_epoch),
+        train_loader,
         _loader(val_idx, n_val_win, shuffle=False),
-        _loader(test_idx, n_test_win, shuffle=False),                                      # inter-patient
-        _loader_from_tensors(intra_ts, train_fc, intra_ctrl, n_test_win, shuffle=False),   # intra-patient
+        _loader(test_idx, n_test_win, shuffle=False),  # inter-patient
+        intra_loader,                                   # intra-patient (None if use_full_timeseries)
     )

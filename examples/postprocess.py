@@ -47,6 +47,7 @@ from typing import Any
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.gridspec import GridSpec
 import numpy as np
 import torch
 
@@ -1135,19 +1136,28 @@ _EPOCH_METRICS: list[tuple[str, str]] = [
 ]
 
 
-def _plot_metrics_epochs(
-    dataset_type: str,
-    metrics_dir: str = "results/metrics",
-    save_dir: Path | None = None,
-) -> None:
-    """Load the latest metrics JSON for each model matching *dataset_type*
-    and plot every key metric over epochs (log y-axis where applicable).
-    """
-    metrics_root = Path(metrics_dir)
-    out_dir = save_dir if save_dir is not None else FIGURES_DIR / dataset_type
-    out_dir.mkdir(parents=True, exist_ok=True)
+def _smooth(values: list[float], window: int = 5) -> list[float]:
+    """Apply a symmetric moving-average smoothing."""
+    if window <= 1 or len(values) < window:
+        return list(values)
+    half = window // 2
+    n = len(values)
+    out: list[float] = []
+    for i in range(n):
+        lo = max(0, i - half)
+        hi = min(n, i + half + 1)
+        out.append(sum(values[lo:hi]) / (hi - lo))
+    return out
 
+
+def _load_model_stores(
+    dataset_type: str, metrics_dir: str
+) -> dict[str, MetricsStore]:
+    """Discover and load the latest MetricsStore for each model matching *dataset_type*."""
+    metrics_root = Path(metrics_dir)
     model_stores: dict[str, MetricsStore] = {}
+    if not metrics_root.exists():
+        return model_stores
     for subdir in sorted(metrics_root.iterdir()):
         if not subdir.is_dir() or dataset_type not in subdir.name:
             continue
@@ -1164,9 +1174,25 @@ def _plot_metrics_epochs(
         model_stores[label] = store
         print(f"  Loaded metrics for '{label}' from {latest.name} "
               f"({len(store.val_metrics)} epochs)")
+    return model_stores
 
+
+def _plot_metrics_epochs(
+    dataset_type: str,
+    metrics_dir: str = "results/metrics",
+    save_dir: Path | None = None,
+    smooth_window: int = 5,
+) -> None:
+    """Load the latest metrics JSON for each model matching *dataset_type*
+    and plot every key metric over epochs (log y-axis where applicable).
+    Smoothing is applied; legend is shown only on the first subplot.
+    """
+    out_dir = save_dir if save_dir is not None else FIGURES_DIR / dataset_type
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    model_stores = _load_model_stores(dataset_type, metrics_dir)
     if not model_stores:
-        print(f"  No metrics found for dataset_type='{dataset_type}' in {metrics_root}")
+        print(f"  No metrics found for dataset_type='{dataset_type}' in {metrics_dir}")
         return
 
     n_metrics = len(_EPOCH_METRICS)
@@ -1190,7 +1216,10 @@ def _plot_metrics_epochs(
             if not clean:
                 continue
             ep_arr, v_arr = zip(*clean)
-            ax.plot(ep_arr, v_arr, label=label, color=colors[ci % len(colors)], linewidth=1.5)
+            color = colors[ci % len(colors)]
+            ax.plot(ep_arr, v_arr, color=color, linewidth=0.8, alpha=0.25)
+            v_smooth = _smooth(list(v_arr), smooth_window)
+            ax.plot(ep_arr, v_smooth, label=label, color=color, linewidth=1.8)
             has_data = True
             if any(v <= 0 for v in v_arr):
                 all_pos = False
@@ -1199,7 +1228,8 @@ def _plot_metrics_epochs(
         ax.set_ylabel(mlabel)
         ax.set_title(mlabel)
         ax.grid(True, alpha=0.3)
-        ax.legend(fontsize=7)
+        if ax_idx == 0:
+            ax.legend(fontsize=7)
         if has_data and all_pos:
             ax.set_yscale("log")
 
@@ -1214,14 +1244,123 @@ def _plot_metrics_epochs(
     print(f"  Saved metrics over epochs → {save_path}")
 
 
+def _plot_metrics_epochs_split(
+    dataset_type: str,
+    metrics_dir: str = "results/metrics",
+    save_dir: Path | None = None,
+    smooth_window: int = 5,
+    figsize: tuple[float, float] = (20, 10),
+) -> None:
+    """Two-panel layout: large loss plot on the left, 3×3 grid of other
+    metrics on the right.  Legend is shown only on the loss subplot.
+    """
+    out_dir = save_dir if save_dir is not None else FIGURES_DIR / dataset_type
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    model_stores = _load_model_stores(dataset_type, metrics_dir)
+    if not model_stores:
+        print(f"  No metrics found for dataset_type='{dataset_type}' in {metrics_dir}")
+        return
+
+    loss_metric = _EPOCH_METRICS[0]       # ("loss", "Loss")
+    other_metrics = _EPOCH_METRICS[1:10]  # up to 9 others for 3×3
+
+    colors = plt.cm.tab10.colors  # type: ignore[attr-defined]
+
+    fig = plt.figure(figsize=figsize)
+    gs = GridSpec(3, 4, figure=fig, width_ratios=[1.6, 1, 1, 1], hspace=0.45, wspace=0.35)
+
+    # ── Loss plot (left column, spanning all rows) ──────────────────────
+    ax_loss = fig.add_subplot(gs[:, 0])
+    has_data_loss = False
+    all_pos_loss = True
+    for ci, (label, store) in enumerate(model_stores.items()):
+        mkey, _mlabel = loss_metric
+        val_vals = store.get_metric_history(mkey, "val")
+        if not val_vals:
+            continue
+        epochs = [e["epoch"] for e in store.val_metrics if mkey in e]
+        clean = [(ep, v) for ep, v in zip(epochs, val_vals) if v is not None and not math.isnan(v)]
+        if not clean:
+            continue
+        ep_arr, v_arr = zip(*clean)
+        color = colors[ci % len(colors)]
+        ax_loss.plot(ep_arr, v_arr, color=color, linewidth=0.8, alpha=0.25)
+        v_smooth = _smooth(list(v_arr), smooth_window)
+        ax_loss.plot(ep_arr, v_smooth, label=label, color=color, linewidth=2.0)
+        has_data_loss = True
+        if any(v <= 0 for v in v_arr):
+            all_pos_loss = False
+
+    ax_loss.set_xlabel("Epoch")
+    ax_loss.set_ylabel("Loss")
+    ax_loss.set_title("Loss", fontsize=12)
+    ax_loss.grid(True, alpha=0.3)
+    ax_loss.legend(fontsize=8)
+    if has_data_loss and all_pos_loss:
+        ax_loss.set_yscale("log")
+
+    # ── 3×3 grid (right three columns) ──────────────────────────────────
+    for idx, (mkey, mlabel) in enumerate(other_metrics):
+        row = idx // 3
+        col = 1 + (idx % 3)
+        ax = fig.add_subplot(gs[row, col])
+        has_data = False
+        all_pos = True
+        for ci, (label, store) in enumerate(model_stores.items()):
+            val_vals = store.get_metric_history(mkey, "val")
+            if not val_vals:
+                continue
+            epochs = [e["epoch"] for e in store.val_metrics if mkey in e]
+            clean = [(ep, v) for ep, v in zip(epochs, val_vals) if v is not None and not math.isnan(v)]
+            if not clean:
+                continue
+            ep_arr, v_arr = zip(*clean)
+            color = colors[ci % len(colors)]
+            ax.plot(ep_arr, v_arr, color=color, linewidth=0.8, alpha=0.25)
+            v_smooth = _smooth(list(v_arr), smooth_window)
+            ax.plot(ep_arr, v_smooth, color=color, linewidth=1.5)
+            has_data = True
+            if any(v <= 0 for v in v_arr):
+                all_pos = False
+
+        ax.set_xlabel("Epoch", fontsize=7)
+        ax.set_ylabel(mlabel, fontsize=7)
+        ax.set_title(mlabel, fontsize=8)
+        ax.grid(True, alpha=0.3)
+        ax.tick_params(labelsize=6)
+        if has_data and all_pos:
+            ax.set_yscale("log")
+
+    plt.suptitle(f"Validation metrics over epochs — {dataset_type}", fontsize=13)
+    save_path = out_dir / "metrics_over_epochs_split.pdf"
+    fig.savefig(save_path, bbox_inches="tight", dpi=150)
+    plt.close(fig)
+    print(f"  Saved metrics over epochs (split layout) → {save_path}")
+
+
 def run_plot_metrics(
     dataset_type: str = "ts_young",
     metrics_dir: str = "results/metrics",
     save_dir: Path | None = None,
+    smooth_window: int = 5,
+    figsize_split: tuple[float, float] = (20, 10),
 ) -> None:
     """Entry point for the ``plot-metrics`` CLI sub-command."""
     print_section("PLOT METRICS OVER EPOCHS")
-    _plot_metrics_epochs(dataset_type=dataset_type, metrics_dir=metrics_dir, save_dir=save_dir)
+    _plot_metrics_epochs(
+        dataset_type=dataset_type,
+        metrics_dir=metrics_dir,
+        save_dir=save_dir,
+        smooth_window=smooth_window,
+    )
+    _plot_metrics_epochs_split(
+        dataset_type=dataset_type,
+        metrics_dir=metrics_dir,
+        save_dir=save_dir,
+        smooth_window=smooth_window,
+        figsize=figsize_split,
+    )
 
 
 # ===================================================================

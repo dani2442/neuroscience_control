@@ -71,6 +71,8 @@ class TrainingConfig:
     # Whether to denoise model predictions during training
     denoise_predictions: bool = False
 
+    use_full_timeseries: bool = False  # If True, no temporal split
+
     # Dynamics metrics settings
     tr: float = 0.72
     f_lo: float = 0.04
@@ -82,17 +84,17 @@ class TrainingConfig:
     coupling_strength: float = 0.1
     
     # Training settings
-    n_epochs: int = 30
+    n_epochs: int = 20
     lr: float = 1e-3
     loss_weights: dict = field(default_factory=lambda: {
         "fc_correlation": 1.0, "fc_mse": 1.0, "l2": 0.0,
-        "amplitude": 1.0, "omega": 0.0, "power_spectrum": 0.0,
+        "amplitude": 1.0, "omega": 1.0, "power_spectrum": 0.0,
         "temporal_correlation": 0.0, "autocorrelation": 0.0,
         "fcd": 1.0, "phfcd": 1.0, "phase_fc_correlation": 1.0,
         "metastability": 1.0, "fdm": 0.25,
     })
     early_stopping_patience: int = 15
-    n_steps: int = 50
+    n_steps: int = 100
     group_size: int = 0  # Samples per group for metric evaluation (0 = full batch)
 
     # FDM loss hyperparameters
@@ -221,6 +223,6 @@ class HybridNeuralConfig(TrainingConfig):
 class NeuralSDEConfig(TrainingConfig):
     """Configuration for Neural SDE training."""
     experiment_name: str = "neural_sde"
-    hidden_dim: int = 128
+    hidden_dim: int = 256
     n_layers: int = 2
     use_structural_connectivity: bool = False
