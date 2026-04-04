@@ -32,11 +32,14 @@ dependencies = [
     "nilearn>=0.10",
     "numpy>=1.26",
     "plotly>=5.20",
+    "pyriemann>=0.10",
+    "scikit-learn>=1.8.0",
     "scipy>=1.11",
     "seaborn>=0.13.2",
     "torch>=2.2",
     "torchsde>=0.2.6",
     "tqdm>=4.66",
+    "umap-learn>=0.5.11",
     "wandb>=0.16",
 ]
 

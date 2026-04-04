@@ -21,41 +21,5 @@
     "latex-workshop.latex.autoBuild.run": "onSave",
     "latex-workshop.latex.rootFile.useSubFile": true,
     "latex-workshop.latex.outDir": "%DIR%",
-    "latex-workshop.latex.tools": [
-        {
-            "name": "pdflatex",
-            "command": "bash",
-            "args": [
-                "-lc",
-                "cd \"%DIR%\" && pdflatex -synctex=1 -interaction=nonstopmode -file-line-error \"%DOCFILE%\""
-            ]
-        },
-        {
-            "name": "bibtex",
-            "command": "bash",
-            "args": [
-                "-lc",
-                "cd \"%DIR%\" && bibtex \"%DOCFILE%\""
-            ]
-        }
-    ],
-    "latex-workshop.latex.recipes": [
-        {
-            "name": "pdflatex -> bibtex -> pdflatex*2",
-            "tools": [
-                "pdflatex",
-                "bibtex",
-                "pdflatex",
-                "pdflatex"
-            ]
-        },
-        {
-            "name": "pdflatex*2",
-            "tools": [
-                "pdflatex",
-                "pdflatex"
-            ]
-        }
-    ],
     "latex-workshop.latex.recipe.default": "first"
 }
