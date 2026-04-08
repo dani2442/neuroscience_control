@@ -59,6 +59,9 @@ datasets = [
     "openneuro-py>=2026.3.0",
     "datalad>=1.3",
 ]
+exp_design = [
+    "cvxpy>=1.6",
+]
 
 [project.urls]
 Homepage = "https://github.com/dani2442/neuroscience_control"

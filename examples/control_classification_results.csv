@@ -1,3 +1,0 @@
-name,description,input_key,best_params,accuracy,accuracy_std,balanced_accuracy,balanced_accuracy_std,f1,f1_std,roc_auc,roc_auc_std
-baseline_fc_logreg,Upper-triangle FC features + logistic regression,fc_matrices,,0.8002450980392156,0.02553022874509763,0.798611111111111,0.024715458916739163,0.7911764705882353,0.030659795629631142,0.7511574074074074,0.021278676285706268
-oas_tangent_logreg,OAS covariance -> tangent space -> logistic regression,timeseries,"{""clf__C"": 0.1, ""clf__class_weight"": ""balanced"", ""select__k"": 400} (x1)",0.4803921568627451,0.013864838846795053,0.4791666666666667,0.015001714579647822,0.4330532212885154,0.028991258337110602,0.4982638888888889,0.06085476009427435
