@@ -413,7 +413,7 @@ class NeuroscienceDataset(Dataset):
         dt: float = 0.72,
         fourier_denoise: bool = True,
         denoise_f_lo: float = 0.008,
-        denoise_f_hi: float = 0.08,
+        denoise_f_hi: float = 0.2,
         condition_map: Optional[Dict[str, Tuple[int, int]]] = None,
     ) -> "NeuroscienceDataset":
         """Create a dataset from the LSD pharmacological experiment."""

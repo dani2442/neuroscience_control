@@ -294,9 +294,11 @@ def _run_backprop(args: argparse.Namespace) -> dict[str, object]:
         val_ratio=cfg.val_ratio,
         seed=cfg.seed,
         device=device,
+        use_full_timeseries=cfg.use_full_timeseries,
     )
+    intra_info = "N/A (full TS)" if test_intra_loader is None else len(test_intra_loader)
     print(f"  window_size={window_size}  train={len(train_loader)}  val={len(val_loader)}"
-          f"  test_inter={len(test_inter_loader)}  test_intra={len(test_intra_loader)}")
+          f"  test_inter={len(test_inter_loader)}  test_intra={intra_info}")
 
     print_section("STEP 2: Training Model (Backpropagation)")
     model = build_model(args.model, dataset, cfg, device,
@@ -354,13 +356,15 @@ def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
         val_ratio=cfg.val_ratio,
         seed=cfg.seed,
         device=device,
+        use_full_timeseries=cfg.use_full_timeseries,
     )
     # Also get raw train indices for grid_search_hopf inputs
     train_idx, _, _ = compute_split_indices(
         dataset, train_ratio=cfg.train_ratio, val_ratio=cfg.val_ratio, seed=cfg.seed,
     )
+    intra_info = "N/A (full TS)" if test_intra_loader is None else len(test_intra_loader)
     print(f"  window_size={window_size}  train={len(train_loader)}  val={len(val_loader)}"
-          f"  test_inter={len(test_inter_loader)}  test_intra={len(test_intra_loader)}")
+          f"  test_inter={len(test_inter_loader)}  test_intra={intra_info}")
 
     print_section("STEP 2: Training Coupled Hopf Model (Grid Search)")
     init_wandb_run(

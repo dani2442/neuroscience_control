@@ -67,7 +67,7 @@ class TrainingConfig:
     # Fourier denoising (data preprocessing)
     fourier_denoise: bool = True
     denoise_f_lo: float = 0.008
-    denoise_f_hi: float = 0.08
+    denoise_f_hi: float = 0.2 #0.08
     # Whether to denoise model predictions during training
     denoise_predictions: bool = False
 
