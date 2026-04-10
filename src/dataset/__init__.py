@@ -9,6 +9,7 @@ from .data_loader import (
     fft_bandpass_3d,
     hilbert_transform,
     LSD_CONDITION_MAP,
+    LSD_N_CONTROL_DIMS,
 )
 from .preprocessing import (
     RandomWindowDataset,
@@ -26,6 +27,7 @@ __all__ = [
     "fft_bandpass_3d",
     "hilbert_transform",
     "LSD_CONDITION_MAP",
+    "LSD_N_CONTROL_DIMS",
     "RandomWindowDataset",
     "compute_split_indices",
     "create_data_loaders",

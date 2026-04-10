@@ -23,12 +23,17 @@ def load_mat_data(filepath: str) -> Dict[str, np.ndarray]:
     }
 
 
-# Condition-name -> integer control value mapping for LSD dataset.
-LSD_CONDITION_MAP: Dict[str, int] = {
-    "PLACEBO": 0,
-    "LSD": 2,
-    "LSD+KET": 1,
+# Condition-name -> 2-D control vector mapping for LSD dataset.
+# Each condition is encoded as a (LSD, Ketanserin) indicator vector:
+#   Placebo       -> (0, 0)
+#   LSD           -> (1, 0)
+#   LSD+Ketanserin-> (0, 1)
+LSD_CONDITION_MAP: Dict[str, Tuple[int, int]] = {
+    "PLACEBO": (0, 0),
+    "LSD": (1, 0),
+    "LSD+KET": (0, 1),
 }
+LSD_N_CONTROL_DIMS: int = 2
 
 _LSD_ROI_PARTS = [
     "Thalamus",
@@ -126,7 +131,7 @@ def _extract_with_nilearn_masker(
 
 def load_lsd_data(
     data_dir: str = "data/lsd",
-    condition_map: Dict[str, int] | None = None,
+    condition_map: Dict[str, Tuple[int, int]] | None = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, list[str]]:
     """Load LSD pharmacological dataset.
 
@@ -134,8 +139,10 @@ def load_lsd_data(
     -------
     timeseries : ndarray, shape ``(total_subjects, n_rois, n_timepoints)``
         Concatenated timeseries across all conditions.
-    control : ndarray, shape ``(total_subjects,)``
-        Integer control label for each subject (see *condition_map*).
+    control : ndarray, shape ``(total_subjects, 2)``
+        2-D control vector for each subject (see *condition_map*).
+        Columns are ``(LSD, Ketanserin)`` indicator dimensions, so
+        Placebo→(0,0), LSD→(1,0), LSD+Ketanserin→(0,1).
     patient_ids : ndarray, shape ``(total_subjects,)``
         Integer patient identifier (0..n_patients-1) for each row, so that
         all conditions for the same physical patient share the same id.
@@ -166,25 +173,26 @@ def load_lsd_data(
         )
         n_subs = int(cond_data.shape[0])
 
-        # Map condition name to control value (case-insensitive match).
+        # Map condition name to control vector (case-insensitive match).
         # Sort keys longest-first so "LSD+KET" matches before "LSD".
-        ctrl_val = None
+        ctrl_val: Tuple[int, int] | None = None
         cond_norm = _normalize_cond_name(cond_name)
         for key in sorted(condition_map, key=len, reverse=True):
             key_norm = _normalize_cond_name(key)
             if key_norm == cond_norm or key_norm in cond_norm:
-                ctrl_val = condition_map[key]
+                ctrl_val = tuple(condition_map[key])  # type: ignore[assignment]
                 break
         if ctrl_val is None:
-            # Fallback: use condition index
-            ctrl_val = i
+            # Fallback: placebo-like zero vector
+            ctrl_val = (0, 0)
 
+        ctrl_arr = np.tile(np.asarray(ctrl_val, dtype=np.float32), (n_subs, 1))
         all_ts.append(cond_data)
-        all_ctrl.append(np.full(n_subs, ctrl_val, dtype=np.int64))
+        all_ctrl.append(ctrl_arr)
         all_patient_ids.append(np.arange(n_subs, dtype=np.int64))
 
     timeseries = np.concatenate(all_ts, axis=0)  # (total_subjects, n_rois, n_timepoints)
-    control = np.concatenate(all_ctrl, axis=0)  # (total_subjects,)
+    control = np.concatenate(all_ctrl, axis=0)  # (total_subjects, 2)
     patient_ids = np.concatenate(all_patient_ids, axis=0)  # (total_subjects,)
     return timeseries, control, patient_ids, condition_names
 
@@ -406,7 +414,7 @@ class NeuroscienceDataset(Dataset):
         fourier_denoise: bool = True,
         denoise_f_lo: float = 0.008,
         denoise_f_hi: float = 0.08,
-        condition_map: Optional[Dict[str, int]] = None,
+        condition_map: Optional[Dict[str, Tuple[int, int]]] = None,
     ) -> "NeuroscienceDataset":
         """Create a dataset from the LSD pharmacological experiment."""
         raw_ts, raw_ctrl, raw_patient_ids, cond_names = load_lsd_data(data_dir, condition_map)
@@ -423,7 +431,8 @@ class NeuroscienceDataset(Dataset):
             patient_ids=raw_patient_ids,
         )
         n_patients = len(set(raw_patient_ids.tolist()))
-        print(f"LSD dataset: conditions={cond_names}, control_values={sorted(set(raw_ctrl.tolist()))}, "
+        unique_ctrl = sorted({tuple(row) for row in raw_ctrl.tolist()})
+        print(f"LSD dataset: conditions={cond_names}, control_vectors={unique_ctrl}, "
               f"n_patients={n_patients}, n_timeseries={len(raw_ts)}")
         return obj
 

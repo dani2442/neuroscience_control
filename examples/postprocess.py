@@ -9,9 +9,10 @@ Consolidates all post-training steps that produce publication artefacts:
 2. **compare** – generates FC/timeseries comparison figures for the
    best Hopf and Neural SDE checkpoints.
 3. **compare-conditions** *(LSD only)* – simulates all trained models
-   under pharmacological conditions (u=0 Placebo, u=1 LSD+Ketanserin,
-   u=2 LSD) and produces FC grids, ΔFC plots, bar charts, a metrics
-   JSON and a LaTeX table fragment.
+   under pharmacological conditions
+   (u=(0,0) Placebo, u=(1,0) LSD, u=(0,1) LSD+Ketanserin) and
+   produces FC grids, ΔFC plots, bar charts, a metrics JSON and a
+   LaTeX table fragment.
 4. **plot-metrics** – plots validation metrics over epochs for each model.
 5. **pipeline** – runs all four steps above in sequence.
 
@@ -29,7 +30,7 @@ Consolidates all post-training steps that produce publication artefacts:
         --nsde-checkpoint checkpoints/best_nsde_backprop_ts_young.pt \\
         --data-path data/ts_young/ts_young_TR0.72.mat
 
-# Compare LSD control conditions (u=0, u=1, u=2):
+# Compare LSD control conditions (u=(0,0), u=(1,0), u=(0,1)):
     python examples/postprocess.py compare-conditions \\
         --lsd-data-dir data/lsd
 """
@@ -688,16 +689,19 @@ def _short_model_label(stem: str) -> str:
     return stem
 
 
-CONDITION_LABELS: dict[int, str] = {
-    0: "Placebo (u=0)",
-    1: "LSD+Ketanserin (u=1)",
-    2: "LSD (u=2)",
+#: 2-D pharmacological control encoding: (LSD, Ketanserin) indicators.
+CtrlVec = tuple[int, int]
+
+CONDITION_LABELS: dict[CtrlVec, str] = {
+    (0, 0): "Placebo (u=(0,0))",
+    (1, 0): "LSD (u=(1,0))",
+    (0, 1): "LSD+Ketanserin (u=(0,1))",
 }
 
-CONDITION_COLORS: dict[int, str] = {
-    0: "#4878CF",
-    1: "#D65F5F",
-    2: "#6ACC65",
+CONDITION_COLORS: dict[CtrlVec, str] = {
+    (0, 0): "#4878CF",
+    (1, 0): "#6ACC65",
+    (0, 1): "#D65F5F",
 }
 
 
@@ -750,7 +754,7 @@ def _plot_fc_grid(fc_per_model, empirical_fc_per_ctrl, *, save_path: Path) -> No
     print(f"  Saved FC grid → {save_path}")
 
 
-def _plot_fc_diff(fc_per_ctrl, model_name: str, *, baseline_ctrl: int = 0, save_path: Path) -> None:
+def _plot_fc_diff(fc_per_ctrl, model_name: str, *, baseline_ctrl: CtrlVec = (0, 0), save_path: Path) -> None:
     ctrl_vals = [cv for cv in sorted(CONDITION_LABELS.keys()) if cv != baseline_ctrl]
     if not ctrl_vals:
         return
@@ -814,10 +818,10 @@ def _plot_fc_per_roi(
 
 
 def _plot_fc_delta_per_roi(
-    fc_per_ctrl: dict[int, torch.Tensor],
+    fc_per_ctrl: dict[CtrlVec, torch.Tensor],
     model_name: str,
     *,
-    baseline_ctrl: int = 0,
+    baseline_ctrl: CtrlVec = (0, 0),
     save_path: Path,
 ) -> None:
     """Single plot: mean ΔFC per ROI (condition − baseline) for one model.
@@ -891,7 +895,7 @@ def _fmt_cond(val: float | None, decimals: int = 3) -> str:
 
 def _build_lsd_latex_table(metrics) -> str:
     ctrl_vals = sorted(CONDITION_LABELS.keys())
-    short = {0: "Placebo", 1: "LSD+Ket.", 2: "LSD"}
+    short: dict[CtrlVec, str] = {(0, 0): "Placebo", (1, 0): "LSD", (0, 1): "LSD+Ket."}
     col_header = " & ".join(
         [f"FC corr $\\uparrow$ ({short[cv]}) & FC MSE $\\downarrow$ ({short[cv]})" for cv in ctrl_vals]
     )
@@ -917,7 +921,7 @@ def run_compare_conditions(
     n_paths: int = 10,
     device: str | None = None,
     model_labels: list[str] | None = None,
-    ctrl_values: list[int] | None = None,
+    ctrl_values: list[CtrlVec] | None = None,
     output_dir: str | None = None,
     group_size: int = 0,
 ) -> None:
@@ -947,6 +951,8 @@ def run_compare_conditions(
     seed_all(42)
 
     ctrl_values = ctrl_values or sorted(CONDITION_LABELS.keys())
+    # Ensure every ctrl vector is a plain tuple[int, int] (usable as dict key).
+    ctrl_values = [tuple(cv) for cv in ctrl_values]  # type: ignore[assignment]
     figures_dir = Path(output_dir) if output_dir else FIGURES_DIR
     results_dir = Path("results")
     latex_dir = Path("paper/sections")
@@ -955,11 +961,12 @@ def run_compare_conditions(
     dataset = NeuroscienceDataset.from_lsd(data_dir=lsd_data_dir, normalize=True, device=device)
     print(f"  subjects={dataset.n_subjects}  ROIs={dataset.n_rois}  T={dataset.n_timepoints}")
 
-    # Group subjects by condition
-    subjects_per_ctrl: dict[int, torch.Tensor] = {}   # indices
-    empirical_fc_per_ctrl: dict[int, torch.Tensor] = {}
+    # Group subjects by condition (match all control dimensions).
+    subjects_per_ctrl: dict[CtrlVec, torch.Tensor] = {}   # indices
+    empirical_fc_per_ctrl: dict[CtrlVec, torch.Tensor] = {}
     for cv in ctrl_values:
-        mask = dataset.control[:, 0] == cv
+        cv_tensor = torch.tensor(cv, dtype=dataset.control.dtype, device=dataset.control.device)
+        mask = (dataset.control == cv_tensor).all(dim=1)
         if mask.sum() == 0:
             print(f"  Warning: no subjects for ctrl={cv}, skipping.")
             continue
@@ -1001,8 +1008,8 @@ def run_compare_conditions(
         return
 
     print_section("Evaluating per condition (full metric suite)")
-    fc_per_model: dict[str, dict[int, torch.Tensor]] = {}
-    cond_metrics: dict[str, dict[int, dict[str, float]]] = {}
+    fc_per_model: dict[str, dict[CtrlVec, torch.Tensor]] = {}
+    cond_metrics: dict[str, dict[CtrlVec, dict[str, float]]] = {}
 
     sim_steps = min(n_steps, dataset.n_timepoints)
 
@@ -1019,12 +1026,16 @@ def run_compare_conditions(
             target_ts = dataset.timeseries[subj_idx, :, :sim_steps]
             initial_state = target_ts[:, :, 0]
 
-            # Build control tensor matching the condition
-            if getattr(model, "n_control_dims", 0) > 0:
-                ctrl = torch.full(
-                    (n_subj, 1), float(cv),
-                    dtype=torch.float32, device=device,
-                )
+            # Build control tensor matching the condition (2-D encoding).
+            model_n_ctrl = int(getattr(model, "n_control_dims", 0) or 0)
+            if model_n_ctrl > 0:
+                cv_vec = torch.tensor(cv, dtype=torch.float32, device=device)
+                if cv_vec.numel() != model_n_ctrl:
+                    raise ValueError(
+                        f"Model expects n_control_dims={model_n_ctrl} but ctrl vector has "
+                        f"{cv_vec.numel()} dims: {cv}"
+                    )
+                ctrl = cv_vec.unsqueeze(0).expand(n_subj, -1).contiguous()
             else:
                 ctrl = None
 
@@ -1061,20 +1072,20 @@ def run_compare_conditions(
     _plot_fc_grid(fc_per_model, empirical_fc_per_ctrl, save_path=figures_dir / "lsd" / "control_fc_grid.pdf")
     for mname in models:
         _plot_fc_diff(
-            fc_per_model[mname], model_name=mname, baseline_ctrl=0,
+            fc_per_model[mname], model_name=mname, baseline_ctrl=(0, 0),
             save_path=figures_dir / "lsd" / f"fc_delta_{mname.lower().replace(' ', '_')}.pdf",
         )
     _plot_fc_diff(
-        empirical_fc_per_ctrl, model_name="Empirical", baseline_ctrl=0,
+        empirical_fc_per_ctrl, model_name="Empirical", baseline_ctrl=(0, 0),
         save_path=figures_dir / "lsd" / "fc_delta_empirical.pdf",
     )
     for mname in models:
         _plot_fc_delta_per_roi(
-            fc_per_model[mname], model_name=mname, baseline_ctrl=0,
+            fc_per_model[mname], model_name=mname, baseline_ctrl=(0, 0),
             save_path=figures_dir / "lsd" / f"fc_delta_per_roi_{mname.lower().replace(' ', '_')}.pdf",
         )
     _plot_fc_delta_per_roi(
-        empirical_fc_per_ctrl, model_name="Empirical", baseline_ctrl=0,
+        empirical_fc_per_ctrl, model_name="Empirical", baseline_ctrl=(0, 0),
         save_path=figures_dir / "lsd" / "fc_delta_per_roi_empirical.pdf",
     )
     _plot_fc_corr_bar(cond_metrics, save_path=figures_dir / "lsd" / "control_fc_corr.pdf")
@@ -1087,7 +1098,8 @@ def run_compare_conditions(
     for mname, per_cv in cond_metrics.items():
         json_metrics[mname] = {}
         for cv, m in per_cv.items():
-            json_metrics[mname][str(cv)] = {
+            key = ",".join(str(int(x)) for x in cv)
+            json_metrics[mname][key] = {
                 k: round(v, 6) for k, v in m.items() if isinstance(v, (int, float))
             }
     with metrics_path.open("w", encoding="utf-8") as fh:
@@ -1101,9 +1113,9 @@ def run_compare_conditions(
     print(f"  LaTeX table → {latex_path}")
 
     print_section("Results summary")
-    ctrl_short = {0: "Placebo", 1: "LSD+Ket.", 2: "LSD"}
+    ctrl_short: dict[CtrlVec, str] = {(0, 0): "Placebo", (1, 0): "LSD", (0, 1): "LSD+Ket."}
     header = f"{'Model':<35}" + "".join(
-        f"  {ctrl_short[cv]:>14}" for cv in ctrl_values if cv in subjects_per_ctrl
+        f"  {ctrl_short.get(cv, str(cv)):>14}" for cv in ctrl_values if cv in subjects_per_ctrl
     )
     print(header + "  (FC corr ↑)")
     print("-" * len(header))
@@ -1537,6 +1549,19 @@ def _run_compare_conditions(args: argparse.Namespace) -> dict[str, object]:
 # Argument parser
 # ---------------------------------------------------------------------------
 
+def _parse_ctrl_vec(s: str) -> CtrlVec:
+    """Parse a comma-separated 2-D control vector, e.g. '1,0' -> (1, 0)."""
+    parts = [p.strip() for p in s.split(",") if p.strip()]
+    if len(parts) != 2:
+        raise argparse.ArgumentTypeError(
+            f"Expected a comma-separated pair (e.g. '1,0'), got {s!r}"
+        )
+    try:
+        return (int(parts[0]), int(parts[1]))
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"Invalid ctrl vector {s!r}: {exc}") from exc
+
+
 def _add_pipeline_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--device", type=str, default=None, help="Device (auto, cuda, cpu)")
     p.add_argument("--no-wandb", action="store_true", help="Disable wandb logging")
@@ -1589,7 +1614,17 @@ def _build_parser() -> argparse.ArgumentParser:
     compare_cond.add_argument("--model-labels", nargs="+", type=str, default=None)
     compare_cond.add_argument("--n-steps", type=int, default=240)
     compare_cond.add_argument("--n-paths", type=int, default=10)
-    compare_cond.add_argument("--ctrl-values", nargs="+", type=int, default=None)
+    compare_cond.add_argument(
+        "--ctrl-values",
+        nargs="+",
+        type=_parse_ctrl_vec,
+        default=None,
+        help=(
+            "LSD control vectors to compare, e.g. '0,0 1,0 0,1'. "
+            "Each entry is a comma-separated tuple matching the 2-D encoding "
+            "(LSD, Ketanserin)."
+        ),
+    )
     compare_cond.add_argument("--output-dir", type=str, default=None)
     _add_pipeline_args(compare_cond)
 
