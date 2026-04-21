@@ -99,6 +99,7 @@ torchsde = { git = "https://github.com/dani2442/torchsde" }
 
 [dependency-groups]
 dev = [
+    "arxiv-to-prompt>=0.13.2",
     "build>=1.2",
     "ipykernel>=7.2.0",
     "pytest>=8.3",
