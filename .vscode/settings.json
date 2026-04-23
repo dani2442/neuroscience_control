@@ -43,5 +43,25 @@
             ]
         }
     ],
-    "latex-workshop.latex.recipe.default": "latexmk (pdf)"
+    "latex-workshop.latex.recipe.default": "latexmk (pdf)",
+    "latex-workshop.latex.clean.fileTypes": [
+        "*.aux",
+        "*.bbl",
+        "*.bcf",
+        "*.blg",
+        "*.fdb_latexmk",
+        "*.fls",
+        "*.idx",
+        "*.ilg",
+        "*.ind",
+        "*.lof",
+        "*.log",
+        "*.lot",
+        "*.nav",
+        "*.out",
+        "*.run.xml",
+        "*.snm",
+        "*.synctex.gz",
+        "*.toc"
+    ]
 }
