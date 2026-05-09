@@ -102,6 +102,8 @@ def _apply_common_cfg_overrides(cfg, args: argparse.Namespace) -> None:
         cfg.n_epochs = args.n_epochs
     if args.group_size is not None:
         cfg.group_size = args.group_size
+    if getattr(args, "seed", None) is not None:
+        cfg.seed = args.seed
 
 
 def _apply_dataset_cfg_overrides(cfg, args: argparse.Namespace) -> None:
@@ -136,10 +138,24 @@ def _make_backprop_namespace_from_paper_args(args: argparse.Namespace, model_nam
         "skip_figures": args.skip_figures,
         "n_epochs": args.n_epochs,
         "no_nilearn_reduce_confounds": getattr(args, "no_nilearn_reduce_confounds", False),
+        "seed": getattr(args, "seed", None),
+        "run_suffix": getattr(args, "run_suffix", None),
     }
     for name in DATASET_ARG_NAMES:
         payload[name] = getattr(args, name, None)
     return argparse.Namespace(**payload)
+
+
+def _resolve_run_suffix(args: argparse.Namespace) -> str:
+    """Return a filesystem-safe suffix for per-run artifacts.
+
+    When --run-suffix is given, use it verbatim. Otherwise return "".
+    Per-seed and per-size sweeps just pass --run-suffix seed42 etc.
+    """
+    raw = getattr(args, "run_suffix", None)
+    if not raw:
+        return ""
+    return str(raw).strip().strip("_")
 
 
 # ---------------------------------------------------------------------------
@@ -223,18 +239,23 @@ def _post_training(
         use_wandb=cfg.use_wandb,
     )
 
+    # When --run-suffix is supplied, all artifacts written by this call are
+    # tagged with the suffix instead of overwriting the canonical paths.
+    suffix = _resolve_run_suffix(args)
+    suffix_tag = f"_{suffix}" if suffix else ""
+
     # --- save checkpoint ---
     checkpoint_path = save_checkpoint(
         model,
-        checkpoint_name=f"{ds_tag}_{model_key}.pt",
-        artifact_name=f"{ds_tag}_{model_key}",
+        checkpoint_name=f"{ds_tag}_{model_key}{suffix_tag}.pt",
+        artifact_name=f"{ds_tag}_{model_key}{suffix_tag}",
         checkpoint_dir=cfg.checkpoint_dir,
         use_wandb=cfg.use_wandb,
     )
 
     # --- figures ---
     _save_figures(
-        model, val_loader, cfg, ds_tag, model_key, title, args,
+        model, val_loader, cfg, ds_tag, f"{model_key}{suffix_tag}", title, args,
         sde_type=cfg.sde_type, method=cfg.sde_method, dt_min=cfg.dt_min,
         denoise_f_lo=cfg.denoise_f_lo, denoise_f_hi=cfg.denoise_f_hi,
     )
@@ -242,7 +263,10 @@ def _post_training(
         log_hopf_best_params(model, use_wandb=cfg.use_wandb)
 
     # --- save individual JSON ---
-    _save_individual_metrics(model_key, test_inter_metrics, test_intra_metrics, ds_tag)
+    _save_individual_metrics(
+        model_key, test_inter_metrics, test_intra_metrics, ds_tag,
+        suffix=suffix,
+    )
 
     # --- console report ---
     print(f"\n{'='*60}")
@@ -482,13 +506,23 @@ def _save_individual_metrics(
     test_inter: dict[str, object],
     test_intra: dict[str, object],
     ds_tag: str,
+    *,
+    suffix: str = "",
 ) -> Path:
-    """Save both test split metrics to results/{ds_tag}_{model_key}.json."""
-    output = Path("results") / f"{ds_tag}_{model_key}.json"
+    """Save both test split metrics to ``results/{ds_tag}_{model_key}[_suffix].json``.
+
+    When *suffix* is given, the file is written under ``results/runs/`` instead of
+    overwriting the canonical ``results/{ds_tag}_{model_key}.json``.
+    """
+    if suffix:
+        output = Path("results") / "runs" / f"{ds_tag}_{model_key}_{suffix}.json"
+    else:
+        output = Path("results") / f"{ds_tag}_{model_key}.json"
     output.parent.mkdir(parents=True, exist_ok=True)
     data = {
         "dataset_type": ds_tag,
         "model": model_key,
+        "suffix": suffix or None,
         "metrics": {
             "test_inter": {k: float(v) for k, v in as_numeric_metrics(test_inter).items()},
             "test_intra": {k: float(v) for k, v in as_numeric_metrics(test_intra).items()},
@@ -534,6 +568,14 @@ def _build_parser() -> argparse.ArgumentParser:
         p.add_argument("--skip-figures", action="store_true", help="Skip final figure generation")
         p.add_argument("--n-epochs", type=int, default=None, help="Override number of training epochs")
         p.add_argument("--group-size", type=int, default=None, help="Samples per group for metric evaluation (0 = full batch)")
+        p.add_argument("--seed", type=int, default=None, help="Override cfg.seed (default leaves cfg.seed=42)")
+        p.add_argument(
+            "--run-suffix",
+            type=str,
+            default=None,
+            help="Suffix tag for output artifacts (e.g. 'seed42', 'n50_seed42'). "
+                 "When set, results/runs/<ds>_<model>_<suffix>.json is written instead of the canonical path.",
+        )
         add_dataset_args(p)
 
     backprop = subparsers.add_parser("backprop", help="Train NSDE/Hopf/Hybrid Hopf with backpropagation")
