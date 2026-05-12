@@ -67,7 +67,6 @@ from src.utils import (
     resolve_device,
     save_checkpoint,
     seed_all,
-    to_float_metric,
     wandb_log,
     wandb_summary_update,
 )
@@ -104,6 +103,8 @@ def _apply_common_cfg_overrides(cfg, args: argparse.Namespace) -> None:
         cfg.group_size = args.group_size
     if getattr(args, "seed", None) is not None:
         cfg.seed = args.seed
+    if getattr(args, "tr", None) is not None:
+        cfg.tr = args.tr
 
 
 def _apply_dataset_cfg_overrides(cfg, args: argparse.Namespace) -> None:
@@ -115,11 +116,22 @@ def _apply_dataset_cfg_overrides(cfg, args: argparse.Namespace) -> None:
         cfg.nilearn_reduce_confounds = False
 
 
+def _apply_dataset_time_defaults(cfg, args: argparse.Namespace) -> None:
+    """Use dataset-specific TR defaults unless the user supplied --tr."""
+    if getattr(args, "tr", None) is not None:
+        return
+    if cfg.dataset_type == "abide":
+        cfg.tr = getattr(cfg, "abide_tr", cfg.tr)
+    elif cfg.dataset_type == "adhd200":
+        cfg.tr = getattr(cfg, "adhd200_tr", cfg.tr)
+
+
 def _setup_run(cfg_cls, args: argparse.Namespace, exp_prefix: str):
     """Create config, apply overrides, set names, resolve device and seed."""
     cfg = cfg_cls()
     _apply_common_cfg_overrides(cfg, args)
     _apply_dataset_cfg_overrides(cfg, args)
+    _apply_dataset_time_defaults(cfg, args)
     ds_tag = cfg.dataset_type
     cfg.experiment_name = f"{exp_prefix}_{ds_tag}"
     cfg.run_name = f"{cfg.experiment_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -140,6 +152,7 @@ def _make_backprop_namespace_from_paper_args(args: argparse.Namespace, model_nam
         "no_nilearn_reduce_confounds": getattr(args, "no_nilearn_reduce_confounds", False),
         "seed": getattr(args, "seed", None),
         "run_suffix": getattr(args, "run_suffix", None),
+        "tr": getattr(args, "tr", None),
     }
     for name in DATASET_ARG_NAMES:
         payload[name] = getattr(args, name, None)
@@ -569,6 +582,7 @@ def _build_parser() -> argparse.ArgumentParser:
         p.add_argument("--n-epochs", type=int, default=None, help="Override number of training epochs")
         p.add_argument("--group-size", type=int, default=None, help="Samples per group for metric evaluation (0 = full batch)")
         p.add_argument("--seed", type=int, default=None, help="Override cfg.seed (default leaves cfg.seed=42)")
+        p.add_argument("--tr", type=float, default=None, help="Override repetition time in seconds.")
         p.add_argument(
             "--run-suffix",
             type=str,

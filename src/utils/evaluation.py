@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from pathlib import Path
 from typing import Any
 
@@ -23,17 +22,16 @@ from ..training.evaluation import (
 )
 
 from .visualization import (
-    FIGURES_DIR,
     plot_fc_comparison,
     plot_simulation_multigrid,
 )
 from .runtime import (
-    print_section,
     wandb_log,
     wandb_log_artifact,
     wandb_log_figure,
     wandb_summary_update,
 )
+
 
 def prefixed_metrics(prefix: str, metrics: dict[str, float]) -> dict[str, float]:
     """Attach a namespace *prefix/* and keep only numeric entries."""
@@ -356,6 +354,7 @@ def evaluate_model_loader_metrics(
     cfg,
     *,
     n_steps: int | None = None,
+    n_simulations: int = 1,
     return_std: bool = False,
 ) -> dict[str, float]:
     """
@@ -369,8 +368,9 @@ def evaluate_model_loader_metrics(
         loader: DataLoader
         cfg: Config containing simulation settings
         n_steps: Optional simulation length override
+        n_simulations: Number of repeated stochastic rollouts per batch
         return_std: If True, also return <metric>_std keys computed across
-                    loader batches
+                    loader batches and repeated rollouts
 
     Returns:
         Dictionary of metric_name → mean (and optionally metric_name_std → std)
@@ -382,6 +382,7 @@ def evaluate_model_loader_metrics(
     )
     group_size = getattr(cfg, "group_size", 0)
     batch_accumulator = MetricAccumulator()
+    num_simulations = max(1, n_simulations)
 
     for batch in loader:
         if len(batch) == 4:
@@ -400,15 +401,22 @@ def evaluate_model_loader_metrics(
         target_window = windows[:, :, :n_sim_steps]
         initial_state = target_window[:, :, 0]
 
-        with torch.no_grad():
-            simulated = _forward_for_metrics(model, initial_state, n_sim_steps, cfg, control=control)
-            accumulate_timeseries_metrics(
-                batch_accumulator,
-                simulated,
-                target_window,
-                eval_modules,
-                group_size=group_size,
-            )
+        for _ in range(num_simulations):
+            with torch.no_grad():
+                simulated = _forward_for_metrics(
+                    model,
+                    initial_state,
+                    n_sim_steps,
+                    cfg,
+                    control=control,
+                )
+                accumulate_timeseries_metrics(
+                    batch_accumulator,
+                    simulated,
+                    target_window,
+                    eval_modules,
+                    group_size=group_size,
+                )
 
     # Return all computed metrics (use EVAL_METRIC_KEYS for formatted reports).
     all_keys = sorted(set(EVAL_METRIC_KEYS) | set(batch_accumulator.sums.keys()))

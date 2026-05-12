@@ -30,9 +30,21 @@ class TrainingConfig:
     use_wandb: bool = True
     
     # Data settings
-    dataset_type: str = "ts_young"  # "ts_young", "lsd", "nilearn", "openneuro", "datalad", "bids"
+    # "ts_young", "lsd", "abide", "adhd200", "nilearn", "openneuro", "datalad", "bids"
+    dataset_type: str = "ts_young"
     data_path: str = "data/ts_young/ts_young_TR0.72.mat"
     lsd_data_dir: str = "data/lsd"
+    abide_data_dir: str = "data/abide"
+    abide_n_subjects: Optional[int] = None
+    abide_pipeline: str = "cpac"
+    abide_band_pass_filtering: bool = False
+    abide_global_signal_regression: bool = False
+    abide_quality_checked: bool = True
+    abide_tr: float = 2.0
+    adhd200_data_dir: str = "data/adhd200"
+    adhd200_n_subjects: Optional[int] = None
+    adhd200_local_pattern: Optional[str] = None
+    adhd200_tr: float = 2.0
     nilearn_dataset: str = "development_fmri"
     nilearn_data_dir: str = "data/nilearn"
     nilearn_n_subjects: Optional[int] = None

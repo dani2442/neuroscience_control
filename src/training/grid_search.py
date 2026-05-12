@@ -12,6 +12,7 @@ from ..models.hopf_model import CoupledHopfModel
 from ..models.base_model import BaseNeuroscienceModel
 from .evaluation import (
     EVAL_METRIC_KEYS,
+    HIGHER_IS_BETTER_METRICS,
     MetricAccumulator,
     build_eval_metrics,
     composite_metric_score,
@@ -20,6 +21,8 @@ from .evaluation import (
     rollout_model,
 )
 from .losses import CompositeLoss
+
+_HIGHER_IS_BETTER = HIGHER_IS_BETTER_METRICS
 
 
 class GridSearch:
@@ -31,6 +34,8 @@ class GridSearch:
     Supports either the same composite loss used by backpropagation or
     a legacy metric-weighted score for FC-only / metric-only searches.
     """
+
+    _composite_score = staticmethod(composite_metric_score)
 
     def __init__(
         self,

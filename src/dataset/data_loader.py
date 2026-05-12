@@ -45,6 +45,60 @@ _LSD_ROI_PARTS = [
 _SUBJECT_PATTERN = re.compile(r"sub-[A-Za-z0-9]+")
 
 
+def _abide_strategy_name(band_pass_filtering: bool, global_signal_regression: bool) -> str:
+    filt = "filt" if band_pass_filtering else "nofilt"
+    global_part = "global" if global_signal_regression else "noglobal"
+    return f"{filt}_{global_part}"
+
+
+def _limit_paths(paths: Sequence[Path], limit: int | None) -> list[Path]:
+    if limit is not None and limit <= 0:
+        raise ValueError(f"Subject limit must be positive, got {limit}.")
+    limited = list(paths)
+    return limited[:limit] if limit is not None else limited
+
+
+def _find_local_abide_func_files(
+    data_dir: str,
+    *,
+    pipeline: str,
+    strategy: str,
+) -> list[Path]:
+    """Find locally mirrored ABIDE PCP func_preproc files without triggering downloads."""
+    root = Path(data_dir)
+    if not root.exists():
+        return []
+
+    pipeline = pipeline.lower()
+    strategy = strategy.lower()
+    candidate_roots = [root / "ABIDE_pcp", root]
+    files: list[Path] = []
+    for candidate_root in candidate_roots:
+        if not candidate_root.exists():
+            continue
+        direct_dir = candidate_root / pipeline / strategy
+        if direct_dir.exists():
+            files.extend(sorted(direct_dir.glob("*_func_preproc.nii.gz")))
+        outputs_dir = candidate_root / "Outputs" / pipeline / strategy / "func_preproc"
+        if outputs_dir.exists():
+            files.extend(sorted(outputs_dir.glob("*_func_preproc.nii.gz")))
+
+    if not files:
+        for path in root.rglob("*_func_preproc.nii.gz"):
+            parts = {part.lower() for part in path.parts}
+            if pipeline in parts and strategy in parts:
+                files.append(path)
+
+    return sorted(dict.fromkeys(files))
+
+
+def _glob_local_files(data_dir: str, pattern: str) -> list[Path]:
+    root = Path(data_dir)
+    if not root.exists():
+        return []
+    return sorted(path for path in root.glob(pattern) if path.is_file())
+
+
 def _normalize_cond_name(name: str) -> str:
     return name.upper().replace(" ", "").replace("_", "").replace("+", "")
 
@@ -437,6 +491,195 @@ class NeuroscienceDataset(Dataset):
         return obj
 
     # ------------------------------------------------------------------
+    # Alternate constructors: public PCP / ADHD-200 datasets
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def from_abide_pcp(
+        cls,
+        data_dir: str = "data/abide",
+        normalize: bool = True,
+        device: str = "cpu",
+        max_subjects: Optional[int] = None,
+        dt: float = 2.0,
+        fourier_denoise: bool = True,
+        denoise_f_lo: float = 0.008,
+        denoise_f_hi: float = 0.08,
+        atlas_n_rois: int = 100,
+        atlas_yeo_networks: int = 7,
+        atlas_resolution_mm: int = 1,
+        atlas_smoothing_fwhm: float | None = None,
+        n_subjects: int | None = None,
+        pipeline: str = "cpac",
+        band_pass_filtering: bool = False,
+        global_signal_regression: bool = False,
+        quality_checked: bool = True,
+    ) -> "NeuroscienceDataset":
+        """Create a dataset from ABIDE PCP func_preproc files.
+
+        Existing local files under ``data_dir/ABIDE_pcp/<pipeline>/<strategy>``
+        are used first. If none are found, nilearn's ABIDE PCP fetcher downloads
+        the requested func_preproc derivative from the public PCP mirror.
+        """
+        try:
+            from nilearn import datasets as nilearn_datasets
+        except ModuleNotFoundError as exc:
+            raise ImportError(
+                "nilearn is required for dataset_type='abide'. Install with: pip install nilearn"
+            ) from exc
+
+        pipeline = pipeline.strip().lower()
+        strategy = _abide_strategy_name(band_pass_filtering, global_signal_regression)
+        subject_limit = n_subjects if n_subjects is not None else max_subjects
+        func_files = _limit_paths(
+            _find_local_abide_func_files(data_dir, pipeline=pipeline, strategy=strategy),
+            subject_limit,
+        )
+        source = "local"
+
+        if not func_files:
+            fetched = nilearn_datasets.fetch_abide_pcp(
+                data_dir=data_dir,
+                n_subjects=subject_limit,
+                pipeline=pipeline,
+                band_pass_filtering=band_pass_filtering,
+                global_signal_regression=global_signal_regression,
+                derivatives=["func_preproc"],
+                quality_checked=quality_checked,
+                verbose=1,
+            )
+            func_files = [Path(p) for p in fetched.func_preproc]
+            source = "nilearn"
+
+        if not func_files:
+            raise FileNotFoundError(
+                "No ABIDE func_preproc files found for "
+                f"pipeline={pipeline!r}, strategy={strategy!r}."
+            )
+
+        atlas = nilearn_datasets.fetch_atlas_schaefer_2018(
+            n_rois=atlas_n_rois,
+            yeo_networks=atlas_yeo_networks,
+            resolution_mm=atlas_resolution_mm,
+            data_dir=data_dir,
+            verbose=1,
+        )
+        raw_ts = _extract_with_nilearn_masker(
+            bold_files=func_files,
+            confounds_files=None,
+            atlas_maps=str(atlas.maps),
+            smoothing_fwhm=atlas_smoothing_fwhm,
+        )
+
+        obj = cls._from_raw_timeseries(
+            raw_ts,
+            normalize=normalize,
+            device=device,
+            max_subjects=None,
+            dt=dt,
+            fourier_denoise=fourier_denoise,
+            denoise_f_lo=denoise_f_lo,
+            denoise_f_hi=denoise_f_hi,
+        )
+        print(
+            "ABIDE PCP dataset loaded: "
+            f"source={source}, pipeline={pipeline}, strategy={strategy}, "
+            f"runs={len(func_files)}, atlas_rois={atlas_n_rois}, subjects_used={obj.n_subjects}"
+        )
+        return obj
+
+    @classmethod
+    def from_adhd200(
+        cls,
+        data_dir: str = "data/adhd200",
+        normalize: bool = True,
+        device: str = "cpu",
+        max_subjects: Optional[int] = None,
+        dt: float = 2.0,
+        fourier_denoise: bool = True,
+        denoise_f_lo: float = 0.008,
+        denoise_f_hi: float = 0.08,
+        atlas_n_rois: int = 100,
+        atlas_yeo_networks: int = 7,
+        atlas_resolution_mm: int = 1,
+        atlas_smoothing_fwhm: float | None = None,
+        n_subjects: int | None = None,
+        local_pattern: str | None = None,
+    ) -> "NeuroscienceDataset":
+        """Create a dataset from ADHD-200 resting-state files.
+
+        By default this uses nilearn's ADHD-200 fetcher, which provides the
+        standard 40-subject preprocessed sample. For a full local PCP/NITRC/S3
+        mirror, pass ``local_pattern`` (for example ``"**/sfnwmrda*.nii.gz"``)
+        and files will be read directly from ``data_dir``.
+        """
+        try:
+            from nilearn import datasets as nilearn_datasets
+        except ModuleNotFoundError as exc:
+            raise ImportError(
+                "nilearn is required for dataset_type='adhd200'. Install with: pip install nilearn"
+            ) from exc
+
+        subject_limit = n_subjects if n_subjects is not None else max_subjects
+        confounds_files: list[Path | None] | None = None
+        source = "nilearn"
+
+        if local_pattern:
+            func_files = _limit_paths(_glob_local_files(data_dir, local_pattern), subject_limit)
+            source = "local"
+            if not func_files:
+                raise FileNotFoundError(
+                    f"No ADHD-200 files matched pattern {local_pattern!r} under {data_dir!r}."
+                )
+        else:
+            fetched = nilearn_datasets.fetch_adhd(
+                n_subjects=subject_limit,
+                data_dir=data_dir,
+                verbose=1,
+            )
+            func_files = [Path(p) for p in fetched.func]
+            confounds_raw = getattr(fetched, "confounds", None)
+            if confounds_raw is not None:
+                confounds_files = [Path(p) if p else None for p in confounds_raw]
+            fetched_tr = getattr(fetched, "t_r", None)
+            if fetched_tr and abs(float(fetched_tr) - float(dt)) > 1e-6:
+                print(
+                    f"ADHD-200 fetcher reports TR={float(fetched_tr):.3f}s; "
+                    f"using cfg.tr={float(dt):.3f}s."
+                )
+
+        atlas = nilearn_datasets.fetch_atlas_schaefer_2018(
+            n_rois=atlas_n_rois,
+            yeo_networks=atlas_yeo_networks,
+            resolution_mm=atlas_resolution_mm,
+            data_dir=data_dir,
+            verbose=1,
+        )
+        raw_ts = _extract_with_nilearn_masker(
+            bold_files=func_files,
+            confounds_files=confounds_files,
+            atlas_maps=str(atlas.maps),
+            smoothing_fwhm=atlas_smoothing_fwhm,
+        )
+
+        obj = cls._from_raw_timeseries(
+            raw_ts,
+            normalize=normalize,
+            device=device,
+            max_subjects=None,
+            dt=dt,
+            fourier_denoise=fourier_denoise,
+            denoise_f_lo=denoise_f_lo,
+            denoise_f_hi=denoise_f_hi,
+        )
+        print(
+            "ADHD-200 dataset loaded: "
+            f"source={source}, runs={len(func_files)}, atlas_rois={atlas_n_rois}, "
+            f"subjects_used={obj.n_subjects}"
+        )
+        return obj
+
+    # ------------------------------------------------------------------
     # Alternate constructor: nilearn fetchers + atlas extraction
     # ------------------------------------------------------------------
 
@@ -483,9 +726,42 @@ class NeuroscienceDataset(Dataset):
                 data_dir=data_dir,
                 verbose=1,
             )
+        elif dataset_key in {"adhd200", "adhd-200"}:
+            return cls.from_adhd200(
+                data_dir=data_dir,
+                normalize=normalize,
+                device=device,
+                max_subjects=max_subjects,
+                dt=dt,
+                fourier_denoise=fourier_denoise,
+                denoise_f_lo=denoise_f_lo,
+                denoise_f_hi=denoise_f_hi,
+                atlas_n_rois=atlas_n_rois,
+                atlas_yeo_networks=atlas_yeo_networks,
+                atlas_resolution_mm=atlas_resolution_mm,
+                atlas_smoothing_fwhm=atlas_smoothing_fwhm,
+                n_subjects=n_subjects,
+            )
+        elif dataset_key in {"abide", "abide_pcp"}:
+            return cls.from_abide_pcp(
+                data_dir=data_dir,
+                normalize=normalize,
+                device=device,
+                max_subjects=max_subjects,
+                dt=dt,
+                fourier_denoise=fourier_denoise,
+                denoise_f_lo=denoise_f_lo,
+                denoise_f_hi=denoise_f_hi,
+                atlas_n_rois=atlas_n_rois,
+                atlas_yeo_networks=atlas_yeo_networks,
+                atlas_resolution_mm=atlas_resolution_mm,
+                atlas_smoothing_fwhm=atlas_smoothing_fwhm,
+                n_subjects=n_subjects,
+            )
         else:
             raise ValueError(
-                "Unsupported nilearn dataset_name. Supported: 'development_fmri', 'adhd'. "
+                "Unsupported nilearn dataset_name. Supported: 'development_fmri', "
+                "'adhd', 'adhd200', 'abide'. "
                 f"Got '{dataset_name}'."
             )
 
@@ -829,6 +1105,31 @@ def load_dataset(cfg: Any, device: str) -> "NeuroscienceDataset":
             data_dir=getattr(cfg, "lsd_data_dir", "data/lsd"),
             **dataset_kwargs,
         )
+    elif dataset_type == "abide":
+        dataset = NeuroscienceDataset.from_abide_pcp(
+            data_dir=cfg.abide_data_dir,
+            n_subjects=cfg.abide_n_subjects,
+            pipeline=cfg.abide_pipeline,
+            band_pass_filtering=cfg.abide_band_pass_filtering,
+            global_signal_regression=cfg.abide_global_signal_regression,
+            quality_checked=cfg.abide_quality_checked,
+            atlas_n_rois=cfg.atlas_n_rois,
+            atlas_yeo_networks=cfg.atlas_yeo_networks,
+            atlas_resolution_mm=cfg.atlas_resolution_mm,
+            atlas_smoothing_fwhm=cfg.atlas_smoothing_fwhm,
+            **dataset_kwargs,
+        )
+    elif dataset_type == "adhd200":
+        dataset = NeuroscienceDataset.from_adhd200(
+            data_dir=cfg.adhd200_data_dir,
+            n_subjects=cfg.adhd200_n_subjects,
+            local_pattern=cfg.adhd200_local_pattern,
+            atlas_n_rois=cfg.atlas_n_rois,
+            atlas_yeo_networks=cfg.atlas_yeo_networks,
+            atlas_resolution_mm=cfg.atlas_resolution_mm,
+            atlas_smoothing_fwhm=cfg.atlas_smoothing_fwhm,
+            **dataset_kwargs,
+        )
     elif dataset_type == "nilearn":
         dataset = NeuroscienceDataset.from_nilearn(
             dataset_name=cfg.nilearn_dataset,
@@ -904,7 +1205,8 @@ def load_dataset(cfg: Any, device: str) -> "NeuroscienceDataset":
     else:
         raise ValueError(
             "Unsupported dataset_type. Expected one of "
-            "{'ts_young', 'mat', 'lsd', 'nilearn', 'openneuro', 'datalad', 'bids'}, "
+            "{'ts_young', 'mat', 'lsd', 'abide', 'adhd200', 'nilearn', "
+            "'openneuro', 'datalad', 'bids'}, "
             f"got {dataset_type!r}."
         )
 

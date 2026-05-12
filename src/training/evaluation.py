@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import inspect
 from typing import Any, Dict, Iterable, Optional
 
 import torch
@@ -211,7 +212,12 @@ def accumulate_timeseries_metrics(
     """
     batch_metrics: Dict[str, float] = {}
     for module in eval_metrics:
-        batch_metrics.update(module.evaluate(ts_pred, ts_target, group_size=group_size))
+        evaluate_sig = inspect.signature(module.evaluate)
+        if "group_size" in evaluate_sig.parameters:
+            module_metrics = module.evaluate(ts_pred, ts_target, group_size=group_size)
+        else:
+            module_metrics = module.evaluate(ts_pred, ts_target)
+        batch_metrics.update(module_metrics)
     accumulator.update(batch_metrics)
 
 

@@ -355,12 +355,43 @@ The training scripts support multiple data sources:
 |---------|-------------|
 | `ts_young` / `mat` | Local `.mat` file with `FC_all`, `FC_mean`, `timeseries_all` |
 | `lsd` | Local LSD directory (`time_series_data.mat`, `condition_names.mat`) |
+| `abide` | ABIDE PCP func_preproc files from local cache or nilearn download |
+| `adhd200` | ADHD-200 rs-fMRI from nilearn, or locally mirrored PCP/NITRC/S3 files |
 | `nilearn` | Download + extract ROI timeseries from nilearn datasets |
 | `openneuro` | Download with `openneuro-py`, then load BIDS derivatives |
 | `datalad` | Install/get with DataLad, then load BIDS derivatives |
 | `bids` | Load a local BIDS derivatives directory directly |
 
 ```bash
+# Default local ts_young dataset
+python examples/train_models.py backprop --model hopf --no-wandb
+
+# ABIDE PCP (uses existing data/abide/ABIDE_pcp files first; otherwise nilearn downloads)
+python examples/train_models.py backprop --model hopf \
+  --dataset-type abide \
+  --abide-data-dir data/abide \
+  --abide-n-subjects 50 \
+  --atlas-n-rois 100 \
+  --tr 2.0 \
+  --no-wandb
+
+# ADHD-200 nilearn preprocessed sample
+python examples/train_models.py backprop --model nsde \
+  --dataset-type adhd200 \
+  --adhd200-data-dir data/adhd200 \
+  --adhd200-n-subjects 40 \
+  --atlas-n-rois 100 \
+  --tr 2.0 \
+  --no-wandb
+
+# ADHD-200 full local PCP/NITRC/S3 mirror
+python examples/train_models.py backprop --model nsde \
+  --dataset-type adhd200 \
+  --adhd200-data-dir data/adhd200_full \
+  --adhd200-local-pattern '**/sfnwmrda*.nii.gz' \
+  --tr 2.0 \
+  --no-wandb
+
 # nilearn fetcher dataset
 python examples/train_models.py backprop --model hopf \
   --dataset-type nilearn \
@@ -391,6 +422,7 @@ python examples/train_models.py backprop --model hybrid_hopf \
 ```
 
 > **Note:** `openneuro`, `datalad`, and `bids` backends expect preprocessed BOLD files, typically fMRIPrep derivatives. ROI extraction uses the Schaefer atlas via nilearn (`--atlas-n-rois`, `--atlas-yeo-networks`, `--atlas-resolution-mm`). If BOLD runs have different lengths, the loader trims all runs to the shortest length.
+> ABIDE and ADHD-200 contain multi-site acquisitions; use `--tr` to match the subset you train on when the single default TR is not appropriate.
 
 ---
 
