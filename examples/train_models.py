@@ -8,12 +8,10 @@ Training entry point for Hopf grid-search and backprop models.
 
 # Paper suite — trains all models and runs the post-training pipeline:
     python examples/train_models.py paper \\
-        --dataset-type lsd --lsd-data-dir data/lsd
-    python examples/train_models.py paper \\
         --dataset-type ts_young --data-path data/ts_young/ts_young_TR0.72.mat
 
-Post-training commands (update tables, compare models, compare conditions)
-are in examples/postprocess.py.
+Post-training commands (update tables, compare models) are in
+examples/postprocess.py.
 """
 
 from __future__ import annotations

@@ -8,31 +8,20 @@ Consolidates all post-training steps that produce publication artefacts:
    metrics JSON produced by ``train_models.py paper``.
 2. **compare** – generates FC/timeseries comparison figures for the
    best Hopf and Neural SDE checkpoints.
-3. **compare-conditions** *(LSD only)* – simulates all trained models
-   under pharmacological conditions
-   (u=(0,0) Placebo, u=(1,0) LSD, u=(0,1) LSD+Ketanserin) and
-   produces FC grids, ΔFC plots, bar charts, a metrics JSON and a
-   LaTeX table fragment.
-4. **plot-metrics** – plots validation metrics over epochs for each model.
-5. **pipeline** – runs all four steps above in sequence.
+3. **plot-metrics** – plots validation metrics over epochs for each model.
+4. **pipeline** – runs the steps above in sequence.
 
-# Run the full post-training pipeline (tables + compare + conditions):
+# Run the full post-training pipeline (tables + compare):
     python examples/postprocess.py pipeline \\
-        --dataset-type lsd --lsd-data-dir data/lsd
+        --dataset-type ts_young --data-path data/ts_young/ts_young_TR0.72.mat
 
 # Update LaTeX tables from a metrics JSON:
     python examples/postprocess.py update-tables \\
-        --metrics results/lsd_paper_metrics_<timestamp>.json
+        --metrics results/paper_metrics_<timestamp>.json
 
 # Compare Hopf vs Neural SDE (figures):
     python examples/postprocess.py compare \\
-        --hopf-checkpoint checkpoints/best_hopf_backprop_ts_young.pt \\
-        --nsde-checkpoint checkpoints/best_nsde_backprop_ts_young.pt \\
-        --data-path data/ts_young/ts_young_TR0.72.mat
-
-# Compare LSD control conditions (u=(0,0), u=(1,0), u=(0,1)):
-    python examples/postprocess.py compare-conditions \\
-        --lsd-data-dir data/lsd
+        --checkpoints checkpoints/ts_young_hopf.pt checkpoints/ts_young_nsde.pt
 """
 
 from __future__ import annotations
