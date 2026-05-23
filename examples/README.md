@@ -18,9 +18,9 @@ End-to-end run for the paper figures:
 python examples/train_models.py paper \
     --dataset-type ts_young --data-path data/ts_young/ts_young_TR0.72.mat
 
-# Post-training: update tables + comparison figures + LSD conditions
+# Post-training: update tables + comparison figures
 python examples/postprocess.py pipeline \
-    --dataset-type lsd --lsd-data-dir data/lsd
+    --dataset-type ts_young --data-path data/ts_young/ts_young_TR0.72.mat
 ```
 
 ## Notebooks → paper figures
