@@ -11,7 +11,7 @@ from ..metrics.metrics_store import MetricsStore
 from ..metrics._utils import fisher_batch_average, upper_tri_vec
 
 # Default figures directory for paper
-FIGURES_DIR = Path("paper/images")
+FIGURES_DIR = Path("paper_new/images")
 
 
 def _get_save_path(save_path: Optional[str], default_name: str, use_pdf: bool = True) -> Optional[Path]:

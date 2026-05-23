@@ -48,7 +48,6 @@ __all__ = [
     "plot_realizations",
     "plot_power_spectrum",
     "plot_simulation_multigrid",
-    "SignalPipelineResult",
     "create_comparison_report",
     "FIGURES_DIR",
     "_get_save_path",

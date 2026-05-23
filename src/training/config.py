@@ -128,7 +128,7 @@ class TrainingConfig:
     # Directories
     checkpoint_dir: str = "checkpoints"
     results_dir: str = "results"
-    figures_dir: str = "paper/images"
+    figures_dir: str = "paper_new/images"
     
     # Device
     device: str = "auto"  # "auto", "cuda", or "cpu"
