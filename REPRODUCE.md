@@ -39,6 +39,19 @@ Outputs land in:
 | `results/metrics/` | Per-model training metric histories (epoch curves) |
 | `paper_new/images*/` | Figure panels and intermediate exports |
 
+### Compute budget
+
+A full reproduction takes **≈ 9.5 GPU-hours** (band [9.0, 10.1] h) on a single consumer GPU (measured on RTX 3080 / RTX 2080 Ti). Per-section breakdown:
+
+| Section | Jobs | GPU-hours (mean ± 1σ) |
+|---|---|---|
+| §1 — canonical training pipeline (6 models + postprocess) | 7 | 2.14 ± 0.03 |
+| §2 — per-seed runs (10 seeds × {hopf-grid, hopf}) | 20 | 2.48 ± 0.01 |
+| §3 — size sweep (3 seeds × 2 sizes × 3 models) | 18 | ~4.78 (band 4.3–5.3; n=10 timing extrapolated) |
+| §4 — figure notebooks | 9 | 0.13 |
+
+The longest single job is `hybrid_hopf` at ~46 min, so if all 45 training/notebook jobs run in parallel on the cluster (§5), wallclock is bounded by that one job rather than the cumulative GPU-hours.
+
 ---
 
 ## 1. Quick reproduction (canonical paper)
