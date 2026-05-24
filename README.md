@@ -1,11 +1,11 @@
-# Neuroscience Control
+# Data-Driven Modeling of Whole-Brain Dynamics
 
-[![CI](https://github.com/dani2442/neuroscience_control/actions/workflows/ci.yml/badge.svg)](https://github.com/dani2442/neuroscience_control/actions/workflows/ci.yml)
+<!-- [![CI](https://github.com/dani2442/neuroscience_control/actions/workflows/ci.yml/badge.svg)](https://github.com/dani2442/neuroscience_control/actions/workflows/ci.yml)
 [![Docs](https://github.com/dani2442/neuroscience_control/actions/workflows/docs.yml/badge.svg)](https://github.com/dani2442/neuroscience_control/actions/workflows/docs.yml)
 [![PyPI version](https://img.shields.io/pypi/v/neuroscience-control.svg)](https://pypi.org/project/neuroscience-control/)
-[![Python versions](https://img.shields.io/pypi/pyversions/neuroscience-control.svg)](https://pypi.org/project/neuroscience-control/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Coverage](https://codecov.io/gh/dani2442/neuroscience_control/branch/main/graph/badge.svg)](https://app.codecov.io/gh/dani2442/neuroscience_control)
+[![Python versions](https://img.shields.io/pypi/pyversions/neuroscience-control.svg)](https://pypi.org/project/neuroscience-control/) -->
+<!-- [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Coverage](https://codecov.io/gh/dani2442/neuroscience_control/branch/main/graph/badge.svg)](https://app.codecov.io/gh/dani2442/neuroscience_control) -->
 
 <p align="center">
   <b>Brain dynamics simulation and control using Coupled Hopf and Neural SDE models</b>
@@ -243,24 +243,6 @@ All classes accept `(ts_pred, ts_target)` complex analytic signals `(batch, n_ro
 - `forward(ts_pred, ts_target)` → differentiable scalar loss tensor (for training)
 - `evaluate(ts_pred, ts_target)` → `dict[str, float]` (for logging)
 
-### Metric / Loss Classes
-
-| Class | Module | `forward()` loss | `evaluate()` keys |
-|-------|--------|-----------------|-------------------|
-| `FCCorrelation` | `src/metrics/fc_metrics.py` | `1 − FC correlation` | `fc_correlation` |
-| `FCMSE` | `src/metrics/fc_metrics.py` | FC MSE | `fc_mse` |
-| `PowerSpectrumDistance` | `src/metrics/timeseries_metrics.py` | power spectrum MSE | `power_spectrum_distance` |
-| `TemporalCorrelation` | `src/metrics/timeseries_metrics.py` | `1 − temporal correlation` | `temporal_correlation` |
-| `AutocorrelationDistance` | `src/metrics/timeseries_metrics.py` | autocorrelation MSE | `autocorr_distance` |
-| `FCD(tr, fcd_win_sec, fcd_step_sec)` | `src/metrics/dynamics_metrics.py` | FCD MSE (surrogate) | `fcd_mse`, `fcd_ks` |
-| `PhFCD` | `src/metrics/dynamics_metrics.py` | phFCD MSE (surrogate) | `phfcd_mse`, `phfcd_ks` |
-| `Metastability` | `src/metrics/dynamics_metrics.py` | metastability L1 diff | `metastability_diff` |
-| `PhaseFC` | `src/metrics/dynamics_metrics.py` | `1 − phase-coherence FC corr` | `phase_fc_correlation` |
-| `L2Timeseries` | `src/training/losses.py` | L² timeseries error | — |
-| `AmplitudeLoss(ref_amplitude, tr)` | `src/training/losses.py` | amplitude L² | — |
-| `OmegaLoss(ref_omega, tr)` | `src/training/losses.py` | frequency L² | — |
-
-> **Note:** `FCD` and `PhFCD` use differentiable MSE surrogates for training; the non-differentiable KS distances are only computed in `evaluate()`.
 
 ### Evaluation Metrics (evaluate() keys)
 
@@ -552,23 +534,14 @@ uv run twine check dist/*
 
 ---
 
-## Related Work
-
-- [Deco et al., 2017](https://doi.org/10.1038/s41598-017-03073-5) — Whole-brain coupled Hopf model
-- [torchsde](https://github.com/dani2442/torchsde) — SDE solvers for PyTorch (complex-valued fork)
-- [The Virtual Brain](https://www.thevirtualbrain.org/) — Open-source brain simulation platform
-
----
-
 ## Citation
 
 If you use this project in academic work, please cite this repository and the accompanying paper:
 
 ```bibtex
 @software{neuroscience_control,
-  author = {López Montero, Daniel and Kobeleva, Xenia and Liverani, Lorenzo},
-  title  = {Neuroscience Control: Brain Dynamics Simulation and Control
-            with Coupled Hopf and Neural SDE Models},
+  author = {López-Montero, Daniel and Liverani, Lorenzo and Zuazua, Enrique and Kobeleva, Xenia},
+  title  = {Data-Driven Modeling of Whole-Brain Dynamics},
   url    = {https://github.com/dani2442/neuroscience_control},
   year   = {2026},
 }
@@ -580,40 +553,3 @@ If you use this project in academic work, please cite this repository and the ac
 
 MIT License — see [LICENSE](LICENSE) for details.
 
----
-
-## Paper Commands (`.venv`)
-
-Run from the repository root. See each script's docstring for full usage details.
-
-```bash
-# 1) Paper suite — train all models on a dataset and generate metrics JSON
-#    LSD dataset:
-.venv/bin/python examples/train_models.py paper \
-  --dataset-type lsd --lsd-data-dir data/lsd
-
-#    ts_young dataset:
-.venv/bin/python examples/train_models.py paper \
-  --dataset-type ts_young --data-path data/ts_young/ts_young_TR0.72.mat
-
-# 2) Update paper LaTeX tables from metrics JSON
-.venv/bin/python examples/postprocess.py update-tables \
-  --metrics results/lsd_paper_metrics_<timestamp>.json
-
-.venv/bin/python examples/postprocess.py update-tables \
-  --metrics results/ts_young_paper_metrics_<timestamp>.json
-
-# 3) Compare LSD control conditions
-.venv/bin/python examples/postprocess.py compare-conditions \
-  --checkpoints checkpoints/hopf_grid_lsd_best_*.pt \
-                checkpoints/hopf_backprop_lsd_best_*.pt \
-                checkpoints/nsde_backprop_lsd_best_*.pt \
-                checkpoints/hybrid_hopf_backprop_lsd_best_*.pt \
-                checkpoints/gnn_hopf_backprop_lsd_best_*.pt \
-  --lsd-data-dir data/lsd
-
-# 4) Or run the full post-training pipeline
-.venv/bin/python examples/postprocess.py pipeline \
-  --dataset-type lsd \
-  --lsd-data-dir data/lsd
-```
