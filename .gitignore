@@ -4,6 +4,7 @@ checkpoints/
 results/
 wandb/
 wrap.o*
+logs/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

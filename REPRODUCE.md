@@ -14,6 +14,13 @@ git clone https://github.com/dani2442/neuroscience_control.git
 cd neuroscience_control
 git submodule update --init --recursive
 uv sync
+
+# Required to execute the §4 notebooks (not declared in pyproject.toml):
+uv pip install nbconvert
+
+# Compute nodes typically have no outbound HTTPS, so pre-clone the
+# WholeBrain dependency from a node that does (login node, your laptop):
+git clone --depth 1 https://github.com/dagush/WholeBrain .cache/WholeBrain
 ```
 
 Data must live at:
@@ -137,15 +144,20 @@ The four figures actually referenced by `paper_new/main.tex` are in `paper_new/i
 
 ```bash
 DATA_ARGS="--dataset-type ts_young --data-path data/ts_young/ts_young_TR0.72.mat --no-wandb"
-SBATCH="sbatch -M tinygpu --gres=gpu:1 --time=02:00:00"
+SBATCH="sbatch -M tinygpu --gres=gpu:1 --time=02:00:00 --parsable"
 
-$SBATCH --wrap=".venv/bin/python examples/train_models.py hopf-grid $DATA_ARGS"
+# Capture each job ID. `sbatch --parsable -M tinygpu` returns "<id>;tinygpu";
+# strip the cluster suffix with ${id%%;*} before chaining --dependency.
+id=$($SBATCH --wrap=".venv/bin/python examples/train_models.py hopf-grid $DATA_ARGS")
+IDS=${id%%;*}
 for m in hopf nsde hybrid_hopf gnn_hopf hybrid_neural; do
-  $SBATCH --wrap=".venv/bin/python examples/train_models.py backprop --model $m $DATA_ARGS"
+  id=$($SBATCH --wrap=".venv/bin/python examples/train_models.py backprop --model $m $DATA_ARGS")
+  IDS="$IDS:${id%%;*}"
 done
 
-# After all six finish:
-$SBATCH --wrap=".venv/bin/python examples/postprocess.py pipeline $DATA_ARGS"
+# Postprocess runs only after all six training jobs succeed.
+$SBATCH --dependency=afterok:$IDS \
+        --wrap=".venv/bin/python examples/postprocess.py pipeline $DATA_ARGS"
 ```
 
 ### §2 — per-seed runs (20 jobs)
@@ -173,6 +185,17 @@ for s in 42 43 44; do
           --max-subjects $n --seed $s --run-suffix n${n}_seed${s}"
     done
   done
+done
+```
+
+### §4 — notebook execution (one job per notebook)
+
+```bash
+SBATCH="sbatch -M tinygpu --gres=gpu:1 --time=02:00:00"
+
+for nb in examples/fig1_*.ipynb examples/fig2_*.ipynb examples/fig3_*.ipynb; do
+  $SBATCH --wrap=".venv/bin/jupyter nbconvert --to notebook --execute --inplace \
+      --ExecutePreprocessor.timeout=1800 $nb"
 done
 ```
 
