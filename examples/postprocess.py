@@ -167,8 +167,8 @@ HIGHER_BETTER: dict[str, bool] = {
 }
 
 TABLE_TARGET_BY_LABEL: dict[str, Path] = {
-    "tab:model_comparison": Path("paper/sections/ts_young_model_table.tex"),
-    "tab:lsd_model_comparison": Path("paper/sections/lsd_model_table.tex"),
+    "tab:model_comparison": Path("paper_new/sections/ts_young_model_table.tex"),
+    "tab:lsd_model_comparison": Path("paper_new/sections/lsd_model_table.tex"),
 }
 
 
@@ -378,7 +378,9 @@ def run_update_tables(
         return
 
     if not tex_path.exists():
-        print(f"LaTeX file not found: {tex_path}")
+        tex_path.parent.mkdir(parents=True, exist_ok=True)
+        tex_path.write_text(tabular, encoding="utf-8")
+        print(f"Created {tex_path}")
         return
 
     original = tex_path.read_text(encoding="utf-8")

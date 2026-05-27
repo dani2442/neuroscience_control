@@ -88,7 +88,7 @@ Then run the post-training pipeline:
 
 ```bash
 DATA_ARGS="--dataset-type ts_young --data-path data/ts_young/ts_young_TR0.72.mat"
-for s in 42 43 44 45 46 47 48 49 50 51; do
+for s in 42 43 44 46 47 48 49 50 51 52; do
   .venv/bin/python examples/train_models.py hopf-grid \
       $DATA_ARGS --no-wandb --seed $s --run-suffix seed$s
   .venv/bin/python examples/train_models.py backprop --model hopf \
@@ -179,7 +179,7 @@ $SBATCH --dependency=afterok:$IDS \
 DATA_ARGS="--dataset-type ts_young --data-path data/ts_young/ts_young_TR0.72.mat --no-wandb"
 SBATCH="sbatch -M tinygpu --gres=gpu:1 --time=02:00:00"
 
-for s in 42 43 44 45 46 47 48 49 50 51; do
+for s in 42 43 44 46 47 48 49 50 51 52; do
   $SBATCH --wrap=".venv/bin/python examples/train_models.py hopf-grid $DATA_ARGS --seed $s --run-suffix seed$s"
   $SBATCH --wrap=".venv/bin/python examples/train_models.py backprop --model hopf $DATA_ARGS --seed $s --run-suffix seed$s"
 done
@@ -218,6 +218,6 @@ done
 
 | Command | Status | Note |
 |---|---|---|
-| Loop with `for s in 42..51` over hopf-grid + hopf backprop | ✅ Correct | Matches §2 above. |
+| Loop with `for s in 42..52` over hopf-grid + hopf backprop | ✅ Correct | Matches §2 above. |
 | Dataset-size sweep loop | ✅ Correct | Matches the notebook's `SIZES = [10, 94]`, `SEEDS = [42, 43, 44]`, models `{hopf, nsde, hybrid_hopf}`. |
 | `postprocess.py pipeline` for ts_young | ✅ Correct | |

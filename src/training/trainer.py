@@ -503,6 +503,13 @@ class Trainer:
         num_simulations = max(1, getattr(self.cfg, "n_simulations", 1))
         simulation_accumulator = MetricAccumulator()
 
+        # Re-seed before test so SDE noise is independent of training-loop RNG
+        # consumption. Mirrors the offset used in evaluate_model_loader_metrics.
+        eval_seed = int(getattr(self.cfg, "seed", 42)) + 1000 if self.cfg is not None else 1042
+        torch.manual_seed(eval_seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(eval_seed)
+
         for _ in range(num_simulations):
             batch_accumulator = MetricAccumulator()
             for batch in test_loader:

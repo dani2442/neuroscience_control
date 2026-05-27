@@ -37,7 +37,6 @@ from .evaluation import (
     save_checkpoint,
     log_hopf_best_params,
     extract_val_data,
-    split_subject_indices,
     evaluate_model_loader_metrics,
 )
 __all__ = [
@@ -73,6 +72,5 @@ __all__ = [
     "save_checkpoint",
     "log_hopf_best_params",
     "extract_val_data",
-    "split_subject_indices",
     "evaluate_model_loader_metrics",
 ]

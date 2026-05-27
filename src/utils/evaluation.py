@@ -257,54 +257,6 @@ def extract_val_data(
 # Hopf evaluation helpers (moved from train_hopf.py)
 # ---------------------------------------------------------------------------
 
-def split_subject_indices(
-    cfg,
-    n_subjects: int,
-    patient_ids: torch.Tensor | None = None,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Deterministic train/validation/test subject split.
-
-    When *patient_ids* is provided (e.g. LSD: 25 patients × 3 conditions),
-    the split is done at the patient level so all conditions for a patient
-    end up in the same partition.
-    """
-    generator = torch.Generator().manual_seed(cfg.seed)
-
-    if patient_ids is not None:
-        unique_patients = torch.unique(patient_ids)
-        n_patients = unique_patients.numel()
-        perm = unique_patients[torch.randperm(n_patients, generator=generator)]
-
-        n_train_p = max(1, int(cfg.train_ratio * n_patients))
-        n_val_p = max(1, int(cfg.val_ratio * n_patients))
-        train_patients = set(perm[:n_train_p].tolist())
-        val_patients = set(perm[n_train_p : n_train_p + n_val_p].tolist())
-        test_patients = set(perm[n_train_p + n_val_p :].tolist())
-        if not test_patients:
-            test_patients = val_patients
-
-        pid = patient_ids.cpu()
-        train_idx = torch.tensor([i for i, p in enumerate(pid.tolist()) if p in train_patients], dtype=torch.long)
-        val_idx = torch.tensor([i for i, p in enumerate(pid.tolist()) if p in val_patients], dtype=torch.long)
-        test_idx = torch.tensor([i for i, p in enumerate(pid.tolist()) if p in test_patients], dtype=torch.long)
-
-        print(f"  Patient-level split: {len(train_patients)} train / {len(val_patients)} val / "
-              f"{len(test_patients)} test patients  →  {train_idx.numel()}/{val_idx.numel()}/{test_idx.numel()} timeseries")
-        return train_idx, val_idx, test_idx
-
-    indices = torch.randperm(n_subjects, generator=generator)
-    n_train = max(1, int(cfg.train_ratio * n_subjects))
-    n_val = max(1, int(cfg.val_ratio * n_subjects))
-    train_idx = indices[:n_train]
-    val_idx = indices[n_train : n_train + n_val]
-    test_idx = indices[n_train + n_val :]
-    if val_idx.numel() == 0:
-        val_idx = train_idx[:1]
-    if test_idx.numel() == 0:
-        test_idx = val_idx[:1]
-    return train_idx, val_idx, test_idx
-
-
 def _forward_for_metrics(
     model,
     initial_state: torch.Tensor,
@@ -375,6 +327,15 @@ def evaluate_model_loader_metrics(
     Returns:
         Dictionary of metric_name → mean (and optionally metric_name_std → std)
     """
+    # Re-seed before evaluation so test rollouts don't depend on how much RNG
+    # state was consumed during training (matters when models are trained back-
+    # to-back, e.g. the `paper` suite). Offset by 1000 to avoid colliding with
+    # the per-loader generator seeds used in create_data_loaders.
+    eval_seed = int(getattr(cfg, "seed", 42)) + 1000
+    torch.manual_seed(eval_seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(eval_seed)
+
     eval_modules = build_eval_metrics(
         tr=cfg.tr,
         fcd_win_sec=cfg.fcd_win_sec,

@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import math
 import os
+import random
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -34,10 +35,28 @@ def resolve_device(device: str = "auto") -> str:
     return "cpu"
 
 
-def seed_all(seed: int) -> None:
-    """Seed supported random number generators."""
-    torch.manual_seed(seed)
+def seed_all(seed: int, *, deterministic: bool = True) -> None:
+    """Seed every PRNG we touch and (optionally) request deterministic kernels.
+
+    Pass ``deterministic=False`` to keep cuDNN autotuning on for speed; the
+    default trades a small slowdown for run-to-run reproducibility.
+    """
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    random.seed(seed)
     np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+    if deterministic:
+        # Required for deterministic CUBLAS reductions used by many torch ops.
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        try:
+            torch.use_deterministic_algorithms(True, warn_only=True)
+        except (AttributeError, RuntimeError):
+            # Older torch lacks the API; cuDNN flags above still help.
+            pass
 
 
 def print_section(title: str) -> None:

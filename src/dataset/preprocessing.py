@@ -66,6 +66,7 @@ class RandomWindowDataset(Dataset):
         n_windows: int,
         device: str = "cpu",
         control: Optional[torch.Tensor] = None,
+        generator: Optional[torch.Generator] = None,
     ):
         self.timeseries = timeseries.to(device)    # (n_subjects, n_rois, T), complex
         self.fc_matrices = fc_matrices.to(device)  # (n_subjects, n_rois, n_rois), real
@@ -73,6 +74,8 @@ class RandomWindowDataset(Dataset):
         self.n_windows = n_windows
         self.n_subjects = timeseries.shape[0]
         self.max_start = timeseries.shape[2] - window_size
+        # CPU generator isolates window sampling from global RNG state.
+        self.generator = generator
         # control: (n_subjects, n_control_dims) or None
         if control is not None:
             self.control = control.to(device)
@@ -83,8 +86,8 @@ class RandomWindowDataset(Dataset):
         return self.n_windows
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, int, torch.Tensor]:
-        subj = torch.randint(0, self.n_subjects, (1,)).item()
-        start = torch.randint(0, self.max_start + 1, (1,)).item()
+        subj = torch.randint(0, self.n_subjects, (1,), generator=self.generator).item()
+        start = torch.randint(0, self.max_start + 1, (1,), generator=self.generator).item()
         window = self.timeseries[subj, :, start:start + self.window_size]
         return window, self.fc_matrices[subj], subj, self.control[subj]
 
@@ -165,19 +168,30 @@ def create_data_loaders(
     # Extract per-subject control tensor (may be empty dim-1 for uncontrolled)
     ctrl = getattr(dataset, "control", None)
 
-    def _loader(subj_idx, n_win, shuffle=True):
+    # One CPU generator per loader role so window sampling and shuffle order
+    # are isolated from global torch state and from each other. Offsets prevent
+    # train/val/test from drawing identical (subj, start) sequences.
+    _role_offsets = {"train": 0, "val": 1, "test_inter": 2, "test_intra": 3}
+
+    def _make_gen(role: str) -> torch.Generator:
+        return torch.Generator().manual_seed(seed + _role_offsets[role])
+
+    def _loader(subj_idx, n_win, shuffle=True, *, role: str):
         subj_ctrl = ctrl[subj_idx] if ctrl is not None else None
+        gen = _make_gen(role)
         ds = RandomWindowDataset(
             dataset.timeseries[subj_idx],
             dataset.fc_matrices[subj_idx],
             window_size, n_win, device,
             control=subj_ctrl,
+            generator=gen,
         )
-        return DataLoader(ds, batch_size=batch_size, shuffle=shuffle, drop_last=True)
+        return DataLoader(ds, batch_size=batch_size, shuffle=shuffle, drop_last=True, generator=gen)
 
-    def _loader_from_tensors(ts, fc, subj_ctrl, n_win, shuffle=True):
-        ds = RandomWindowDataset(ts, fc, window_size, n_win, device, control=subj_ctrl)
-        return DataLoader(ds, batch_size=batch_size, shuffle=shuffle, drop_last=True)
+    def _loader_from_tensors(ts, fc, subj_ctrl, n_win, shuffle=True, *, role: str):
+        gen = _make_gen(role)
+        ds = RandomWindowDataset(ts, fc, window_size, n_win, device, control=subj_ctrl, generator=gen)
+        return DataLoader(ds, batch_size=batch_size, shuffle=shuffle, drop_last=True, generator=gen)
 
     n_val_win = max(batch_size, n_windows_per_epoch // 4)
     n_test_win = max(batch_size, n_windows_per_epoch // 4)
@@ -190,21 +204,25 @@ def create_data_loaders(
         # Use the entire timeseries for training; intra-patient test is not applicable.
         train_loader = _loader_from_tensors(
             dataset.timeseries[train_idx], train_fc, train_ctrl, n_windows_per_epoch,
+            role="train",
         )
         intra_loader = _loader_from_tensors(
             dataset.timeseries[train_idx, :, T_split:], train_fc, train_ctrl, n_test_win, shuffle=False,
+            role="test_intra",
         )
     else:
         train_loader = _loader_from_tensors(
             dataset.timeseries[train_idx, :, :T_split], train_fc, train_ctrl, n_windows_per_epoch,
+            role="train",
         )
         intra_loader = _loader_from_tensors(
             dataset.timeseries[train_idx, :, T_split:], train_fc, train_ctrl, n_test_win, shuffle=False,
+            role="test_intra",
         )
 
     return (
         train_loader,
-        _loader(val_idx, n_val_win, shuffle=False),
-        _loader(test_idx, n_test_win, shuffle=False),  # inter-patient
-        intra_loader,                                   # intra-patient (None if use_full_timeseries)
+        _loader(val_idx, n_val_win, shuffle=False, role="val"),
+        _loader(test_idx, n_test_win, shuffle=False, role="test_inter"),  # inter-patient
+        intra_loader,                                                      # intra-patient (None if use_full_timeseries)
     )

@@ -324,6 +324,7 @@ class NeuroscienceDataset(Dataset):
         fourier_denoise: bool = True,
         denoise_f_lo: float = 0.008,
         denoise_f_hi: float = 0.08,
+        seed: int = 42,
     ):
         self.device = device
         self.dt = dt
@@ -334,8 +335,11 @@ class NeuroscienceDataset(Dataset):
             n_total = int(data["timeseries_all"].shape[2])
             if max_subjects <= 0 or max_subjects > n_total:
                 raise ValueError(f"max_subjects must be in [1, {n_total}], got {max_subjects}")
-            data["timeseries_all"] = data["timeseries_all"][:, :, :max_subjects]
-            data["FC_all"] = data["FC_all"][:, :, :max_subjects]
+            # Seed-aware sub-sampling: different seeds pick different subjects.
+            rng = np.random.RandomState(seed)
+            subj_idx = np.sort(rng.choice(n_total, max_subjects, replace=False))
+            data["timeseries_all"] = data["timeseries_all"][:, :, subj_idx]
+            data["FC_all"] = data["FC_all"][:, :, subj_idx]
             data["FC_mean"] = data["FC_all"].mean(axis=2)
 
         # (ROIs, timepoints, subjects) -> (subjects, ROIs, timepoints)
@@ -377,6 +381,7 @@ class NeuroscienceDataset(Dataset):
         denoise_f_hi: float,
         control: np.ndarray | None = None,
         patient_ids: np.ndarray | None = None,
+        seed: int = 42,
     ) -> "NeuroscienceDataset":
         if raw_ts.ndim != 3:
             raise ValueError(f"Expected raw_ts shape (subjects, rois, timepoints), got {raw_ts.shape}.")
@@ -385,11 +390,14 @@ class NeuroscienceDataset(Dataset):
             n_total = int(raw_ts.shape[0])
             if max_subjects <= 0 or max_subjects > n_total:
                 raise ValueError(f"max_subjects must be in [1, {n_total}], got {max_subjects}")
-            raw_ts = raw_ts[:max_subjects]
+            # Seed-aware sub-sampling: different seeds pick different subjects.
+            rng = np.random.RandomState(seed)
+            subj_idx = np.sort(rng.choice(n_total, max_subjects, replace=False))
+            raw_ts = raw_ts[subj_idx]
             if control is not None:
-                control = control[:max_subjects]
+                control = control[subj_idx]
             if patient_ids is not None:
-                patient_ids = patient_ids[:max_subjects]
+                patient_ids = patient_ids[subj_idx]
 
         obj = cls.__new__(cls)
         Dataset.__init__(obj)
@@ -469,6 +477,7 @@ class NeuroscienceDataset(Dataset):
         denoise_f_lo: float = 0.008,
         denoise_f_hi: float = 0.2,
         condition_map: Optional[Dict[str, Tuple[int, int]]] = None,
+        seed: int = 42,
     ) -> "NeuroscienceDataset":
         """Create a dataset from the LSD pharmacological experiment."""
         raw_ts, raw_ctrl, raw_patient_ids, cond_names = load_lsd_data(data_dir, condition_map)
@@ -483,6 +492,7 @@ class NeuroscienceDataset(Dataset):
             denoise_f_hi=denoise_f_hi,
             control=raw_ctrl,
             patient_ids=raw_patient_ids,
+            seed=seed,
         )
         n_patients = len(set(raw_patient_ids.tolist()))
         unique_ctrl = sorted({tuple(row) for row in raw_ctrl.tolist()})
@@ -514,6 +524,7 @@ class NeuroscienceDataset(Dataset):
         band_pass_filtering: bool = False,
         global_signal_regression: bool = False,
         quality_checked: bool = True,
+        seed: int = 42,  # noqa: ARG002 — accepted for load_dataset uniformity; abide pre-slices files
     ) -> "NeuroscienceDataset":
         """Create a dataset from ABIDE PCP func_preproc files.
 
@@ -605,6 +616,7 @@ class NeuroscienceDataset(Dataset):
         atlas_smoothing_fwhm: float | None = None,
         n_subjects: int | None = None,
         local_pattern: str | None = None,
+        seed: int = 42,  # noqa: ARG002 — accepted for load_dataset uniformity; adhd200 pre-slices files
     ) -> "NeuroscienceDataset":
         """Create a dataset from ADHD-200 resting-state files.
 
@@ -701,6 +713,7 @@ class NeuroscienceDataset(Dataset):
         atlas_smoothing_fwhm: float | None = None,
         n_subjects: int | None = None,
         reduce_confounds: bool = True,
+        seed: int = 42,
     ) -> "NeuroscienceDataset":
         """Create a dataset from nilearn fetchers using Schaefer atlas ROI extraction."""
         try:
@@ -795,6 +808,7 @@ class NeuroscienceDataset(Dataset):
             fourier_denoise=fourier_denoise,
             denoise_f_lo=denoise_f_lo,
             denoise_f_hi=denoise_f_hi,
+            seed=seed,
         )
         print(
             "nilearn dataset loaded: "
@@ -829,6 +843,7 @@ class NeuroscienceDataset(Dataset):
         atlas_resolution_mm: int = 1,
         atlas_smoothing_fwhm: float | None = None,
         atlas_data_dir: str = "data/nilearn",
+        seed: int = 42,
     ) -> "NeuroscienceDataset":
         """Create a dataset from BIDS derivatives by extracting atlas ROI timeseries."""
         try:
@@ -913,6 +928,7 @@ class NeuroscienceDataset(Dataset):
             fourier_denoise=fourier_denoise,
             denoise_f_lo=denoise_f_lo,
             denoise_f_hi=denoise_f_hi,
+            seed=seed,
         )
         print(
             "BIDS dataset loaded: "
@@ -952,6 +968,7 @@ class NeuroscienceDataset(Dataset):
         atlas_resolution_mm: int = 1,
         atlas_smoothing_fwhm: float | None = None,
         atlas_data_dir: str = "data/nilearn",
+        seed: int = 42,
     ) -> "NeuroscienceDataset":
         """Download OpenNeuro data with openneuro-py, then load as BIDS derivatives."""
         try:
@@ -1002,6 +1019,7 @@ class NeuroscienceDataset(Dataset):
             atlas_resolution_mm=atlas_resolution_mm,
             atlas_smoothing_fwhm=atlas_smoothing_fwhm,
             atlas_data_dir=atlas_data_dir,
+            seed=seed,
         )
 
     # ------------------------------------------------------------------
@@ -1033,6 +1051,7 @@ class NeuroscienceDataset(Dataset):
         atlas_resolution_mm: int = 1,
         atlas_smoothing_fwhm: float | None = None,
         atlas_data_dir: str = "data/nilearn",
+        seed: int = 42,
     ) -> "NeuroscienceDataset":
         """Install/get a DataLad dataset and load BIDS derivatives from it."""
         try:
@@ -1073,6 +1092,7 @@ class NeuroscienceDataset(Dataset):
             atlas_resolution_mm=atlas_resolution_mm,
             atlas_smoothing_fwhm=atlas_smoothing_fwhm,
             atlas_data_dir=atlas_data_dir,
+            seed=seed,
         )
 
     def __len__(self) -> int:
@@ -1098,6 +1118,7 @@ def load_dataset(cfg: Any, device: str) -> "NeuroscienceDataset":
         fourier_denoise=cfg.fourier_denoise,
         denoise_f_lo=cfg.denoise_f_lo,
         denoise_f_hi=cfg.denoise_f_hi,
+        seed=getattr(cfg, "seed", 42),
     )
 
     if dataset_type == "lsd":
