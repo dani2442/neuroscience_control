@@ -160,28 +160,27 @@ DATA_ARGS="--dataset-type ts_young --data-path data/ts_young/ts_young_TR0.72.mat
 SBATCH="sbatch -M tinygpu --gres=gpu:1 --time=02:00:00 --parsable"
 
 # Capture each job ID. `sbatch --parsable -M tinygpu` returns "<id>;tinygpu";
-# strip the cluster suffix with ${id%%;*} before chaining --dependency.
+# strip the cluster suffix with ${id%%;*} before chaining --dependency below.
 id=$($SBATCH --wrap=".venv/bin/python examples/train_models.py hopf-grid $DATA_ARGS")
-IDS=${id%%;*}
+TRAIN_IDS=${id%%;*}
 for m in hopf nsde hybrid_hopf gnn_hopf hybrid_neural; do
   id=$($SBATCH --wrap=".venv/bin/python examples/train_models.py backprop --model $m $DATA_ARGS")
-  IDS="$IDS:${id%%;*}"
+  TRAIN_IDS="$TRAIN_IDS:${id%%;*}"
 done
-
-# Postprocess runs only after all six training jobs succeed.
-$SBATCH --dependency=afterok:$IDS \
-        --wrap=".venv/bin/python examples/postprocess.py pipeline $DATA_ARGS"
 ```
 
 ### §2 — per-seed runs (20 jobs)
 
 ```bash
 DATA_ARGS="--dataset-type ts_young --data-path data/ts_young/ts_young_TR0.72.mat --no-wandb"
-SBATCH="sbatch -M tinygpu --gres=gpu:1 --time=02:00:00"
+SBATCH="sbatch -M tinygpu --gres=gpu:1 --time=02:00:00 --parsable"
 
+SEED_IDS=""
 for s in 42 43 44 46 47 48 49 50 51 52; do
-  $SBATCH --wrap=".venv/bin/python examples/train_models.py hopf-grid $DATA_ARGS --seed $s --run-suffix seed$s"
-  $SBATCH --wrap=".venv/bin/python examples/train_models.py backprop --model hopf $DATA_ARGS --seed $s --run-suffix seed$s"
+  id=$($SBATCH --wrap=".venv/bin/python examples/train_models.py hopf-grid $DATA_ARGS --seed $s --run-suffix seed$s")
+  SEED_IDS="${SEED_IDS:+$SEED_IDS:}${id%%;*}"
+  id=$($SBATCH --wrap=".venv/bin/python examples/train_models.py backprop --model hopf $DATA_ARGS --seed $s --run-suffix seed$s")
+  SEED_IDS="$SEED_IDS:${id%%;*}"
 done
 ```
 
@@ -189,25 +188,43 @@ done
 
 ```bash
 DATA_ARGS="--dataset-type ts_young --data-path data/ts_young/ts_young_TR0.72.mat --no-wandb"
-SBATCH="sbatch -M tinygpu --gres=gpu:1 --time=02:00:00"
+SBATCH="sbatch -M tinygpu --gres=gpu:1 --time=02:00:00 --parsable"
 
+SIZE_IDS=""
 for s in 42 43 44; do
   for n in 10 94; do
     for m in hopf nsde hybrid_hopf; do
-      $SBATCH --wrap=".venv/bin/python examples/train_models.py backprop --model $m $DATA_ARGS \
-          --max-subjects $n --seed $s --run-suffix n${n}_seed${s}"
+      id=$($SBATCH --wrap=".venv/bin/python examples/train_models.py backprop --model $m $DATA_ARGS \
+          --max-subjects $n --seed $s --run-suffix n${n}_seed${s}")
+      SIZE_IDS="${SIZE_IDS:+$SIZE_IDS:}${id%%;*}"
     done
   done
 done
 ```
 
-### §4 — notebook execution (one job per notebook)
+### §4 — postprocess + notebooks (chained on §1–§3)
+
+Each step holds in the queue until its upstream jobs finish:
+
+- Postprocess only needs §1 → `afterok:$TRAIN_IDS`.
+- Notebooks read §1 checkpoints, §2 per-seed JSONs (`fig2_grid_vs_gradient`),
+  and §3 size-sweep JSONs (`fig3_size_robustness`). To keep it uniform we
+  gate all of them on `$TRAIN_IDS:$SEED_IDS:$SIZE_IDS`; the data-only
+  `fig1_data_pipeline.ipynb` will hold too, which is harmless.
 
 ```bash
+DATA_ARGS="--dataset-type ts_young --data-path data/ts_young/ts_young_TR0.72.mat --no-wandb"
 SBATCH="sbatch -M tinygpu --gres=gpu:1 --time=02:00:00"
 
+# Postprocess pipeline: needs §1 checkpoints + per-model JSONs.
+$SBATCH --dependency=afterok:$TRAIN_IDS \
+        --wrap=".venv/bin/python examples/postprocess.py pipeline $DATA_ARGS"
+
+# Notebooks: held until every training job (§1 + §2 + §3) succeeds.
+ALL_TRAIN_IDS="$TRAIN_IDS:$SEED_IDS:$SIZE_IDS"
 for nb in examples/fig1_*.ipynb examples/fig2_*.ipynb examples/fig3_*.ipynb; do
-  $SBATCH --wrap=".venv/bin/jupyter nbconvert --to notebook --execute --inplace \
+  $SBATCH --dependency=afterok:$ALL_TRAIN_IDS \
+          --wrap=".venv/bin/jupyter nbconvert --to notebook --execute --inplace \
       --ExecutePreprocessor.timeout=1800 $nb"
 done
 ```
