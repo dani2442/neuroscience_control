@@ -11,9 +11,7 @@ requires-python = ">=3.13"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [
-    { name = "Daniel López Montero", email = "dani.lopez@fau.de" },
-    { name = "Xenia Kobeleva", email = "research@xenia-kobeleva.com" },
-    { name = "Lorenzo Liverani", email = "lorenzo.liverani@fau.de" },
+    { name = "Anonymous Author(s)" },
 ]
 keywords = ["neuroscience", "fMRI", "SDE", "Hopf", "pytorch"]
 classifiers = [
@@ -65,10 +63,8 @@ exp_design = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/dani2442/neuroscience_control"
-Repository = "https://github.com/dani2442/neuroscience_control"
-Issues = "https://github.com/dani2442/neuroscience_control/issues"
-Documentation = "https://dani2442.github.io/neuroscience_control/"
+# Anonymized for double-blind review.
+Repository = "https://anonymous.4open.science/r/neuroscience-modeling-4158"
 
 [tool.setuptools.dynamic]
 version = { attr = "src.__version__" }

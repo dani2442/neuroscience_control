@@ -13,11 +13,16 @@ import numpy as np
 import torch
 import wandb
 
-DEFAULT_PROXY_URL = "http://proxy.nhr.fau.de:80"
+# Optional outbound proxy for compute nodes without direct HTTPS. Set the
+# CLUSTER_PROXY_URL environment variable to your site's proxy (e.g. on an HPC
+# cluster); left empty by default so no site-specific host is hard-coded.
+DEFAULT_PROXY_URL = os.environ.get("CLUSTER_PROXY_URL", "")
 
 
 def ensure_proxy_env(proxy_url: str = DEFAULT_PROXY_URL) -> None:
     """Configure proxy environment variables when they are not set."""
+    if not proxy_url:
+        return
     os.environ.setdefault("HTTP_PROXY", proxy_url)
     os.environ.setdefault("HTTPS_PROXY", proxy_url)
 

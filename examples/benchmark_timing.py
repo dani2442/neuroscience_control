@@ -7,7 +7,7 @@ the canonical files under ``results/`` or ``checkpoints/`` -- trained models are
 loaded **read-only** so that timing reflects converged (stable) weights.
 
 Usage (mirrors the training commands, GPU via SLURM):
-    sbatch -M tinygpu --gres=gpu:1 --time=00:40:00 --wrap=\\
+    sbatch -M gpu_cluster --gres=gpu:1 --time=00:40:00 --wrap=\\
         ".venv/bin/python examples/benchmark_timing.py \\
             --dataset-type ts_young --data-path data/ts_young/ts_young_TR0.72.mat"
 

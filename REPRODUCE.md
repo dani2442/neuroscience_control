@@ -9,8 +9,8 @@ All paths are relative to the repo root. Every Python invocation assumes you've 
 ## 0. Prerequisites
 
 ```bash
-# Clone + sync
-git clone https://github.com/dani2442/neuroscience_control.git
+# Clone + sync (anonymized repository for double-blind review)
+git clone https://anonymous.4open.science/r/neuroscience-modeling-4158 neuroscience_control
 cd neuroscience_control
 git submodule update --init --recursive
 uv sync
@@ -152,15 +152,15 @@ The four figures actually referenced by `paper_new/main.tex` are in `paper_new/i
 
 ## 5. Slurm
 
-`tinygpu` cluster, one GPU per job, 2 h walltime.
+`gpu_cluster` cluster, one GPU per job, 2 h walltime.
 
 ### §1 — six independent jobs (parallel paper training)
 
 ```bash
 DATA_ARGS="--dataset-type ts_young --data-path data/ts_young/ts_young_TR0.72.mat --no-wandb"
-SBATCH="sbatch -M tinygpu --gres=gpu:1 --time=02:00:00 --parsable"
+SBATCH="sbatch -M gpu_cluster --gres=gpu:1 --time=02:00:00 --parsable"
 
-# Capture each job ID. `sbatch --parsable -M tinygpu` returns "<id>;tinygpu";
+# Capture each job ID. `sbatch --parsable -M gpu_cluster` returns "<id>;gpu_cluster";
 # strip the cluster suffix with ${id%%;*} before chaining --dependency below.
 id=$($SBATCH --wrap=".venv/bin/python examples/train_models.py hopf-grid $DATA_ARGS")
 TRAIN_IDS=${id%%;*}
@@ -174,7 +174,7 @@ done
 
 ```bash
 DATA_ARGS="--dataset-type ts_young --data-path data/ts_young/ts_young_TR0.72.mat --no-wandb"
-SBATCH="sbatch -M tinygpu --gres=gpu:1 --time=02:00:00 --parsable"
+SBATCH="sbatch -M gpu_cluster --gres=gpu:1 --time=02:00:00 --parsable"
 
 SEED_IDS=""
 for s in 42 43 44 46 47 48 49 50 51 52; do
@@ -189,7 +189,7 @@ done
 
 ```bash
 DATA_ARGS="--dataset-type ts_young --data-path data/ts_young/ts_young_TR0.72.mat --no-wandb"
-SBATCH="sbatch -M tinygpu --gres=gpu:1 --time=02:00:00 --parsable"
+SBATCH="sbatch -M gpu_cluster --gres=gpu:1 --time=02:00:00 --parsable"
 
 SIZE_IDS=""
 for s in 42 43 44 45 46 47 48 49 50 51; do
@@ -217,7 +217,7 @@ Each step holds in the queue until its upstream jobs finish:
 
 ```bash
 DATA_ARGS="--dataset-type ts_young --data-path data/ts_young/ts_young_TR0.72.mat --no-wandb"
-SBATCH="sbatch -M tinygpu --gres=gpu:1 --time=02:00:00"
+SBATCH="sbatch -M gpu_cluster --gres=gpu:1 --time=02:00:00"
 
 # Postprocess pipeline: needs §1 checkpoints + per-model JSONs.
 $SBATCH --dependency=afterok:$TRAIN_IDS \
