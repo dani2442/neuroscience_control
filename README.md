@@ -1,11 +1,5 @@
 # Data-Driven Modeling of Whole-Brain Dynamics
 
-<!-- [![CI](https://github.com/dani2442/neuroscience_control/actions/workflows/ci.yml/badge.svg)](https://github.com/dani2442/neuroscience_control/actions/workflows/ci.yml)
-[![Docs](https://github.com/dani2442/neuroscience_control/actions/workflows/docs.yml/badge.svg)](https://github.com/dani2442/neuroscience_control/actions/workflows/docs.yml)
-[![PyPI version](https://img.shields.io/pypi/v/neuroscience-control.svg)](https://pypi.org/project/neuroscience-control/)
-[![Python versions](https://img.shields.io/pypi/pyversions/neuroscience-control.svg)](https://pypi.org/project/neuroscience-control/) -->
-<!-- [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Coverage](https://codecov.io/gh/dani2442/neuroscience_control/branch/main/graph/badge.svg)](https://app.codecov.io/gh/dani2442/neuroscience_control) -->
 
 <p align="center">
   <b>Brain dynamics simulation and control using Coupled Hopf and Neural SDE models</b>
@@ -40,7 +34,7 @@ All model families operate in **complex-valued** space — state, drift, diffusi
 ### Key Features
 
 - **Biologically-grounded** modeling with structural connectivity integration
-- **Native complex-valued SDEs** via [`torchsde`](https://github.com/dani2442/torchsde) with complex Brownian motion support
+- **Native complex-valued SDEs** via torchsde with complex Brownian motion support
 - **Comprehensive evaluation**: FC, FCD, phFCD, phase-coherence FC, metastability, and timeseries metrics
 - **Flexible data loading**: local `.mat` files, LSD pharmacological data, nilearn, OpenNeuro, DataLad, and BIDS derivatives
 - **Weights & Biases** integration for experiment tracking
@@ -67,7 +61,7 @@ uv add neuroscience-control
 ### From source
 
 ```bash
-git clone https://github.com/dani2442/neuroscience_control.git
+git clone {REPO_URL}
 cd neuroscience_control
 uv sync
 ```
@@ -89,8 +83,6 @@ The distribution is named `neuroscience-control`, but the importable package in 
 ```bash
 python -c "import src; print(src.__version__)"
 ```
-
-> **Note:** The project depends on a [complex-valued fork of `torchsde`](https://github.com/dani2442/torchsde). When installing from source with `uv`, this is resolved automatically via the `[tool.uv.sources]` override in `pyproject.toml`.
 
 ---
 
@@ -491,11 +483,6 @@ python examples/postprocess.py update-tables --metrics results/ts_young_paper_me
 ```
 
 ---
-
-## Documentation Website
-
-Docs are built with [MkDocs Material](https://squidfunk.github.io/mkdocs-material/).  
-Live site: **https://dani2442.github.io/neuroscience_control/**
 
 ```bash
 # Install docs dependencies
