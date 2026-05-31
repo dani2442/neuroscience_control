@@ -41,16 +41,16 @@ Outputs land in:
 
 ### Compute budget
 
-A full reproduction takes **≈ 9.5 GPU-hours** (band [9.0, 10.1] h) on a single consumer GPU (measured on RTX 3080 / RTX 2080 Ti). Per-section breakdown:
+A full reproduction takes **≈ 20.7 GPU-hours** (band [19.0, 22.6] h) on a single consumer GPU (measured on RTX 3080 / RTX 2080 Ti). Per-section breakdown:
 
 | Section | Jobs | GPU-hours (mean ± 1σ) |
 |---|---|---|
 | §1 — canonical training pipeline (6 models + postprocess) | 7 | 2.14 ± 0.03 |
 | §2 — per-seed runs (10 seeds × {hopf-grid, hopf}) | 20 | 2.48 ± 0.01 |
-| §3 — size sweep (3 seeds × 2 sizes × 3 models) | 18 | ~4.78 (band 4.3–5.3; n=10 timing extrapolated) |
+| §3 — size sweep (10 seeds × 2 sizes × 3 models) | 60 | ~15.9 (band 14.3–17.7; extrapolated from §3 n=3 timing) |
 | §4 — figure notebooks | 9 | 0.13 |
 
-The longest single job is `hybrid_hopf` at ~46 min, so if all 45 training/notebook jobs run in parallel on the cluster (§5), wallclock is bounded by that one job rather than the cumulative GPU-hours.
+The longest single job is `hybrid_hopf` at ~46 min, so if all 96 training/notebook jobs run in parallel on the cluster (§5), wallclock is bounded by that one job rather than the cumulative GPU-hours.
 
 ---
 
@@ -102,11 +102,11 @@ Produces 20 JSONs: 10 seeds × 2 methods.
 
 ## 3. Dataset-size sweep for Fig. 3E (robustness)
 
-[`fig3_size_robustness.ipynb`](examples/fig3_size_robustness.ipynb) plots three models trained on `N ∈ {10, 94}` subjects across **three seeds**. Required output: `results/runs/ts_young_{model}_n{N}_seed{S}.json`.
+[`fig3_size_robustness.ipynb`](examples/fig3_size_robustness.ipynb) plots three models trained on `N ∈ {10, 94}` subjects across **ten seeds**, and [`fig3_personalization.ipynb`](examples/fig3_personalization.ipynb) reuses the `N=94` per-seed JSONs for the inter-vs-intra Wilcoxon test. Required output: `results/runs/ts_young_{model}_n{N}_seed{S}.json`.
 
 ```bash
 DATA_ARGS="--dataset-type ts_young --data-path data/ts_young/ts_young_TR0.72.mat"
-for s in 42 43 44; do
+for s in 42 43 44 45 46 47 48 49 50 51; do
   for n in 10 94; do
     for m in hopf nsde hybrid_hopf; do
       .venv/bin/python examples/train_models.py backprop --model $m \
@@ -118,7 +118,7 @@ for s in 42 43 44; do
 done
 ```
 
-Produces 18 JSONs: 3 seeds × 2 sizes × 3 models.
+Produces 60 JSONs: 10 seeds × 2 sizes × 3 models. The 10-seed list matches `SEEDS` in [`fig3_size_robustness.ipynb`](examples/fig3_size_robustness.ipynb) and gives the paired Wilcoxon test enough power to surface `*`/`**`/`***` markers; with only 3 seeds the minimum two-sided p-value floors at ~0.25.
 
 ---
 
@@ -184,14 +184,14 @@ for s in 42 43 44 46 47 48 49 50 51 52; do
 done
 ```
 
-### §3 — dataset-size sweep (18 jobs)
+### §3 — dataset-size sweep (60 jobs)
 
 ```bash
 DATA_ARGS="--dataset-type ts_young --data-path data/ts_young/ts_young_TR0.72.mat --no-wandb"
 SBATCH="sbatch -M tinygpu --gres=gpu:1 --time=02:00:00 --parsable"
 
 SIZE_IDS=""
-for s in 42 43 44; do
+for s in 42 43 44 45 46 47 48 49 50 51; do
   for n in 10 94; do
     for m in hopf nsde hybrid_hopf; do
       id=$($SBATCH --wrap=".venv/bin/python examples/train_models.py backprop --model $m $DATA_ARGS \
@@ -236,5 +236,5 @@ done
 | Command | Status | Note |
 |---|---|---|
 | Loop with `for s in 42..52` over hopf-grid + hopf backprop | ✅ Correct | Matches §2 above. |
-| Dataset-size sweep loop | ✅ Correct | Matches the notebook's `SIZES = [10, 94]`, `SEEDS = [42, 43, 44]`, models `{hopf, nsde, hybrid_hopf}`. |
+| Dataset-size sweep loop | ✅ Correct | Matches the notebook's `SIZES = [10, 94]`, `SEEDS = [42, 43, 44, 45, 46, 47, 48, 49, 50, 51]`, models `{hopf, nsde, hybrid_hopf}`. |
 | `postprocess.py pipeline` for ts_young | ✅ Correct | |
