@@ -532,24 +532,3 @@ uv run python -m build
 uv run twine check dist/*
 ```
 
----
-
-## Citation
-
-If you use this project in academic work, please cite this repository and the accompanying paper:
-
-```bibtex
-@software{neuroscience_control,
-  author = {López-Montero, Daniel and Liverani, Lorenzo and Zuazua, Enrique and Kobeleva, Xenia},
-  title  = {Data-Driven Modeling of Whole-Brain Dynamics},
-  url    = {https://github.com/dani2442/neuroscience_control},
-  year   = {2026},
-}
-```
-
----
-
-## License
-
-MIT License — see [LICENSE](LICENSE) for details.
-
