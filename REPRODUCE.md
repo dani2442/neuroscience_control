@@ -41,16 +41,16 @@ Outputs land in:
 
 ### Compute budget
 
-A full reproduction takes **≈ 9.5 GPU-hours** (band [9.0, 10.1] h) on a single consumer GPU (measured on RTX 3080 / RTX 2080 Ti). Per-section breakdown:
+A full reproduction takes **≈ 20.7 GPU-hours** (band [19.0, 22.6] h) on a single consumer GPU (measured on RTX 3080 / RTX 2080 Ti). Per-section breakdown:
 
 | Section | Jobs | GPU-hours (mean ± 1σ) |
 |---|---|---|
 | §1 — canonical training pipeline (6 models + postprocess) | 7 | 2.14 ± 0.03 |
 | §2 — per-seed runs (10 seeds × {hopf-grid, hopf}) | 20 | 2.48 ± 0.01 |
-| §3 — size sweep (3 seeds × 2 sizes × 3 models) | 18 | ~4.78 (band 4.3–5.3; n=10 timing extrapolated) |
+| §3 — size sweep (10 seeds × 2 sizes × 3 models) | 60 | ~15.9 (band 14.3–17.7; extrapolated from §3 n=3 timing) |
 | §4 — figure notebooks | 9 | 0.13 |
 
-The longest single job is `hybrid_hopf` at ~46 min, so if all 45 training/notebook jobs run in parallel on the cluster (§5), wallclock is bounded by that one job rather than the cumulative GPU-hours.
+The longest single job is `hybrid_hopf` at ~46 min, so if all 96 training/notebook jobs run in parallel on the cluster (§5), wallclock is bounded by that one job rather than the cumulative GPU-hours.
 
 ---
 
@@ -102,11 +102,11 @@ Produces 20 JSONs: 10 seeds × 2 methods.
 
 ## 3. Dataset-size sweep for Fig. 3E (robustness)
 
-[`fig3_size_robustness.ipynb`](examples/fig3_size_robustness.ipynb) plots three models trained on `N ∈ {10, 94}` subjects across **three seeds**. Required output: `results/runs/ts_young_{model}_n{N}_seed{S}.json`.
+[`fig3_size_robustness.ipynb`](examples/fig3_size_robustness.ipynb) plots three models trained on `N ∈ {10, 94}` subjects, and [`fig3_combined_fc_and_size_sweep.ipynb`](examples/fig3_combined_fc_and_size_sweep.ipynb) reuses the same per-seed JSONs for **both** of its paired Wilcoxon tests (composite loss `N=10` vs `N=94`, and between- vs within-subject FC at `N=94`). Run **ten seeds** so the Wilcoxon test has enough paired samples. Required output: `results/runs/ts_young_{model}_n{N}_seed{S}.json`.
 
 ```bash
 DATA_ARGS="--dataset-type ts_young --data-path data/ts_young/ts_young_TR0.72.mat"
-for s in 42 43 44; do
+for s in 42 43 44 45 46 47 48 49 50 51; do
   for n in 10 94; do
     for m in hopf nsde hybrid_hopf; do
       .venv/bin/python examples/train_models.py backprop --model $m \
@@ -118,7 +118,7 @@ for s in 42 43 44; do
 done
 ```
 
-Produces 18 JSONs: 3 seeds × 2 sizes × 3 models.
+Produces 60 JSONs: 10 seeds × 2 sizes × 3 models. The 10-seed list matches `SEEDS = list(range(42, 52))` in [`fig3_combined_fc_and_size_sweep.ipynb`](examples/fig3_combined_fc_and_size_sweep.ipynb) and gives the paired Wilcoxon test enough power to surface `*`/`**`/`***` markers; with only 3 seeds the minimum two-sided p-value floors at ~0.25. (`fig3_size_robustness.ipynb` reads a subset for its own per-size panels.)
 
 ---
 
@@ -143,6 +143,7 @@ done
 | [`fig3_clustering_complexity.ipynb`](examples/fig3_clustering_complexity.ipynb) | `checkpoints/ts_young_{model}.pt` | `paper_new/images*/wholebrain/` complexity panels + `cache/` |
 | [`fig3_personalization.ipynb`](examples/fig3_personalization.ipynb) | `results/ts_young_{model}.json` from §1 | `paper_new/images*/comparison/intra_vs_inter*.{pdf,png,svg}` |
 | [`fig3_size_robustness.ipynb`](examples/fig3_size_robustness.ipynb) | `results/runs/ts_young_{model}_n{N}_seed{S}.json` (see §3) | `paper_new/images*/comparison/ts_young_dataset_size_sweep_*.{svg,png}` |
+| [`fig3_combined_fc_and_size_sweep.ipynb`](examples/fig3_combined_fc_and_size_sweep.ipynb) | `results/ts_young_{model}.json` (§1) + `results/runs/ts_young_{model}_n{10,94}_seed{42..51}.json` (§3); needs `scipy` | `paper_new/images*/comparison/ts_young_fc_intra_vs_inter_AND_size_sweep_composite.{pdf,png,svg}`; also prints two paired-Wilcoxon tables |
 | [`fig3_brain_panels.ipynb`](examples/fig3_brain_panels.ipynb) | `checkpoints/ts_young_{model}.pt`, [`dagush/WholeBrain`](https://github.com/dagush/WholeBrain) | `paper_new/images*/wholebrain/wholebrain_{fc,fcd,phfcd}_panel.png`, `_fc_residuals.png` |
 
 The four figures actually referenced by `paper_new/main.tex` are in `paper_new/images/diagrams/` and are exported from drawio sources in the same folder. Drawios embed the notebook outputs as base64; re-export after re-importing updated panels.
@@ -184,14 +185,14 @@ for s in 42 43 44 46 47 48 49 50 51 52; do
 done
 ```
 
-### §3 — dataset-size sweep (18 jobs)
+### §3 — dataset-size sweep (60 jobs)
 
 ```bash
 DATA_ARGS="--dataset-type ts_young --data-path data/ts_young/ts_young_TR0.72.mat --no-wandb"
 SBATCH="sbatch -M tinygpu --gres=gpu:1 --time=02:00:00 --parsable"
 
 SIZE_IDS=""
-for s in 42 43 44; do
+for s in 42 43 44 45 46 47 48 49 50 51; do
   for n in 10 94; do
     for m in hopf nsde hybrid_hopf; do
       id=$($SBATCH --wrap=".venv/bin/python examples/train_models.py backprop --model $m $DATA_ARGS \
@@ -208,9 +209,11 @@ Each step holds in the queue until its upstream jobs finish:
 
 - Postprocess only needs §1 → `afterok:$TRAIN_IDS`.
 - Notebooks read §1 checkpoints, §2 per-seed JSONs (`fig2_grid_vs_gradient`),
-  and §3 size-sweep JSONs (`fig3_size_robustness`). To keep it uniform we
-  gate all of them on `$TRAIN_IDS:$SEED_IDS:$SIZE_IDS`; the data-only
-  `fig1_data_pipeline.ipynb` will hold too, which is harmless.
+  and §3 size-sweep JSONs (`fig3_size_robustness` and
+  `fig3_combined_fc_and_size_sweep`, the latter also reading §1 per-model
+  JSONs for its FC bar heights). To keep it uniform we gate all of them on
+  `$TRAIN_IDS:$SEED_IDS:$SIZE_IDS`; the data-only `fig1_data_pipeline.ipynb`
+  will hold too, which is harmless.
 
 ```bash
 DATA_ARGS="--dataset-type ts_young --data-path data/ts_young/ts_young_TR0.72.mat --no-wandb"
@@ -236,5 +239,5 @@ done
 | Command | Status | Note |
 |---|---|---|
 | Loop with `for s in 42..52` over hopf-grid + hopf backprop | ✅ Correct | Matches §2 above. |
-| Dataset-size sweep loop | ✅ Correct | Matches the notebook's `SIZES = [10, 94]`, `SEEDS = [42, 43, 44]`, models `{hopf, nsde, hybrid_hopf}`. |
+| Dataset-size sweep loop | ✅ Correct | Matches `SIZES = [10, 94]`, models `{hopf, nsde, hybrid_hopf}`, and `SEEDS = list(range(42, 52))` (10 seeds) in `fig3_combined_fc_and_size_sweep.ipynb` (the Wilcoxon driver); `fig3_size_robustness.ipynb` reads a subset. |
 | `postprocess.py pipeline` for ts_young | ✅ Correct | |
