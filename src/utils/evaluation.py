@@ -356,7 +356,8 @@ def evaluate_model_loader_metrics(
     n_steps: int | None = None,
     n_simulations: int = 1,
     return_std: bool = False,
-) -> dict[str, float]:
+    return_values: bool = False,
+) -> dict[str, float] | tuple[dict[str, float], dict[str, list[float]]]:
     """
     Evaluate a model on the provided data loader.
 
@@ -371,9 +372,14 @@ def evaluate_model_loader_metrics(
         n_simulations: Number of repeated stochastic rollouts per batch
         return_std: If True, also return <metric>_std keys computed across
                     loader batches and repeated rollouts
+        return_values: If True, also return per-batch metric values (one entry
+                       per batch × stochastic rollout) used for paired
+                       significance testing across models.
 
     Returns:
-        Dictionary of metric_name → mean (and optionally metric_name_std → std)
+        Dictionary of metric_name → mean (optionally with <metric>_std keys).
+        When *return_values* is True, returns a tuple ``(metrics_dict,
+        per_batch_values)`` instead.
     """
     eval_modules = build_eval_metrics(
         tr=cfg.tr,
@@ -420,4 +426,8 @@ def evaluate_model_loader_metrics(
 
     # Return all computed metrics (use EVAL_METRIC_KEYS for formatted reports).
     all_keys = sorted(set(EVAL_METRIC_KEYS) | set(batch_accumulator.sums.keys()))
-    return batch_accumulator.summary(keys=all_keys, include_std=return_std)
+    summary = batch_accumulator.summary(keys=all_keys, include_std=return_std)
+    if return_values:
+        per_batch = {k: batch_accumulator.get_values(k) for k in all_keys}
+        return summary, per_batch
+    return summary

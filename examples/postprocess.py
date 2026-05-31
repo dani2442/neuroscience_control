@@ -183,6 +183,97 @@ TABLE_TARGET_BY_LABEL: dict[str, Path] = {
 }
 
 
+#: Mapping from comparison_results.json display labels to MODEL_DISPLAY keys.
+#: Used to align per-batch values (keyed by display label) with the table rows
+#: (keyed by model_key).
+_LABEL_TO_MODEL_KEY: dict[str, str] = {
+    "Hopf": "hopf",
+    "Hopf (Grid)": "hopf_grid",
+    "Neural SDE": "nsde",
+    "Hybrid Hopf": "hybrid_hopf",
+    "GNN Hopf": "gnn_hopf",
+    "Hybrid+Neural": "hybrid_neural",
+}
+
+
+def _sig_marker(p: float | None) -> str:
+    """Wilcoxon p-value → asterisk tier (matches old_vs_new_seeds.ipynb)."""
+    if p is None or math.isnan(p):
+        return ""
+    if p < 0.001:
+        return "***"
+    if p < 0.01:
+        return "**"
+    if p < 0.05:
+        return "*"
+    return ""
+
+
+def _paired_wilcoxon_pvalue(a: list[float], b: list[float]) -> float:
+    """Two-sided paired Wilcoxon p-value, NaN when undefined.
+
+    Pairs ``a`` and ``b`` element-wise; ignores entries where either is NaN.
+    """
+    try:
+        from scipy.stats import wilcoxon
+    except ImportError:
+        return float("nan")
+    if not a or not b:
+        return float("nan")
+    n = min(len(a), len(b))
+    pairs = [(x, y) for x, y in zip(a[:n], b[:n])
+             if not (math.isnan(x) or math.isnan(y))]
+    if len(pairs) < 2:
+        return float("nan")
+    a_arr = [x for x, _ in pairs]
+    b_arr = [y for _, y in pairs]
+    # All-equal samples → undefined Wilcoxon.
+    if all(abs(x - y) < 1e-12 for x, y in pairs):
+        return float("nan")
+    try:
+        _, p = wilcoxon(a_arr, b_arr, zero_method="wilcox", alternative="two-sided")
+    except ValueError:
+        return float("nan")
+    return float(p)
+
+
+def _best_vs_runner_up_pvalue(
+    metric_key: str,
+    metrics: dict[str, dict[str, float]],
+    per_batch_values: dict[str, dict[str, list[float]]] | None,
+) -> tuple[str | None, float]:
+    """Return ``(best_model_key, p_value)`` for ``metric_key``.
+
+    Identifies the best model by *mean*, then runs a paired Wilcoxon between
+    the best and the second-best model's per-batch values. Returns ``NaN``
+    when per-batch values are missing, the runner-up is undefined, or scipy
+    is unavailable.
+    """
+    if not per_batch_values:
+        return None, float("nan")
+    higher_better = HIGHER_BETTER.get(metric_key, True)
+    scored: list[tuple[str, float]] = []
+    for mk, m in metrics.items():
+        v = m.get(metric_key)
+        if v is None:
+            continue
+        try:
+            fv = float(v)
+        except (TypeError, ValueError):
+            continue
+        if math.isnan(fv):
+            continue
+        scored.append((mk, fv))
+    if len(scored) < 2:
+        return (scored[0][0] if scored else None), float("nan")
+    scored.sort(key=lambda kv: kv[1], reverse=higher_better)
+    best_key, _ = scored[0]
+    runner_key, _ = scored[1]
+    best_vals = per_batch_values.get(best_key, {}).get(metric_key, [])
+    runner_vals = per_batch_values.get(runner_key, {}).get(metric_key, [])
+    return best_key, _paired_wilcoxon_pvalue(best_vals, runner_vals)
+
+
 def _fmt_table(val: float | None, key: str, std: float | None = None) -> str:
     """Format a metric value, optionally with std in smaller font."""
     if val is None or (isinstance(val, float) and math.isnan(val)):
@@ -227,11 +318,21 @@ def _active_metric_cols(metrics: dict[str, dict[str, float]]) -> list[tuple[str,
 def _build_table_body(
     metrics: dict[str, dict[str, float]],
     metric_cols: list[tuple[str, str]],
+    per_batch_values: dict[str, dict[str, list[float]]] | None = None,
 ) -> str:
-    """Return LaTeX table rows (\\midrule … \\bottomrule exclusive)."""
+    """Return LaTeX table rows (\\midrule … \\bottomrule exclusive).
+
+    When *per_batch_values* (keyed by model_key) is provided, a paired
+    Wilcoxon test is run between the best model's per-batch values and
+    those of the runner-up for each metric. A significance marker
+    (``*``/``**``/``***`` for p<0.05/0.01/0.001) is appended next to the
+    bolded best value.
+    """
     col_keys = [mk for mk, _ in metric_cols]
 
     best: dict[str, float] = {}
+    best_key_for: dict[str, str] = {}
+    sig_marker: dict[str, str] = {}
     for mk in col_keys:
         vals = [
             m.get(mk) for m in metrics.values()
@@ -240,6 +341,10 @@ def _build_table_body(
         if not vals:
             continue
         best[mk] = max(vals) if HIGHER_BETTER.get(mk, True) else min(vals)
+        best_k, p = _best_vs_runner_up_pvalue(mk, metrics, per_batch_values)
+        if best_k is not None:
+            best_key_for[mk] = best_k
+            sig_marker[mk] = _sig_marker(p)
 
     rows: list[str] = []
     for model_key, display_name in MODEL_DISPLAY.items():
@@ -254,15 +359,21 @@ def _build_table_body(
             if val is not None and not math.isnan(float(val)) and best.get(mk) is not None:
                 if abs(float(val) - best[mk]) < 1e-6:
                     formatted = _bold(formatted)
+                    marker = sig_marker.get(mk, "")
+                    if marker and best_key_for.get(mk) == model_key:
+                        formatted += rf"$^{{{marker}}}$"
             cells.append(formatted)
         rows.append("    " + " & ".join(cells) + r" \\")
     return "\n".join(rows)
 
 
-def _build_tabular(metrics: dict[str, dict[str, float]]) -> str:
+def _build_tabular(
+    metrics: dict[str, dict[str, float]],
+    per_batch_values: dict[str, dict[str, list[float]]] | None = None,
+) -> str:
     """Build a complete LaTeX tabular fragment matching the active metrics."""
     metric_cols = _active_metric_cols(metrics)
-    body = _build_table_body(metrics, metric_cols)
+    body = _build_table_body(metrics, metric_cols, per_batch_values=per_batch_values)
     header = "Model"
     if metric_cols:
         header += " & " + " & ".join(label for _, label in metric_cols)
@@ -332,11 +443,41 @@ def _aggregate_individual_metrics(
     return inferred_type or dataset_type, combined or None
 
 
+def _load_per_batch_values(
+    comparison_json: str | Path | None,
+) -> dict[str, dict[str, list[float]]] | None:
+    """Load per-batch values keyed by *model_key* from a comparison JSON.
+
+    Returns ``None`` when the file is missing, the ``per_batch_values`` block
+    is absent, or no display label maps to a known model_key.
+    """
+    if comparison_json is None:
+        return None
+    p = Path(comparison_json)
+    if not p.exists():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    block = data.get("per_batch_values", {}).get("test_inter")
+    if not block:
+        return None
+    out: dict[str, dict[str, list[float]]] = {}
+    for label, by_metric in block.items():
+        model_key = _LABEL_TO_MODEL_KEY.get(label)
+        if model_key is None:
+            continue
+        out[model_key] = {k: [float(x) for x in v] for k, v in by_metric.items()}
+    return out or None
+
+
 def run_update_tables(
     metrics_json: str | Path | None = None,
     tex_target: str | Path | None = None,
     table_label: str | None = None,
     dry_run: bool = False,
+    comparison_json: str | Path | None = "results/comparison_results.json",
 ) -> None:
     """Patch paper LaTeX tables with fresh metrics."""
     if metrics_json is None:
@@ -381,7 +522,11 @@ def run_update_tables(
         tex_path = TABLE_TARGET_BY_LABEL.get(table_label, Path("paper/sections/03_results.tex"))
     print(f"Target file: {tex_path}")
 
-    tabular = _build_tabular(metrics)
+    per_batch_values = _load_per_batch_values(comparison_json)
+    if per_batch_values:
+        print(f"Loaded per-batch values for {len(per_batch_values)} models "
+              f"from {comparison_json} (used for paired Wilcoxon significance).")
+    tabular = _build_tabular(metrics, per_batch_values=per_batch_values)
     print("\nGenerated table:")
     print(tabular)
 
@@ -497,11 +642,13 @@ def _save_comparison_results(
     test_inter_results: dict[str, dict[str, float]],
     test_intra_results: dict[str, dict[str, float]],
     save_path: str,
+    test_inter_values: dict[str, dict[str, list[float]]] | None = None,
+    test_intra_values: dict[str, dict[str, list[float]]] | None = None,
 ) -> None:
     """Save comparison results (both splits) to JSON."""
     save_path = Path(save_path)
     save_path.parent.mkdir(parents=True, exist_ok=True)
-    serializable = {
+    serializable: dict[str, Any] = {
         "test_inter": {
             mn: {k: float(v) for k, v in metrics.items()}
             for mn, metrics in test_inter_results.items()
@@ -511,6 +658,17 @@ def _save_comparison_results(
             for mn, metrics in test_intra_results.items()
         },
     }
+    if test_inter_values is not None or test_intra_values is not None:
+        serializable["per_batch_values"] = {
+            "test_inter": {
+                mn: {k: [float(x) for x in v] for k, v in vals.items()}
+                for mn, vals in (test_inter_values or {}).items()
+            },
+            "test_intra": {
+                mn: {k: [float(x) for x in v] for k, v in vals.items()}
+                for mn, vals in (test_intra_values or {}).items()
+            },
+        }
     with open(save_path, "w") as f:
         json.dump(serializable, f, indent=2)
     print(f"Results saved to {save_path}")
@@ -567,6 +725,7 @@ def run_compare_models(
     # Dataset config overrides (forwarded to load_dataset via cfg)
     data_path: str | None = None,
     lsd_data_dir: str | None = None,
+    n_eval_seeds: int = 10,
 ) -> dict | None:
     """Compare trained models using the same evaluation as train_models.py.
 
@@ -621,22 +780,65 @@ def run_compare_models(
         print("Error: No models could be loaded. Please check checkpoint paths.")
         return None
 
-    print_section("STEP 2: Evaluating Models")
+    print_section(f"STEP 2: Evaluating Models ({n_eval_seeds} eval seeds × {len(models)} models)")
     test_inter_results: dict[str, dict[str, float]] = {}
     test_intra_results: dict[str, dict[str, float]] = {}
+    test_inter_values: dict[str, dict[str, list[float]]] = {}
+    test_intra_values: dict[str, dict[str, list[float]]] = {}
+    # Accumulators across seeds: model → metric → list[per-batch values across all seeds]
+    inter_runs: dict[str, list[dict[str, float]]] = {n: [] for n in models}
+    intra_runs: dict[str, list[dict[str, float]]] = {n: [] for n in models}
+    for n in models:
+        test_inter_values[n] = {}
+        test_intra_values[n] = {}
 
-    for name, model in models.items():
-        print(f"\n  Evaluating {name}...")
-        inter_metrics = evaluate_model_loader_metrics(
-            model, test_inter_loader, cfg, n_steps=window_size, return_std=True,
-        )
-        intra_metrics = evaluate_model_loader_metrics(
-            model, test_intra_loader, cfg, n_steps=window_size, return_std=True,
-        )
-        test_inter_results[name] = _as_numeric(inter_metrics)
-        test_intra_results[name] = _as_numeric(intra_metrics)
-        print(f"    Inter: {format_metrics_mean_std(inter_metrics)}")
-        print(f"    Intra: {format_metrics_mean_std(intra_metrics)}")
+    # Re-seed before every (seed × model) evaluation so the test loader yields
+    # identical windows across models within one seed. This makes the
+    # per-batch values from different models aligned and validly paired.
+    base_seed = int(getattr(cfg, "seed", 42))
+    for s_idx in range(n_eval_seeds):
+        eval_seed = base_seed + s_idx + 1
+        print(f"\n  --- Eval seed {eval_seed} ({s_idx + 1}/{n_eval_seeds}) ---")
+        for name, model in models.items():
+            seed_all(eval_seed)
+            inter_metrics, inter_values = evaluate_model_loader_metrics(
+                model, test_inter_loader, cfg, n_steps=window_size,
+                return_std=True, return_values=True,
+            )
+            seed_all(eval_seed)
+            intra_metrics, intra_values = evaluate_model_loader_metrics(
+                model, test_intra_loader, cfg, n_steps=window_size,
+                return_std=True, return_values=True,
+            )
+            inter_runs[name].append(_as_numeric(inter_metrics))
+            intra_runs[name].append(_as_numeric(intra_metrics))
+            for k, vs in inter_values.items():
+                test_inter_values[name].setdefault(k, []).extend(vs)
+            for k, vs in intra_values.items():
+                test_intra_values[name].setdefault(k, []).extend(vs)
+            print(f"    {name}: Inter={format_metrics_mean_std(inter_metrics)}")
+            print(f"    {name}: Intra={format_metrics_mean_std(intra_metrics)}")
+
+    # Aggregate headline numbers as mean across eval seeds (and std as std-of-means).
+    def _agg(runs: list[dict[str, float]]) -> dict[str, float]:
+        if not runs:
+            return {}
+        keys = set()
+        for r in runs:
+            keys.update(k for k in r if not k.endswith("_std"))
+        out: dict[str, float] = {}
+        for k in keys:
+            vals = [r[k] for r in runs if k in r and not math.isnan(r[k])]
+            if not vals:
+                continue
+            out[k] = float(np.mean(vals))
+            if len(vals) > 1:
+                out[f"{k}_std"] = float(np.std(vals, ddof=1))
+        return out
+
+    for name in models:
+        test_inter_results[name] = _agg(inter_runs[name])
+        test_intra_results[name] = _agg(intra_runs[name])
 
     with managed_wandb_run(
         use_wandb=use_wandb,
@@ -656,14 +858,23 @@ def run_compare_models(
                 use_wandb=use_wandb, save_dir=figures_dir,
             )
 
-    _save_comparison_results(test_inter_results, test_intra_results, output_path)
+    _save_comparison_results(
+        test_inter_results, test_intra_results, output_path,
+        test_inter_values=test_inter_values,
+        test_intra_values=test_intra_values,
+    )
     _print_comparison_table(test_inter_results, "INTER-PATIENT TEST SET")
     _print_comparison_table(test_intra_results, "INTRA-PATIENT TEST SET")
 
     print_section("COMPARISON COMPLETED SUCCESSFULLY")
     print(f"\nResults saved to: {output_path}")
     print(f"Figures saved to: {figures_dir}")
-    return {"test_inter": test_inter_results, "test_intra": test_intra_results}
+    return {
+        "test_inter": test_inter_results,
+        "test_intra": test_intra_results,
+        "test_inter_values": test_inter_values,
+        "test_intra_values": test_intra_values,
+    }
 
 
 # ===================================================================
@@ -1392,6 +1603,7 @@ def run_paper_pipeline(
     n_steps: int = 240,
     n_paths: int = 10,
     group_size: int = 4,
+    n_eval_seeds: int = 10,
 ) -> dict[str, Any]:
     """Run the full post-training paper pipeline."""
     print_section("POST-TRAINING PAPER PIPELINE")
@@ -1403,15 +1615,7 @@ def run_paper_pipeline(
         table_label = "tab:model_comparison"
     dataset_figures_dir = FIGURES_DIR / dataset_type
 
-    print_section("Step 1/4: Updating LaTeX tables")
-    try:
-        run_update_tables(metrics_json=metrics_json, table_label=table_label)
-        results["update_tables"] = "ok"
-    except Exception as exc:
-        print(f"  Warning: update_paper_tables failed: {exc}")
-        results["update_tables"] = f"error: {exc}"
-
-    print_section("Step 2/4: Comparing models (inter + intra patient)")
+    print_section("Step 1/4: Comparing models (inter + intra patient)")
     checkpoints = _discover_checkpoints(dataset_type, checkpoint_dir, explicit_checkpoints)
 
     if checkpoints:
@@ -1426,6 +1630,7 @@ def run_paper_pipeline(
                 save_dir=dataset_figures_dir,
                 data_path=data_path,
                 lsd_data_dir=lsd_data_dir,
+                n_eval_seeds=n_eval_seeds,
             )
             results["compare_models"] = "ok"
         except Exception as exc:
@@ -1434,6 +1639,18 @@ def run_paper_pipeline(
     else:
         print("  Skipped: no checkpoints found.")
         results["compare_models"] = "skipped"
+
+    print_section("Step 2/4: Updating LaTeX tables")
+    try:
+        run_update_tables(
+            metrics_json=metrics_json,
+            table_label=table_label,
+            comparison_json=output_path,
+        )
+        results["update_tables"] = "ok"
+    except Exception as exc:
+        print(f"  Warning: update_paper_tables failed: {exc}")
+        results["update_tables"] = f"error: {exc}"
 
     if dataset_type == "lsd":
         print_section("Step 3/4: Comparing control conditions (LSD)")
@@ -1490,6 +1707,7 @@ def _run_pipeline(args: argparse.Namespace) -> dict[str, object]:
         n_steps=getattr(args, "n_steps", 240),
         n_paths=getattr(args, "n_paths", 10),
         group_size=getattr(args, "group_size", 4),
+        n_eval_seeds=getattr(args, "n_eval_seeds", 10),
     )
     return {"pipeline_results": result}
 
@@ -1500,6 +1718,7 @@ def _run_update_tables(args: argparse.Namespace) -> dict[str, object]:
         tex_target=getattr(args, "tex", None),
         table_label=getattr(args, "table_label", None),
         dry_run=getattr(args, "dry_run", False),
+        comparison_json=getattr(args, "comparison_json", "results/comparison_results.json"),
     )
     return {"update_tables": "done"}
 
@@ -1517,6 +1736,7 @@ def _run_compare(args: argparse.Namespace) -> dict[str, object]:
         skip_figures=getattr(args, "skip_figures", False),
         data_path=getattr(args, "data_path", None),
         lsd_data_dir=getattr(args, "lsd_data_dir", None),
+        n_eval_seeds=getattr(args, "n_eval_seeds", 10),
     )
     return {"compare_results": result}
 
@@ -1567,6 +1787,12 @@ def _add_pipeline_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--no-wandb", action="store_true", help="Disable wandb logging")
     p.add_argument("--checkpoint-dir", type=str, default="checkpoints", help="Checkpoint directory")
     p.add_argument("--group-size", type=int, default=0, help="Samples per group for metric evaluation (0 = full batch)")
+    p.add_argument(
+        "--n-eval-seeds", type=int, default=10,
+        help="Number of evaluation seeds for compare-models. Each seed reseeds "
+             "the loader before sampling, producing matched per-batch values "
+             "across models for paired Wilcoxon significance markers.",
+    )
     add_dataset_args(p)
 
 
@@ -1591,6 +1817,10 @@ def _build_parser() -> argparse.ArgumentParser:
     update_tables.add_argument("--tex", type=str, default=None, help="Explicit .tex file to patch")
     update_tables.add_argument("--table-label", type=str, default=None, help="LaTeX table label")
     update_tables.add_argument("--dry-run", action="store_true", help="Preview without writing")
+    update_tables.add_argument(
+        "--comparison-json", type=str, default="results/comparison_results.json",
+        help="Path to comparison_results.json with per_batch_values (used for Wilcoxon significance markers)",
+    )
 
     # compare
     compare = subparsers.add_parser("compare", help="Compare all models (inter + intra patient tables)")

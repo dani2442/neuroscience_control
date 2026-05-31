@@ -50,6 +50,7 @@ class MetricAccumulator:
         self.sums: Dict[str, float] = {}
         self.sum_squares: Dict[str, float] = {}
         self.counts: Dict[str, int] = {}
+        self.values: Dict[str, list[float]] = {}
 
     def update(self, metrics: Dict[str, Any]) -> None:
         for key, value in metrics.items():
@@ -59,6 +60,10 @@ class MetricAccumulator:
             self.sums[key] = self.sums.get(key, 0.0) + numeric
             self.sum_squares[key] = self.sum_squares.get(key, 0.0) + (numeric * numeric)
             self.counts[key] = self.counts.get(key, 0) + 1
+            self.values.setdefault(key, []).append(numeric)
+
+    def get_values(self, key: str) -> list[float]:
+        return list(self.values.get(key, []))
 
     def average(self, key: str) -> float:
         count = self.counts.get(key, 0)
