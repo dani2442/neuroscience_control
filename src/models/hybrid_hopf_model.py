@@ -148,10 +148,12 @@ class HybridHopfSDEFunc(nn.Module):
         noise_sigma: float = 0.5,
         control_coupling: Optional[nn.Parameter] = None,
         n_control_dims: int = 0,
+        disable_local: bool = False,
     ):
         super().__init__()
         self.n_rois = n_rois
         self.noise_sigma = noise_sigma
+        self.disable_local = disable_local
         self.a = a
         self.global_coupling = g
         self.kappa = kappa
@@ -247,9 +249,14 @@ class HybridHopfSDEFunc(nn.Module):
         y = y * scale
 
         # --- local Hopf term ---
-        z_sq = torch.abs(y) ** 2
-        omega = self.omega.unsqueeze(0)
-        local = y * (self.kappa * self.a - self.kappa * z_sq + 1j * omega)
+        if self.disable_local:
+            # Ablation: remove the mechanistic Hopf local term, keep the
+            # learned coupling architecture intact.
+            local = torch.zeros_like(y)
+        else:
+            z_sq = torch.abs(y) ** 2
+            omega = self.omega.unsqueeze(0)
+            local = y * (self.kappa * self.a - self.kappa * z_sq + 1j * omega)
 
         # --- key embeddings ---
         K = self.key_net(y)  # (batch, n, d_k)
@@ -304,6 +311,8 @@ class HybridHopfModel(BaseNeuroscienceModel):
         learnable_kappa: bool = True,
         learnable_omega: bool = False,
         n_control_dims: int = 0,
+        learnable_coupling: bool = True,
+        disable_local: bool = False,
     ):
         super().__init__(n_rois, device)
         self.noise_sigma = noise_sigma
@@ -311,6 +320,8 @@ class HybridHopfModel(BaseNeuroscienceModel):
         self.learnable_g = learnable_g
         self.learnable_kappa = learnable_kappa
         self.learnable_omega = learnable_omega
+        self.learnable_coupling = learnable_coupling
+        self.disable_local = disable_local
         self.coupling_hidden_dim = coupling_hidden_dim
         self.coupling_n_layers = coupling_n_layers
         self.coupling_rank = coupling_rank
@@ -327,17 +338,27 @@ class HybridHopfModel(BaseNeuroscienceModel):
         self.register_buffer("structural_connectivity", sc)
 
         # ── coupling matrix C ──
+        # When ``learnable_coupling`` is False the coupling factors are frozen
+        # at their SC-derived initialisation (registered as buffers), so C is a
+        # fixed structural prior rather than a learned quantity.
+        def _coupling_tensor(t: torch.Tensor, name: str) -> torch.Tensor:
+            t = t.to(device)
+            if learnable_coupling:
+                return nn.Parameter(t)
+            self.register_buffer(name, t)
+            return getattr(self, name)
+
         if coupling_rank is not None:
             r = min(coupling_rank, n_rois)
             L_init, R_init = _svd_init(sc, r)
-            self.coupling_L = nn.Parameter(L_init.to(device))
-            self.coupling_R = nn.Parameter(R_init.to(device))
+            self.coupling_L = _coupling_tensor(L_init, "coupling_L")
+            self.coupling_R = _coupling_tensor(R_init, "coupling_R")
             self.coupling_full = None
             self._effective_rank = r
         else:
             self.coupling_L = None
             self.coupling_R = None
-            self.coupling_full = nn.Parameter(sc.clone().to(device))
+            self.coupling_full = _coupling_tensor(sc.clone(), "coupling_full")
             self._effective_rank = n_rois
 
         # Bifurcation parameter
@@ -391,6 +412,7 @@ class HybridHopfModel(BaseNeuroscienceModel):
             noise_sigma,
             control_coupling=self.control_coupling,
             n_control_dims=n_control_dims,
+            disable_local=disable_local,
         )
         self.to(device)
 
@@ -494,6 +516,8 @@ class HybridHopfModel(BaseNeuroscienceModel):
             "coupling_hidden_dim": int(self.coupling_hidden_dim),
             "coupling_n_layers": int(self.coupling_n_layers),
             "coupling_rank": self.coupling_rank,
+            "learnable_coupling": bool(self.learnable_coupling),
+            "disable_local": bool(self.disable_local),
             "d_key": int(self.d_key),
             "initial_a": float(self.a.detach().mean().cpu().item()),
             "initial_g": float(self.g.detach().cpu().item()),

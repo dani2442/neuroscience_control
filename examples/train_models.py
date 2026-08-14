@@ -92,6 +92,77 @@ _MODEL_TITLES = {
 # Config helpers
 # ---------------------------------------------------------------------------
 
+def _add_ablation_args(parser: argparse.ArgumentParser) -> None:
+    """Ablation / control flags for appendix experiments (backprop only)."""
+    parser.add_argument("--hidden-dim", type=int, default=None,
+                        help="Override Neural SDE hidden_dim (e.g. for a parameter-matched baseline).")
+    parser.add_argument("--n-layers", type=int, default=None,
+                        help="Override Neural SDE n_layers.")
+    parser.add_argument("--sc-mode", type=str, default="real",
+                        choices=["real", "shuffled", "random"],
+                        help="Structural-connectome ablation: real SC, edge-weight-shuffled SC, "
+                             "or a random symmetric graph (seeded by cfg.seed).")
+    parser.add_argument("--no-learnable-coupling", dest="learnable_coupling",
+                        action="store_false", default=None,
+                        help="Hybrid Hopf: freeze the SC-initialised coupling C (fixed connectivity).")
+    parser.add_argument("--disable-local", dest="disable_local",
+                        action="store_true", default=None,
+                        help="Hybrid Hopf: drop the mechanistic Hopf local term, keep the coupling network.")
+    parser.add_argument("--zero-loss", nargs="+", default=None, metavar="KEY",
+                        help="Loss-term keys to set to 0 (e.g. fdm fcd phfcd phase_fc_correlation metastability).")
+
+
+def _apply_ablation_overrides(cfg, args: argparse.Namespace) -> None:
+    """Apply appendix ablation overrides onto *cfg* (no-op when flags unset)."""
+    if getattr(args, "hidden_dim", None) is not None and hasattr(cfg, "hidden_dim"):
+        cfg.hidden_dim = args.hidden_dim
+    if getattr(args, "n_layers", None) is not None and hasattr(cfg, "n_layers"):
+        cfg.n_layers = args.n_layers
+    if getattr(args, "learnable_coupling", None) is not None and hasattr(cfg, "learnable_coupling"):
+        cfg.learnable_coupling = args.learnable_coupling
+    if getattr(args, "disable_local", None) is not None and hasattr(cfg, "disable_local"):
+        cfg.disable_local = args.disable_local
+    zero_loss = getattr(args, "zero_loss", None)
+    if zero_loss:
+        unknown = set(zero_loss) - set(cfg.loss_weights)
+        if unknown:
+            raise SystemExit(
+                f"--zero-loss got unknown keys {sorted(unknown)}; "
+                f"valid keys: {sorted(cfg.loss_weights)}"
+            )
+        for key in zero_loss:
+            cfg.loss_weights[key] = 0.0
+
+
+def _transform_sc(sc: "torch.Tensor", mode: str, seed: int) -> "torch.Tensor":
+    """Return a structural-connectivity ablation of *sc*.
+
+    - ``real``:     unchanged.
+    - ``shuffled``: permute the off-diagonal edge weights (symmetric), preserving
+                    the weight distribution and density but destroying topology.
+    - ``random``:   random symmetric non-negative matrix matched to |sc|'s mean/std.
+    """
+    if mode == "real":
+        return sc
+    n = sc.shape[0]
+    g = torch.Generator(device="cpu").manual_seed(int(seed))
+    sc_cpu = sc.detach().to("cpu").float()
+    iu = torch.triu_indices(n, n, offset=1)
+    off = sc_cpu[iu[0], iu[1]]
+    if mode == "shuffled":
+        perm = torch.randperm(off.numel(), generator=g)
+        new_off = off[perm]
+    elif mode == "random":
+        mean, std = off.abs().mean(), off.abs().std().clamp(min=1e-6)
+        new_off = (torch.randn(off.numel(), generator=g) * std + mean).abs()
+    else:  # pragma: no cover - guarded by argparse choices
+        raise ValueError(f"Unknown sc-mode: {mode}")
+    out = torch.zeros_like(sc_cpu)
+    out[iu[0], iu[1]] = new_off
+    out = out + out.T  # symmetric, zero diagonal
+    return out.to(sc.device, sc.dtype)
+
+
 def _apply_common_cfg_overrides(cfg, args: argparse.Namespace) -> None:
     if args.no_wandb:
         cfg.use_wandb = False
@@ -319,6 +390,8 @@ def _run_backprop(args: argparse.Namespace) -> dict[str, object]:
     if fdm_weight > 0.0:
         cfg.loss_weights["fdm"] = fdm_weight
 
+    _apply_ablation_overrides(cfg, args)
+
     print_section("STEP 1: Loading and Processing Data")
     dataset = load_dataset(cfg, device)
     window_size = min(cfg.window_size, dataset.n_timepoints // 2)
@@ -338,8 +411,12 @@ def _run_backprop(args: argparse.Namespace) -> dict[str, object]:
           f"  test_inter={len(test_inter_loader)}  test_intra={intra_info}")
 
     print_section("STEP 2: Training Model (Backpropagation)")
+    sc_mode = getattr(args, "sc_mode", "real")
+    structural_connectivity = _transform_sc(dataset.fc_mean, sc_mode, cfg.seed)
+    if sc_mode != "real":
+        print(f"  Structural connectivity ablation: sc_mode={sc_mode} (seed={cfg.seed})")
     model = build_model(args.model, dataset, cfg, device,
-                        structural_connectivity=dataset.fc_mean,
+                        structural_connectivity=structural_connectivity,
                         n_control_dims=dataset.n_control_dims)
     ref_amplitude = compute_ref_amplitude(dataset.timeseries)
     ref_omega = compute_ref_omega(dataset.timeseries, tr=cfg.tr, f_lo=cfg.f_lo, f_hi=cfg.f_hi)
@@ -596,6 +673,7 @@ def _build_parser() -> argparse.ArgumentParser:
     backprop.add_argument("--model", type=str, default="nsde", choices=list(_CONFIG_CLS))
     backprop.add_argument("--fdm", type=float, default=0.0,
                           help="FDM loss weight (0 = disabled, suggested: 0.25)")
+    _add_ablation_args(backprop)
     _add_common(backprop)
 
     hopf_grid = subparsers.add_parser("hopf-grid", help="Train Coupled Hopf with grid search")

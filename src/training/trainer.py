@@ -1,7 +1,9 @@
 """Trainer class for backpropagation-based training."""
 
 import dataclasses
+import os
 import time
+import uuid
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -98,6 +100,10 @@ class Trainer:
         self.checkpoint_dir = Path(checkpoint_dir)
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         self.experiment_name = experiment_name
+        # Process-unique name for the temporary best-model checkpoint so that
+        # concurrent runs sharing an experiment_name (e.g. seed/ablation sweeps
+        # launched in parallel) never read or overwrite each other's file.
+        self._best_ckpt_name = f"best_{experiment_name}_{os.getpid()}_{uuid.uuid4().hex[:8]}.pt"
 
         # Metrics storage
         self.metrics_store = MetricsStore(
@@ -442,7 +448,7 @@ class Trainer:
                 patience_counter = 0
 
                 if save_best:
-                    checkpoint_path = f"best_{self.experiment_name}.pt"
+                    checkpoint_path = self._best_ckpt_name
                     self.save_checkpoint(checkpoint_path)
                     self._log_wandb_artifact(
                         str(self.checkpoint_dir / checkpoint_path),
@@ -480,7 +486,7 @@ class Trainer:
 
         # Restore best weights and remove the temporary checkpoint file
         if save_best:
-            best_ckpt = self.checkpoint_dir / f"best_{self.experiment_name}.pt"
+            best_ckpt = self.checkpoint_dir / self._best_ckpt_name
             if best_ckpt.exists():
                 self.model.load(str(best_ckpt))
                 best_ckpt.unlink()

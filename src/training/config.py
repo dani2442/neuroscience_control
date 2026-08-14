@@ -184,6 +184,10 @@ class HybridHopfConfig(TrainingConfig):
     learnable_fc: bool = False  # Kept for backward compat with HopfConfig checks
     use_adjoint: bool = True  # Adjoint SDE solver to reduce CUDA memory usage
 
+    # Ablation switches
+    learnable_coupling: bool = True  # False → freeze SC-initialised coupling C
+    disable_local: bool = False  # True → drop the mechanistic Hopf local term
+
     # Node-network architecture (key + output MLPs)
     coupling_hidden_dim: int = 16
     coupling_n_layers: int = 1

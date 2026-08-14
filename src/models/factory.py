@@ -98,6 +98,8 @@ def build_model(
             learnable_kappa=cfg.learnable_kappa,
             learnable_omega=cfg.learnable_omega,
             n_control_dims=n_control_dims,
+            learnable_coupling=getattr(cfg, "learnable_coupling", True),
+            disable_local=getattr(cfg, "disable_local", False),
         )
         n_learn = sum(p.numel() for p in model.parameters() if p.requires_grad)
         rank_str = f"rank={cfg.coupling_rank}" if cfg.coupling_rank else "full-rank"

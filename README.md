@@ -343,6 +343,8 @@ python examples/train_models.py paper --output-json results/paper_metrics.json
 
 **Common flags:** `--no-wandb`, `--device {auto,cuda,cpu}`, `--skip-figures`, `--n-epochs N`
 
+**Ablation flags** (`backprop`): `--sc-mode`, `--no-learnable-coupling`, `--disable-local`, `--zero-loss`, `--hidden-dim/--n-layers` — see [Reproducing the Appendix Ablations](#reproducing-the-appendix-ablations).
+
 Training hyperparameters (learning rate, loss weights, dataset backend, solver settings, atlas settings, and split ratios) are configured via the `TrainingConfig` dataclasses in `src/training/config.py`.
 
 The `paper` subcommand saves an aggregated metrics JSON. Post-training report generation, table patching, and figure comparison live in [`examples/postprocess.py`](examples/postprocess.py).
@@ -617,3 +619,73 @@ Run from the repository root. See each script's docstring for full usage details
   --dataset-type lsd \
   --lsd-data-dir data/lsd
 ```
+
+## Reproducing the Appendix Ablations
+
+The controls/ablations in the appendix (Table: *Controls and ablations*) isolate
+**why** the Hybrid Hopf model performs well by changing one ingredient at a time.
+They are driven by the same `backprop` entry point via a set of ablation flags.
+
+### Ablation flags (`backprop` subcommand)
+
+| Flag | Effect |
+| --- | --- |
+| `--hidden-dim N` `--n-layers L` | Override the Neural SDE drift/diffusion size (used for the **parameter-matched** baseline). |
+| `--sc-mode {real,shuffled,random}` | Structural connectome used to seed the coupling: unchanged, edge-weight **shuffled** (topology destroyed), or a **random** symmetric graph. Seeded by `--seed`. |
+| `--no-learnable-coupling` | Freeze the coupling `C` at its connectome initialization (**fixed** vs. learnable connectivity; Hybrid Hopf only). |
+| `--disable-local` | Zero the mechanistic **Hopf local term**, keeping the learned coupling architecture (Hybrid Hopf only). |
+| `--zero-loss KEY [KEY ...]` | Set the listed loss weights to 0. Keys: `fc_correlation fc_mse l2 amplitude omega power_spectrum temporal_correlation autocorrelation fcd phfcd phase_fc_correlation metastability fdm`. |
+
+Each run also takes `--seed S` and `--run-suffix TAG`; results are written to
+`results/runs/<dataset>_<model>_<TAG>.json`.
+
+### The eight configurations (HCP / `ts_young`, one seed shown)
+
+```bash
+DATA=data/ts_young/ts_young_TR0.72.mat
+COMMON="--dataset-type ts_young --data-path $DATA --no-wandb --skip-figures --seed 42"
+PY=".venv/bin/python examples/train_models.py backprop"
+
+# Reference Hybrid Hopf
+$PY --model hybrid_hopf $COMMON --run-suffix baseline_seed42
+# Parameter-matched Neural SDE (~2.8k params, matches Hybrid Hopf's ~2.2k)
+$PY --model nsde        $COMMON --hidden-dim 4 --n-layers 1 --run-suffix pmatch_seed42
+# Shuffled / random connectome
+$PY --model hybrid_hopf $COMMON --sc-mode shuffled --run-suffix scshuffle_seed42
+$PY --model hybrid_hopf $COMMON --sc-mode random   --run-suffix scrandom_seed42
+# Fixed (frozen) connectivity
+$PY --model hybrid_hopf $COMMON --no-learnable-coupling --run-suffix fixedcoupling_seed42
+# Ablate the Hopf local term
+$PY --model hybrid_hopf $COMMON --disable-local --run-suffix nolocal_seed42
+# Loss ablations: FDM, and the dynamic-connectivity surrogates
+$PY --model hybrid_hopf $COMMON --zero-loss fdm --run-suffix nofdm_seed42
+$PY --model hybrid_hopf $COMMON \
+  --zero-loss fcd phfcd phase_fc_correlation metastability --run-suffix nodyn_seed42
+```
+
+The paper table uses **three seeds** (42, 43, 44); vary `--seed` and the
+`_seed<N>` suffix accordingly.
+
+### GPU batch launcher (SLURM)
+
+The full 8-config × 3-seed batch is scripted in
+[`logs/ablation/launch_full.sh`](logs/ablation/launch_full.sh), which submits one
+`sbatch -M tinygpu` job per run (adjust `-M`/partition for your cluster):
+
+```bash
+bash logs/ablation/launch_full.sh
+```
+
+### Aggregate into the LaTeX table
+
+Once the `results/runs/*.json` files exist, build the appendix table
+([`paper/sections/ts_young_ablation_table.tex`](paper/sections/ts_young_ablation_table.tex)):
+
+```bash
+.venv/bin/python examples/aggregate_ablations.py \
+  --ds ts_young --out paper/sections/ts_young_ablation_table.tex
+```
+
+The script reports per-configuration seed coverage and writes the mean ± std
+`tabular`. The section prose lives in
+[`paper/sections/05_ablations.tex`](paper/sections/05_ablations.tex).
