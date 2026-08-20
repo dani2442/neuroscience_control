@@ -477,6 +477,11 @@ neuroscience_control/
 ├── examples/
 │   ├── train_models.py            # Training entry point: backprop, hopf-grid, paper
 │   ├── postprocess.py             # Table updates, model comparison, LSD condition comparisons
+│   ├── aggregate_seeds.py         # Seed-level model tables + paired Wilcoxon/Holm + composite
+│   ├── evaluate_generative.py     # Repeated-realization, coverage and personalization evaluation
+│   ├── aggregate_generative.py    # Variance decomposition, coverage, personalization tables
+│   ├── coupling_diagnostics.py    # Learned-coupling vs connectome-initialization diagnostics
+│   ├── aggregate_ablations.py     # Ablation table from per-seed ablation runs
 │   ├── cli_args.py                # Shared dataset-related CLI flags
 │   ├── visualization.py           # 2D latent-trajectory animation example
 │   ├── visualization_3d.py        # Surface-mapped 3D animation example
@@ -509,6 +514,111 @@ python examples/postprocess.py compare \
 # Patch paper tables from the latest metrics JSON
 python examples/postprocess.py update-tables --metrics results/ts_young_paper_metrics_<timestamp>.json
 ```
+
+---
+
+## Reproducing the paper analyses
+
+The manuscript in `paper_submission/` is generated from the artifacts below. All
+statistics use an explicit replication unit — see *Statistical reporting* in the
+paper's Methods, and the note at the end of this section.
+
+### 1. Seed sweep (the unit of analysis for every architecture comparison)
+
+Each architecture is refitted from scratch under 10 random seeds (42–51) at the
+full sample size. Model-comparison intervals are standard deviations **across
+these independent fits**, so they include fitting variability; an earlier version
+reported the spread across held-out test batches of a *single* fit, which does
+not.
+
+```bash
+# Submits the missing (model, seed) jobs; writes results/runs/ts_young_<model>_n94_seed<seed>.json
+./logs/revision/launch_seeds.sh
+
+# Main-text table (3 architectures) and full supplementary table (all 5)
+python examples/aggregate_seeds.py --ds ts_young --main \
+  --out paper_submission/sections/ts_young_model_table.tex \
+  --summary-out results/seed_summary_main.json
+python examples/aggregate_seeds.py --ds ts_young \
+  --out paper_submission/sections/ts_young_full_model_table.tex
+```
+
+`aggregate_seeds.py` reports mean ± SD across seeds, a two-sided paired Wilcoxon
+signed-rank test against the Hybrid Hopf reference (paired on seed, Holm-corrected
+across architectures within each metric), and a **pre-specified composite error**
+— the mean of {FC corr, phFC corr, FCD KS, phFCD KS} with upward metrics flipped
+to `1 − v`. The composite is fixed in advance so that "best balanced performance"
+is a computed quantity rather than a reading across columns.
+
+### 2. Generative evaluation (repeated stochastic realizations)
+
+These are stochastic generative models, so one rollout is a single draw. This
+step redraws 20 independent trajectories per subject from each fitted checkpoint
+and records per-realization values, enabling a variance decomposition into
+*seed*, *subject*, and *simulation* components, plus a posterior-predictive
+coverage check. Evaluation-time only — no retraining.
+
+```bash
+# Per-checkpoint evaluation → results/generative/<stem>.json  (GPU)
+./logs/revision/launch_generative.sh hopf nsde hybrid_hopf gnn_hopf hybrid_neural
+
+# Variance, coverage and personalization tabulars
+python examples/aggregate_generative.py --ds ts_young \
+  --out-dir paper_submission/sections
+```
+
+The same script computes **personalization** with the subject as the replication
+unit: for each subject it simulates from that subject's own initial condition and
+correlates the simulated FC against that subject's held-out second half
+(`within`) versus every other subject (`between`), giving a paired per-subject
+`delta` that supports a signed-rank test and a bootstrap CI, together with top-1
+subject identification accuracy against a `1/n` chance level.
+
+> **Read `delta` against the initial-condition reference, not against zero.**
+> Every simulation is seeded with the subject's own initial state, which is a
+> subject-specific input, so `delta > 0` alone does not show that a model is
+> personalized. The Coupled Hopf makes this concrete: it shares all parameters
+> across the cohort and uses a group-average connectome, yet reaches
+> `delta = +0.184` and 43% top-1 identification (chance 1.1%) — more than either
+> learned architecture. `aggregate_generative.py` therefore reports
+> `delta - delta_IC` against the Coupled Hopf, and both learned models score
+> *negative* increments. The conclusion the paper draws is subject-specific
+> reconstruction, not personalization.
+
+### 3. Coupling diagnostics (effective vs structural connectivity)
+
+The coupling `C = LRᵀ` is *initialized* from the group-averaged connectome and
+then learned without symmetry, positivity, or sign constraints. This script
+quantifies how far it departs, whether it stays connectome-like, and whether it
+is reproducible across seeds — the evidence behind describing it as an
+*effective learned coupling* rather than a learned connectome.
+
+```bash
+python examples/coupling_diagnostics.py \
+  --checkpoints "checkpoints/ts_young_hybrid_hopf_n94_seed*.pt" \
+  --out results/coupling_diagnostics.json \
+  --tex-out paper_submission/sections/ts_young_coupling_table.tex
+```
+
+### 4. Ablations
+
+```bash
+./logs/ablation/launch_full.sh          # 8 configs x 3 seeds
+python examples/aggregate_ablations.py --ds ts_young \
+  --out paper_submission/sections/ts_young_ablation_table.tex
+```
+
+### A note on the connectivity matrix
+
+The `structural_connectivity` argument threaded through the models is populated
+from `dataset.fc_mean`, i.e. the **group-averaged functional connectome** of the
+training subjects. The HCP release in `data/` contains BOLD time series only and
+no diffusion-weighted data, so despite the argument name there is no tractogram
+anywhere in this repository. The models are unaffected — all architectures
+receive the same matrix — but the connectome ablations should be read as testing
+a data-derived network prior rather than anatomical structure, and the static-FC
+part of that comparison is partly circular. This is stated in the paper's
+Methods and Limitations.
 
 ---
 

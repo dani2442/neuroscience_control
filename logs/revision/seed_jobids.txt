@@ -1,0 +1,22 @@
+1783205  hopf  n94_seed45
+1783206  gnn_hopf  n94_seed42
+1783207  hybrid_neural  n94_seed42
+1783208  gnn_hopf  n94_seed43
+1783209  hybrid_neural  n94_seed43
+1783210  gnn_hopf  n94_seed44
+1783211  hybrid_neural  n94_seed44
+1783212  gnn_hopf  n94_seed45
+1783213  hybrid_neural  n94_seed45
+1783214  gnn_hopf  n94_seed46
+1783215  hybrid_neural  n94_seed46
+1783216  gnn_hopf  n94_seed47
+1783217  hybrid_neural  n94_seed47
+1783218  gnn_hopf  n94_seed48
+1783219  hybrid_neural  n94_seed48
+1783220  gnn_hopf  n94_seed49
+1783221  hybrid_neural  n94_seed49
+1783222  gnn_hopf  n94_seed50
+1783223  hybrid_neural  n94_seed50
+1783224  gnn_hopf  n94_seed51
+1783225  hybrid_neural  n94_seed51
+1783267  ari_all
