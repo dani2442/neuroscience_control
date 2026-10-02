@@ -35,10 +35,12 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.dataset import (
-    compute_omega_from_timeseries,
+    compute_fc_from_timeseries,
     compute_split_indices,
     create_data_loaders,
+    estimate_split_priors,
     load_dataset,
+    training_segment_stop,
 )
 from src.metrics import fisher_batch_average
 from src.models import build_model
@@ -165,9 +167,14 @@ def benchmark_model(
     cfg.experiment_name = f"timing_benchmark/{model_key}"
 
     seed_all(cfg.seed)
+    train_idx, _, _ = compute_split_indices(
+        dataset, train_ratio=cfg.train_ratio, val_ratio=cfg.val_ratio, seed=cfg.seed,
+    )
+    priors = estimate_split_priors(dataset, train_idx, cfg)
     model = build_model(
         model_key, dataset, cfg, device,
-        structural_connectivity=dataset.fc_mean,
+        connectome=priors.connectome,
+        omega=priors.omega,
         n_control_dims=dataset.n_control_dims,
     )
 
@@ -271,14 +278,13 @@ def benchmark_grid_search(
     cfg.device = device
 
     seed_all(cfg.seed)
-    omega = compute_omega_from_timeseries(
-        dataset.timeseries, dt=dataset.dt, f_lo=cfg.f_lo, f_hi=cfg.f_hi, method="peak",
-    )
     train_idx, _, _ = compute_split_indices(
         dataset, train_ratio=cfg.train_ratio, val_ratio=cfg.val_ratio, seed=cfg.seed,
     )
+    priors = estimate_split_priors(dataset, train_idx, cfg)
     n_timepoints = min(dataset.n_timepoints, 200)
-    train_fc = fisher_batch_average(dataset.fc_matrices[train_idx])
+    t_stop = training_segment_stop(dataset.n_timepoints, cfg.use_full_timeseries)
+    train_fc = fisher_batch_average(compute_fc_from_timeseries(dataset.timeseries[train_idx, :, :t_stop]))
     eval_train_idx = train_idx[:min(cfg.n_simulations, len(train_idx))]
     initial_states = dataset.timeseries[eval_train_idx, :, 0]
     target_ts = dataset.timeseries[eval_train_idx, :, :n_timepoints]
@@ -293,8 +299,8 @@ def benchmark_grid_search(
 
     model_kwargs: dict[str, object] = {
         "n_rois": dataset.n_rois,
-        "structural_connectivity": dataset.fc_mean,
-        "omega": omega,
+        "connectome": priors.connectome,
+        "omega": priors.omega,
         "noise_sigma": cfg.noise_sigma,
         "learnable_a": False,
         "learnable_g": False,

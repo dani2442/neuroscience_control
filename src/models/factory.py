@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import torch
 
-from ..dataset import NeuroscienceDataset, compute_omega_from_timeseries
+from ..dataset import NeuroscienceDataset
 from ..training.config import HopfConfig, HybridHopfConfig, HybridNeuralConfig, GNNHopfConfig, NeuralSDEConfig, TrainingConfig
 from .hopf_model import CoupledHopfModel
 from .hybrid_hopf_model import HybridHopfModel
@@ -18,7 +18,8 @@ def build_model(
     dataset: NeuroscienceDataset,
     cfg: TrainingConfig,
     device: str,
-    structural_connectivity: torch.Tensor | None = None,
+    connectome: torch.Tensor | None = None,
+    omega: torch.Tensor | None = None,
     n_control_dims: int = 0,
 ) -> CoupledHopfModel | HybridHopfModel | NeuralSDE:
     """Create model instance for *model_name* using *cfg* parameters.
@@ -27,6 +28,12 @@ def build_model(
     individual values from argparse.
 
     Args:
+        connectome: Functional connectome C0 ``(n_rois, n_rois)``. Required
+            for the Hopf family; estimate it with
+            :func:`src.dataset.estimate_split_priors` so that it uses the
+            training split only.
+        omega: Intrinsic angular frequencies ``(n_rois,)`` in rad/s, from the
+            same training split. Required for the Hopf family.
         n_control_dims: Number of control input dimensions (0 = autonomous).
     """
     if model_name == "nsde":
@@ -40,14 +47,12 @@ def build_model(
         print(f"\nNeural SDE model — params: {sum(p.numel() for p in model.parameters())}")
         return model
 
-    # Hopf-family models share omega computation.
-    omega = compute_omega_from_timeseries(
-        dataset.timeseries,
-        dt=dataset.dt,
-        f_lo=cfg.f_lo,
-        f_hi=cfg.f_hi,
-        method="peak",
-    )
+    # Hopf-family models need priors estimated from the training split only.
+    if connectome is None or omega is None:
+        raise ValueError(
+            f"'{model_name}' needs connectome and omega from estimate_split_priors(); "
+            "refusing to fall back to statistics of the whole dataset."
+        )
     print(
         f"  omega: shape={omega.shape}, "
         f"range=[{omega.min().item() / (2 * 3.14159):.4f}, "
@@ -59,7 +64,7 @@ def build_model(
             raise ValueError(f"Expected HopfConfig or HybridHopfConfig for 'hopf', got {type(cfg).__name__}")
         model = CoupledHopfModel(
             n_rois=dataset.n_rois,
-            structural_connectivity=structural_connectivity,
+            connectome=connectome,
             omega=omega,
             initial_a=cfg.initial_a,
             initial_g=cfg.initial_g,
@@ -82,7 +87,7 @@ def build_model(
             raise ValueError(f"Expected HybridHopfConfig for 'hybrid_hopf', got {type(cfg).__name__}")
         model = HybridHopfModel(
             n_rois=dataset.n_rois,
-            structural_connectivity=structural_connectivity,
+            connectome=connectome,
             omega=omega,
             initial_a=cfg.initial_a,
             initial_g=cfg.initial_g,
@@ -113,7 +118,7 @@ def build_model(
             raise ValueError(f"Expected GNNHopfConfig or HybridHopfConfig for 'gnn_hopf', got {type(cfg).__name__}")
         model = GNNHopfModel(
             n_rois=dataset.n_rois,
-            structural_connectivity=structural_connectivity,
+            connectome=connectome,
             omega=omega,
             initial_a=cfg.initial_a,
             initial_g=cfg.initial_g,
@@ -140,7 +145,7 @@ def build_model(
             raise ValueError(f"Expected HybridNeuralConfig for 'hybrid_neural', got {type(cfg).__name__}")
         model = HybridHopfNeuralModel(
             n_rois=dataset.n_rois,
-            structural_connectivity=structural_connectivity,
+            connectome=connectome,
             omega=omega,
             initial_a=cfg.initial_a,
             initial_g=cfg.initial_g,

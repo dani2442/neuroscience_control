@@ -258,7 +258,7 @@ def grid_search_hopf(
     target_fc: torch.Tensor,
     n_rois: int,
     initial_states: torch.Tensor,
-    structural_connectivity: Optional[torch.Tensor] = None,
+    connectome: Optional[torch.Tensor] = None,
     omega: Optional[torch.Tensor] = None,
     g_values: Optional[List[float]] = None,
     a_values: Optional[List[float]] = None,
@@ -287,7 +287,7 @@ def grid_search_hopf(
         target_fc: Target FC (n_rois, n_rois).
         n_rois: Number of ROIs.
         initial_states: Complex tensor (batch, n_rois) for evaluation.
-        structural_connectivity: Optional SC matrix.
+        connectome: Optional functional connectome C0 (n_rois, n_rois).
         omega: Optional intrinsic frequencies (rad/s).
         g_values, a_values: Search grid values.
         kappa_values: Search grid values for kappa (default: [0.1]).
@@ -325,7 +325,7 @@ def grid_search_hopf(
 
     model_kwargs = {
         'n_rois': n_rois,
-        'structural_connectivity': structural_connectivity,
+        'connectome': connectome,
         'omega': omega,
         'noise_sigma': noise_sigma,
         'learnable_a': False,
@@ -380,7 +380,7 @@ def grid_search_hopf(
 
     best_model = CoupledHopfModel(
         n_rois=n_rois,
-        structural_connectivity=structural_connectivity,
+        connectome=connectome,
         omega=omega,
         initial_g=best_params['initial_g'],
         initial_a=best_params['initial_a'],

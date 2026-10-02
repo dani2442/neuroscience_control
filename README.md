@@ -24,7 +24,7 @@ A PyTorch framework for **whole-brain modeling** of resting-state fMRI BOLD sign
 
 | Model | Description |
 |-------|-------------|
-| **Coupled Hopf** | Physics-based coupled oscillators at the supercritical Hopf bifurcation, informed by structural connectivity |
+| **Coupled Hopf** | Physics-based coupled oscillators at the supercritical Hopf bifurcation, coupled through the functional connectome |
 | **Hybrid Hopf** | Hopf oscillators with a learnable complex-valued graph-coupling network replacing fixed linear diffusive coupling |
 | **Neural SDE** | Data-driven neural networks parameterizing stochastic differential equations |
 | **GNN Hopf** | A node-wise neural coupling variant of the Hopf model, exposed as a model class and covered by tests |
@@ -33,7 +33,7 @@ All model families operate in **complex-valued** space — state, drift, diffusi
 
 ### Key Features
 
-- **Biologically-grounded** modeling with structural connectivity integration
+- **Biologically-grounded** modeling with functional-connectome coupling, estimated from the training split only
 - **Native complex-valued SDEs** via torchsde with complex Brownian motion support
 - **Comprehensive evaluation**: FC, FCD, phFCD, phase-coherence FC, metastability, and timeseries metrics
 - **Flexible data loading**: local `.mat` files, LSD pharmacological data, nilearn, OpenNeuro, DataLad, and BIDS derivatives
@@ -128,7 +128,7 @@ where $W_i = W_{1,i} + i\, W_{2,i}$ is complex Brownian motion.
 | $\kappa$ | Scaling factor for local dynamics amplitude |
 | $\omega_i$ | Intrinsic frequency of region $i$ (rad/s) |
 | $G$ | Global coupling strength |
-| $C_{ij}$ | Row-normalised structural connectivity from DTI |
+| $C_{ij}$ | Row-normalised functional connectome (mean FC over the training segments of the training subjects) |
 | $\sigma$ | Noise amplitude |
 
 The BOLD signal is $s_i(t) = \Re(z_i(t))$. The brain is hypothesised to operate near criticality ($a \approx 0$).
@@ -138,7 +138,7 @@ from src.models import CoupledHopfModel
 
 model = CoupledHopfModel(
     n_rois=68,
-    structural_connectivity=sc_matrix,  # (68, 68) tensor
+    connectome=connectome,              # (68, 68) tensor
     initial_a=-0.02,
     initial_g=0.5,
     initial_kappa=0.1,
@@ -163,7 +163,7 @@ from src.models import HybridHopfModel
 
 model = HybridHopfModel(
     n_rois=68,
-    structural_connectivity=sc_matrix,
+    connectome=connectome,
     initial_a=-0.02,
     initial_g=0.5,
     initial_kappa=0.1,
@@ -188,7 +188,7 @@ model = NeuralSDE(
     n_rois=68,
     hidden_dim=128,                       # MLP width (training default via NeuralSDEConfig)
     n_layers=2,
-    structural_connectivity=sc_matrix,    # Optional SC-based coupling
+    connectome=connectome,                # Optional connectome-based coupling
     coupling_strength=0.1,
 )
 ```
@@ -202,7 +202,7 @@ from src.models import GNNHopfModel
 
 model = GNNHopfModel(
     n_rois=68,
-    structural_connectivity=sc_matrix,
+    connectome=connectome,
     node_hidden_dim=16,
     node_n_layers=1,
 )
@@ -408,9 +408,11 @@ python examples/train_models.py backprop --model hybrid_hopf \
 {
     'timeseries_all': np.ndarray,  # (n_rois, n_timepoints, n_subjects)
     'FC_all':         np.ndarray,  # (n_rois, n_rois, n_subjects)
-    'FC_mean':        np.ndarray,  # (n_rois, n_rois)
+    'FC_mean':        np.ndarray,  # (n_rois, n_rois), mean of FC_all over all subjects
 }
 ```
+
+`FC_mean` averages over every subject, including held-out ones, so it is **not** used to build models. The functional connectome $C_0$ and the intrinsic frequencies $\omega$ are estimated by `src.dataset.estimate_split_priors` from the training segments of the training subjects only, and their SHA-256 hashes are written to each results JSON under `"priors"`.
 
 ### Preprocessing Pipeline
 

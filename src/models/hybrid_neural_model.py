@@ -9,7 +9,7 @@ where:
     sigma       = learnable scalar > 0 (via softplus)
 
 Learnable: a, G, sigma, f_theta weights.
-Fixed:     omega (from FFT), kappa=1, SC (structural connectivity buffer).
+Fixed:     omega (from FFT), kappa=1, C0 (functional connectome buffer).
 """
 
 import torch
@@ -34,7 +34,7 @@ class HybridHopfNeuralSDEFunc(nn.Module):
         g: nn.Parameter,
         log_sigma: nn.Parameter,
         log_omega: nn.Parameter,
-        structural_connectivity: torch.Tensor,
+        connectome: torch.Tensor,
         drift_net: DriftNetwork,
         n_control_dims: int = 0,
     ):
@@ -44,7 +44,7 @@ class HybridHopfNeuralSDEFunc(nn.Module):
         self.global_coupling = g
         self.log_sigma = log_sigma
         self.log_omega = log_omega
-        self.structural_connectivity = structural_connectivity
+        self.connectome = connectome
         self.drift_net = drift_net
         self.n_control_dims = n_control_dims
         self._control: Optional[torch.Tensor] = None
@@ -56,9 +56,9 @@ class HybridHopfNeuralSDEFunc(nn.Module):
         local = y * (self.a - z_sq + 1j * omega)
 
         # --- Hopf coupling term ---
-        sc = self.structural_connectivity.to(y.dtype)
-        coupled_sum = y @ sc.T
-        row_sum = sc.sum(dim=1, keepdim=True).T
+        conn = self.connectome.to(y.dtype)
+        coupled_sum = y @ conn.T
+        row_sum = conn.sum(dim=1, keepdim=True).T
         coupling = self.global_coupling * (coupled_sum - y * row_sum)
 
         # --- Neural correction ---
@@ -81,7 +81,7 @@ class HybridHopfNeuralModel(BaseNeuroscienceModel):
     def __init__(
         self,
         n_rois: int,
-        structural_connectivity: Optional[torch.Tensor] = None,
+        connectome: Optional[torch.Tensor] = None,
         omega: Optional[torch.Tensor] = None,
         initial_a: float = -0.02,
         initial_g: float = 0.5,
@@ -93,14 +93,14 @@ class HybridHopfNeuralModel(BaseNeuroscienceModel):
     ):
         super().__init__(n_rois, device)
 
-        # SC: fixed buffer, row-normalized
-        sc = (
-            structural_connectivity.to(device)
-            if structural_connectivity is not None
+        # Functional connectome C0: fixed buffer, row-normalized
+        conn = (
+            connectome.to(device)
+            if connectome is not None
             else torch.eye(n_rois, device=device)
         )
-        sc = sc / (sc.sum(dim=1, keepdim=True) + 1e-8)
-        self.register_buffer("structural_connectivity", sc)
+        conn = conn / (conn.sum(dim=1, keepdim=True) + 1e-8)
+        self.register_buffer("connectome", conn)
 
         # omega: learnable per-ROI frequency stored as log(omega)
         if omega is None:
@@ -126,7 +126,7 @@ class HybridHopfNeuralModel(BaseNeuroscienceModel):
             g=self.g,
             log_sigma=self.log_sigma,
             log_omega=self.log_omega,
-            structural_connectivity=self.structural_connectivity,
+            connectome=self.connectome,
             drift_net=self.drift_net,
             n_control_dims=n_control_dims,
         )

@@ -32,7 +32,7 @@ class HopfSDEFunc(nn.Module):
     noise_type = "diagonal"
     sde_type = "ito"
 
-    def __init__(self, n_rois, a, g, kappa, omega, structural_connectivity, noise_sigma=0.5, fc_matrix=None,
+    def __init__(self, n_rois, a, g, kappa, omega, connectome, noise_sigma=0.5, fc_matrix=None,
                  control_coupling=None, n_control_dims=0):
         super().__init__()
         self.n_rois = n_rois
@@ -41,7 +41,7 @@ class HopfSDEFunc(nn.Module):
         self.kappa = kappa
         self.global_coupling = g
         self.omega = omega
-        self.structural_connectivity = structural_connectivity
+        self.connectome = connectome
         self.fc_matrix = fc_matrix  # Learnable FC matrix (nn.Parameter or None)
         self.control_coupling = control_coupling  # (n_rois, n_control_dims) or None
         self.n_control_dims = n_control_dims
@@ -53,24 +53,24 @@ class HopfSDEFunc(nn.Module):
         z_sq = self.kappa*torch.abs(y) ** 2  # |z|², real
         omega = self.omega.unsqueeze(0)
         local = y * (self.a*self.kappa - z_sq + 1j * omega)
-        # Use learnable FC matrix if available, otherwise structural connectivity
-        sc = self.fc_matrix if self.fc_matrix is not None else self.structural_connectivity
-        sc = sc.to(y.dtype)
+        # Use learnable FC matrix if available, otherwise the fixed connectome
+        conn = self.fc_matrix if self.fc_matrix is not None else self.connectome
+        conn = conn.to(y.dtype)
 
         # --- Augmented-state coupling (paper formulation) ---
         if self.n_control_dims > 0 and self.control_input is not None and self.control_coupling is not None:
-            # Extend the coupling matrix: [sc | control_coupling] -> (n_rois, n_rois + m)
+            # Extend the coupling matrix: [conn | control_coupling] -> (n_rois, n_rois + m)
             cc = self.control_coupling.to(y.dtype)  # (n_rois, m)
-            sc_ext = torch.cat([sc, cc], dim=1)  # (n_rois, n_rois + m)
+            conn_ext = torch.cat([conn, cc], dim=1)  # (n_rois, n_rois + m)
             # Augmented state: [y | u]  u is constant control (batch, m)
             u = self.control_input.to(y.dtype)  # (batch, m)
             z_aug = torch.cat([y, u], dim=1)  # (batch, n_rois + m)
-            coupled_sum = z_aug @ sc_ext.T  # (batch, n_rois)
-            row_sum = sc_ext.sum(dim=1, keepdim=True).T  # (1, n_rois)
+            coupled_sum = z_aug @ conn_ext.T  # (batch, n_rois)
+            row_sum = conn_ext.sum(dim=1, keepdim=True).T  # (1, n_rois)
             coupling = self.global_coupling * (coupled_sum - y * row_sum)
         else:
-            coupled_sum = y @ sc.T
-            row_sum = sc.sum(dim=1, keepdim=True).T
+            coupled_sum = y @ conn.T
+            row_sum = conn.sum(dim=1, keepdim=True).T
             coupling = self.global_coupling * (coupled_sum - y * row_sum)
         return local + coupling
 
@@ -87,7 +87,7 @@ class CoupledHopfModel(BaseNeuroscienceModel):
     def __init__(
         self,
         n_rois: int,
-        structural_connectivity: Optional[torch.Tensor] = None,
+        connectome: Optional[torch.Tensor] = None,
         initial_a: float = -0.02,
         initial_g: float = 0.5,
         initial_kappa: float = 0.1,
@@ -109,10 +109,10 @@ class CoupledHopfModel(BaseNeuroscienceModel):
         self.learnable_fc = learnable_fc
         self.n_control_dims = n_control_dims
 
-        # Structural connectivity (default: identity)
-        sc = structural_connectivity.to(device) if structural_connectivity is not None else torch.eye(n_rois, device=device)
-        sc = sc / (sc.sum(dim=1, keepdim=True) + 1e-8)
-        self.register_buffer('structural_connectivity', sc)
+        # Functional connectome C0, row-normalised (default: identity)
+        conn = connectome.to(device) if connectome is not None else torch.eye(n_rois, device=device)
+        conn = conn / (conn.sum(dim=1, keepdim=True) + 1e-8)
+        self.register_buffer('connectome', conn)
 
         # Bifurcation parameter
         a_init = torch.tensor(initial_a, device=device)
@@ -132,9 +132,9 @@ class CoupledHopfModel(BaseNeuroscienceModel):
             omega = omega.to(device)
         self.omega = nn.Parameter(omega) if learnable_omega else self.register_buffer('omega', omega) or self.omega
 
-        # Learnable FC matrix: initialized from structural connectivity
+        # Learnable FC matrix: initialized from the connectome
         if learnable_fc:
-            self.fc_matrix = nn.Parameter(sc.clone())
+            self.fc_matrix = nn.Parameter(conn.clone())
         else:
             self.fc_matrix = None
 
@@ -148,7 +148,7 @@ class CoupledHopfModel(BaseNeuroscienceModel):
 
         self.sde_func = HopfSDEFunc(
             n_rois, self.a, self.g, self.kappa, self.omega,
-            self.structural_connectivity, noise_sigma,
+            self.connectome, noise_sigma,
             fc_matrix=self.fc_matrix,
             control_coupling=self.control_coupling,
             n_control_dims=n_control_dims,
@@ -159,7 +159,7 @@ class CoupledHopfModel(BaseNeuroscienceModel):
         self.sde_func.a = self.a
         self.sde_func.global_coupling = self.g
         self.sde_func.omega = self.omega
-        self.sde_func.structural_connectivity = self.structural_connectivity
+        self.sde_func.connectome = self.connectome
         self.sde_func.fc_matrix = self.fc_matrix
         self.sde_func.control_coupling = self.control_coupling
 

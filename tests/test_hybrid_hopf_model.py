@@ -67,15 +67,15 @@ class TestOutputNetwork(unittest.TestCase):
 class TestSVDInit(unittest.TestCase):
     def test_reconstruction(self):
         """L R^T should approximate the original matrix."""
-        sc = torch.rand(20, 20)
-        sc = (sc + sc.T) / 2
-        sc.fill_diagonal_(0.0)
-        sc = sc / (sc.sum(dim=1, keepdim=True) + 1e-8)
+        conn = torch.rand(20, 20)
+        conn = (conn + conn.T) / 2
+        conn.fill_diagonal_(0.0)
+        conn = conn / (conn.sum(dim=1, keepdim=True) + 1e-8)
 
-        L, R = _svd_init(sc, rank=20)
+        L, R = _svd_init(conn, rank=20)
         recon = L @ R.T
         # Full-rank SVD should reconstruct exactly
-        self.assertTrue(torch.allclose(recon, sc.float(), atol=1e-5))
+        self.assertTrue(torch.allclose(recon, conn.float(), atol=1e-5))
 
     def test_low_rank_shape(self):
         L, R = _svd_init(torch.rand(50, 50), rank=5)
@@ -92,14 +92,14 @@ class TestHybridHopfLowRank(unittest.TestCase):
     def setUp(self):
         self.n_rois = 10
         self.rank = 3
-        self.sc = torch.rand(self.n_rois, self.n_rois)
-        self.sc = (self.sc + self.sc.T) / 2
-        self.sc.fill_diagonal_(0.0)
+        self.conn = torch.rand(self.n_rois, self.n_rois)
+        self.conn = (self.conn + self.conn.T) / 2
+        self.conn.fill_diagonal_(0.0)
 
     def _make_model(self, **overrides):
         defaults = dict(
             n_rois=self.n_rois,
-            structural_connectivity=self.sc,
+            connectome=self.conn,
             coupling_rank=self.rank,
             d_key=4,
             coupling_hidden_dim=8,
@@ -163,13 +163,13 @@ class TestHybridHopfFullRank(unittest.TestCase):
 
     def setUp(self):
         self.n_rois = 8
-        self.sc = torch.rand(self.n_rois, self.n_rois)
-        self.sc.fill_diagonal_(0.0)
+        self.conn = torch.rand(self.n_rois, self.n_rois)
+        self.conn.fill_diagonal_(0.0)
 
     def _make_model(self, **overrides):
         defaults = dict(
             n_rois=self.n_rois,
-            structural_connectivity=self.sc,
+            connectome=self.conn,
             coupling_rank=None,
             d_key=2,
             coupling_hidden_dim=8,
@@ -193,10 +193,10 @@ class TestHybridHopfFullRank(unittest.TestCase):
         self.assertIsNone(model.coupling_R)
         self.assertEqual(model.coupling_full.shape, (self.n_rois, self.n_rois))
 
-    def test_full_matrix_initialized_from_sc(self):
+    def test_full_matrix_initialized_from_connectome(self):
         model = self._make_model()
-        sc_norm = self.sc / (self.sc.sum(dim=1, keepdim=True) + 1e-8)
-        self.assertTrue(torch.allclose(model.coupling_full.data, sc_norm, atol=1e-5))
+        conn_norm = self.conn / (self.conn.sum(dim=1, keepdim=True) + 1e-8)
+        self.assertTrue(torch.allclose(model.coupling_full.data, conn_norm, atol=1e-5))
 
     def test_gradients_flow(self):
         model = self._make_model()

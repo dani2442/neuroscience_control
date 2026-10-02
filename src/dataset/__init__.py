@@ -17,6 +17,7 @@ from .preprocessing import (
     create_data_loaders,
     compute_omega_from_timeseries,
 )
+from .priors import SplitPriors, estimate_split_priors, training_segment_stop
 
 __all__ = [
     "NeuroscienceDataset",
@@ -32,4 +33,7 @@ __all__ = [
     "compute_split_indices",
     "create_data_loaders",
     "compute_omega_from_timeseries",
+    "SplitPriors",
+    "estimate_split_priors",
+    "training_segment_stop",
 ]

@@ -102,7 +102,7 @@ class NeuralSDEFunc(nn.Module):
         n_rois: int,
         hidden_dim: int = 64,
         n_layers: int = 2,
-        structural_connectivity: Optional[torch.Tensor] = None,
+        connectome: Optional[torch.Tensor] = None,
         coupling_strength: float = 0.1,
         n_control_dims: int = 0,
     ):
@@ -115,18 +115,18 @@ class NeuralSDEFunc(nn.Module):
         self.drift_net = DriftNetwork(n_rois, hidden_dim, n_layers, n_control_dims=n_control_dims)
         self.diffusion_net = DiffusionNetwork(n_rois, hidden_dim // 2)
 
-        if structural_connectivity is not None:
-            self.register_buffer('sc', structural_connectivity)
+        if connectome is not None:
+            self.register_buffer('connectome', connectome)
             self.coupling = nn.Parameter(torch.tensor(coupling_strength))
         else:
-            self.sc = None
+            self.connectome = None
             self.coupling = None
 
     def f(self, t: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         drift = self.drift_net(y, control=self.control_input)
-        if self.sc is not None:
-            sc = self.sc.to(y.dtype)
-            coupling = self.coupling * (y @ sc.T)
+        if self.connectome is not None:
+            conn = self.connectome.to(y.dtype)
+            coupling = self.coupling * (y @ conn.T)
             drift = drift + coupling
         return drift
 
@@ -146,7 +146,7 @@ class NeuralSDE(BaseNeuroscienceModel):
         n_rois: int,
         hidden_dim: int = 64,
         n_layers: int = 2,
-        structural_connectivity: Optional[torch.Tensor] = None,
+        connectome: Optional[torch.Tensor] = None,
         coupling_strength: float = 0.1,
         device: str = "cpu",
         n_control_dims: int = 0,
@@ -160,7 +160,7 @@ class NeuralSDE(BaseNeuroscienceModel):
             n_rois=n_rois,
             hidden_dim=hidden_dim,
             n_layers=n_layers,
-            structural_connectivity=structural_connectivity,
+            connectome=connectome,
             coupling_strength=coupling_strength,
             n_control_dims=n_control_dims,
         )
@@ -242,7 +242,7 @@ class NeuralSDE(BaseNeuroscienceModel):
             "n_rois": int(self.n_rois),
             "hidden_dim": int(self.hidden_dim),
             "n_layers": int(self.n_layers),
-            "has_structural_connectivity": self.sde_func.sc is not None,
+            "has_connectome": self.sde_func.connectome is not None,
             "coupling_strength": coupling_strength,
             "n_control_dims": int(self.n_control_dims),
         }

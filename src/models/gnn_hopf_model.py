@@ -3,8 +3,8 @@
 A memory-efficient alternative to the hybrid Hopf model.  Instead of
 evaluating a neural network per *edge* (O(ROI²)), this model:
 
-1.  Learns the coupling matrix **C** (initialized from structural
-    connectivity, analogous to ``learnable_fc`` in the plain Hopf model).
+1.  Learns the coupling matrix **C** (initialized from the functional
+    connectome, analogous to ``learnable_fc`` in the plain Hopf model).
 2.  Performs a standard linear diffusive aggregation:
         m_i = Σ_j C_ij (z_j − z_i)          — one matrix-multiply, O(ROI²) FLOPS but no per-edge NN
 3.  Applies a complex-valued node-wise MLP **ψ_θ** to the aggregated
@@ -175,14 +175,14 @@ class GNNHopfModel(BaseNeuroscienceModel):
     Memory-efficient hybrid that applies a node-wise MLP after linear
     aggregation instead of an edge-wise MLP:
 
-        m_i  = Σ_j C_ij (z_j − z_i)          (learned C, initialised from SC)
+        m_i  = Σ_j C_ij (z_j − z_i)          (learned C, initialised from the connectome)
         dz_i = [(κa + iω_i − κ|z_i|²) z_i + G · ψ_θ(m_i, z_i)] dt + σ dW_i
     """
 
     def __init__(
         self,
         n_rois: int,
-        structural_connectivity: Optional[torch.Tensor] = None,
+        connectome: Optional[torch.Tensor] = None,
         initial_a: float = -0.02,
         initial_g: float = 0.5,
         initial_kappa: float = 0.1,
@@ -207,17 +207,17 @@ class GNNHopfModel(BaseNeuroscienceModel):
         self.node_n_layers = node_n_layers
         self.n_control_dims = n_control_dims
 
-        # Structural connectivity → initial coupling matrix
-        sc = (
-            structural_connectivity.to(device)
-            if structural_connectivity is not None
+        # Functional connectome C0 → initial coupling matrix
+        conn = (
+            connectome.to(device)
+            if connectome is not None
             else torch.eye(n_rois, device=device)
         )
-        sc = sc / (sc.sum(dim=1, keepdim=True) + 1e-8)
+        conn = conn / (conn.sum(dim=1, keepdim=True) + 1e-8)
         # Keep a frozen copy for reference / regularisation
-        self.register_buffer("structural_connectivity", sc)
-        # Learnable coupling matrix C, initialised from normalised SC
-        self.coupling_matrix = nn.Parameter(sc.clone())
+        self.register_buffer("connectome", conn)
+        # Learnable coupling matrix C, initialised from the normalised connectome
+        self.coupling_matrix = nn.Parameter(conn.clone())
 
         # Bifurcation parameter
         a_init = torch.tensor(initial_a, device=device)

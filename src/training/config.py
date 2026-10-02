@@ -237,4 +237,4 @@ class NeuralSDEConfig(TrainingConfig):
     experiment_name: str = "neural_sde"
     hidden_dim: int = 256
     n_layers: int = 2
-    use_structural_connectivity: bool = False
+    use_connectome: bool = False

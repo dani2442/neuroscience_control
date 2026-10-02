@@ -12,14 +12,14 @@ class TestGNNHopfModelBasic(unittest.TestCase):
 
     def setUp(self):
         self.n_rois = 5
-        self.sc = torch.rand(self.n_rois, self.n_rois)
-        self.sc = (self.sc + self.sc.T) / 2  # symmetrise
-        self.sc.fill_diagonal_(0.0)
+        self.conn = torch.rand(self.n_rois, self.n_rois)
+        self.conn = (self.conn + self.conn.T) / 2  # symmetrise
+        self.conn.fill_diagonal_(0.0)
 
     def _make_model(self, **kwargs):
         defaults = dict(
             n_rois=self.n_rois,
-            structural_connectivity=self.sc,
+            connectome=self.conn,
             device="cpu",
             noise_sigma=0.02,
             node_hidden_dim=8,
@@ -41,11 +41,11 @@ class TestGNNHopfModelBasic(unittest.TestCase):
         self.assertIsInstance(model.coupling_matrix, torch.nn.Parameter)
         self.assertTrue(model.coupling_matrix.requires_grad)
 
-    def test_coupling_matrix_initialized_from_sc(self):
+    def test_coupling_matrix_initialized_from_connectome(self):
         model = self._make_model()
-        # SC is normalised row-wise; verify initialisation is close
-        sc_norm = self.sc / (self.sc.sum(dim=1, keepdim=True) + 1e-8)
-        self.assertTrue(torch.allclose(model.coupling_matrix.data, sc_norm, atol=1e-6))
+        # The connectome is normalised row-wise; verify initialisation is close
+        conn_norm = self.conn / (self.conn.sum(dim=1, keepdim=True) + 1e-8)
+        self.assertTrue(torch.allclose(model.coupling_matrix.data, conn_norm, atol=1e-6))
 
     def test_node_net_output_shape(self):
         model = self._make_model()
@@ -88,10 +88,10 @@ class TestGNNHopfModelGradients(unittest.TestCase):
 
     def test_gradients_flow(self):
         n_rois = 4
-        sc = torch.eye(n_rois)
+        conn = torch.eye(n_rois)
         model = GNNHopfModel(
             n_rois=n_rois,
-            structural_connectivity=sc,
+            connectome=conn,
             device="cpu",
             noise_sigma=0.01,
             node_hidden_dim=8,
@@ -115,10 +115,10 @@ class TestGNNHopfModelControl(unittest.TestCase):
 
     def test_forward_with_control(self):
         n_rois, n_ctrl = 4, 2
-        sc = torch.rand(n_rois, n_rois)
+        conn = torch.rand(n_rois, n_rois)
         model = GNNHopfModel(
             n_rois=n_rois,
-            structural_connectivity=sc,
+            connectome=conn,
             device="cpu",
             noise_sigma=0.01,
             n_control_dims=n_ctrl,

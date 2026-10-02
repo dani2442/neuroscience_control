@@ -8,9 +8,9 @@ Low-rank factored coupling with node-wise neural networks.  The SDE reads:
             + G · ψ_out(m_i, z_i)] dt + σ dW_i    — output network (O(n))
 
 The coupling matrix C is optionally low-rank:  C ≈ L Rᵀ  (rank *r*).
-  • Full-rank (``coupling_rank=None``):  C is n×n, initialised from SC.
+  • Full-rank (``coupling_rank=None``):  C is n×n, initialised from the connectome.
   • Low-rank  (``coupling_rank=r``):     L, R ∈ ℝ^{n×r}, initialised
-    from the top-*r* SVD of SC.  Aggregation costs O(n·r·d_k) instead
+    from the top-*r* SVD of the connectome.  Aggregation costs O(n·r·d_k) instead
     of O(n²·d_k), and stores 2nr parameters instead of n².
 
 Memory comparison at n=100, r=10, d_k=4, hidden=16:
@@ -110,9 +110,9 @@ class OutputNetwork(nn.Module):
 
 # ── Low-rank coupling helpers ────────────────────────────────────────
 
-def _svd_init(sc: torch.Tensor, rank: int) -> tuple[torch.Tensor, torch.Tensor]:
-    """Initialise L, R from the top-*rank* SVD of *sc*."""
-    U, S, Vh = torch.linalg.svd(sc.float(), full_matrices=False)
+def _svd_init(conn: torch.Tensor, rank: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """Initialise L, R from the top-*rank* SVD of *conn*."""
+    U, S, Vh = torch.linalg.svd(conn.float(), full_matrices=False)
     sqrt_S = S[:rank].sqrt()
     L = U[:, :rank] * sqrt_S.unsqueeze(0)   # (n, r)
     R = Vh[:rank, :].T * sqrt_S.unsqueeze(0) # (n, r)
@@ -288,7 +288,7 @@ class HybridHopfModel(BaseNeuroscienceModel):
     def __init__(
         self,
         n_rois: int,
-        structural_connectivity: Optional[torch.Tensor] = None,
+        connectome: Optional[torch.Tensor] = None,
         initial_a: float = -0.02,
         initial_g: float = 0.5,
         initial_kappa: float = 0.1,
@@ -317,19 +317,19 @@ class HybridHopfModel(BaseNeuroscienceModel):
         self.d_key = d_key
         self.n_control_dims = n_control_dims
 
-        # Structural connectivity (default: identity)
-        sc = (
-            structural_connectivity.to(device)
-            if structural_connectivity is not None
+        # Functional connectome C0, row-normalised (default: identity)
+        conn = (
+            connectome.to(device)
+            if connectome is not None
             else torch.eye(n_rois, device=device)
         )
-        sc = sc / (sc.sum(dim=1, keepdim=True) + 1e-8)
-        self.register_buffer("structural_connectivity", sc)
+        conn = conn / (conn.sum(dim=1, keepdim=True) + 1e-8)
+        self.register_buffer("connectome", conn)
 
         # ── coupling matrix C ──
         if coupling_rank is not None:
             r = min(coupling_rank, n_rois)
-            L_init, R_init = _svd_init(sc, r)
+            L_init, R_init = _svd_init(conn, r)
             self.coupling_L = nn.Parameter(L_init.to(device))
             self.coupling_R = nn.Parameter(R_init.to(device))
             self.coupling_full = None
@@ -337,7 +337,7 @@ class HybridHopfModel(BaseNeuroscienceModel):
         else:
             self.coupling_L = None
             self.coupling_R = None
-            self.coupling_full = nn.Parameter(sc.clone().to(device))
+            self.coupling_full = nn.Parameter(conn.clone().to(device))
             self._effective_rank = n_rois
 
         # Bifurcation parameter

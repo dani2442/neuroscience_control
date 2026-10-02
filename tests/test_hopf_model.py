@@ -36,7 +36,7 @@ class TestHopfSetParameters(unittest.TestCase):
         self.assertTrue(torch.allclose(model.omega.detach(), torch.full((3,), 0.5)))
 
     def test_diffusive_coupling_vanishes_for_uniform_state(self) -> None:
-        sc = torch.tensor(
+        conn = torch.tensor(
             [
                 [0.0, 1.0, 0.0],
                 [0.5, 0.0, 0.5],
@@ -46,7 +46,7 @@ class TestHopfSetParameters(unittest.TestCase):
         )
         model = CoupledHopfModel(
             n_rois=3,
-            structural_connectivity=sc,
+            connectome=conn,
             initial_a=0.0,
             initial_g=1.0,
             omega=torch.zeros(3),

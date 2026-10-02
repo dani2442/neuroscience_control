@@ -57,6 +57,24 @@ def _read_checkpoint(checkpoint_path: Path | str, device: str) -> dict[str, Any]
     return checkpoint
 
 
+# Buffer names used before the coupling matrix was renamed to ``connectome``.
+_LEGACY_KEY_SUFFIXES = {
+    "structural_connectivity": "connectome",
+    "sde_func.sc": "sde_func.connectome",
+}
+
+
+def _rename_legacy_keys(state_dict: dict[str, Any]) -> dict[str, Any]:
+    renamed = {}
+    for key, value in state_dict.items():
+        for old, new in _LEGACY_KEY_SUFFIXES.items():
+            if key == old or key.endswith("." + old):
+                key = key[: len(key) - len(old)] + new
+                break
+        renamed[key] = value
+    return renamed
+
+
 def _build_model(
     model_class: str,
     model_config: dict[str, Any],
@@ -66,13 +84,13 @@ def _build_model(
         raise ValueError(f"Unsupported checkpoint model class: {model_class}")
 
     config = dict(model_config)
-    if model_class == "NeuralSDE":
-        has_sc = bool(config.pop("has_structural_connectivity", False))
-        if has_sc and "structural_connectivity" not in config:
-            n_rois = int(config["n_rois"])
-            config["structural_connectivity"] = torch.eye(n_rois, device=device)
-    else:
-        config.pop("has_structural_connectivity", None)
+    # Checkpoints written before the rename use "has_structural_connectivity".
+    has_conn = bool(config.pop("has_connectome", False)) | bool(
+        config.pop("has_structural_connectivity", False)
+    )
+    if model_class == "NeuralSDE" and has_conn and "connectome" not in config:
+        n_rois = int(config["n_rois"])
+        config["connectome"] = torch.eye(n_rois, device=device)
 
     config["device"] = device
     try:
@@ -96,7 +114,7 @@ def load_model_from_checkpoint(
     checkpoint = _read_checkpoint(checkpoint_path, device=device)
     model_name = str(checkpoint["model_class"])
     model = _build_model(model_name, checkpoint["model_config"], device=device)
-    state_dict = checkpoint["model_state_dict"]
+    state_dict = _rename_legacy_keys(checkpoint["model_state_dict"])
 
     model.load_state_dict(state_dict, strict=strict)
     model.eval()
