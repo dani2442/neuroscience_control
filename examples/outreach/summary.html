@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hybrid generative models of the brain</title>
+<meta name="description" content="A hands-on notebook on whole-brain models: oscillators, functional connectivity, why pointwise errors fail, and hybrid physics/machine-learning models.">
+<script>window.MathJax = { tex: { inlineMath: [['\\(', '\\)'], ['$', '$']], displayMath: [['$$', '$$'], ['\\[', '\\]']] } };</script>
+<script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
+<style>
+  :root { --ink: #1b1b1a; --ink-2: #52514e; --rule: #e3e2de; --surface: #ffffff; --soft: #f6f5f2; --accent: #2a78d6; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --ink: #f2f1ec; --ink-2: #c3c2b7; --rule: #3a3936; --surface: #1a1a19; --soft: #242422; --accent: #6da7ec; }
+  }
+  :root[data-theme="dark"] { --ink: #f2f1ec; --ink-2: #c3c2b7; --rule: #3a3936; --surface: #1a1a19; --soft: #242422; --accent: #6da7ec; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--surface); color: var(--ink);
+         font: 17px/1.65 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+  main { max-width: 46rem; margin: 0 auto; padding: 2.5rem 16px 4rem; }
+  h1 { font-size: 2.05rem; line-height: 1.2; margin: 0 0 0.8rem; letter-spacing: -0.01em; }
+  h2 { font-size: 1.35rem; margin: 2.4rem 0 0.6rem; padding-top: 0.4rem; border-top: 1px solid var(--rule); }
+  p, li { max-width: 70ch; }
+  a { color: var(--accent); }
+  figure { margin: 1.6rem 0; }
+  figure img { display: block; width: 100%; height: auto; border-radius: 6px; background: #fff; }
+  figcaption { margin-top: 0.5rem; font-size: 0.9rem; color: var(--ink-2); }
+  table { width: 100%; border-collapse: collapse; margin: 1.2rem 0 0.4rem; font-size: 0.95rem; font-variant-numeric: tabular-nums; }
+  th, td { padding: 0.45rem 0.6rem; border-bottom: 1px solid var(--rule); text-align: left; }
+  th { color: var(--ink-2); font-weight: 600; }
+  td:not(:first-child), th:not(:first-child) { text-align: right; }
+  .table-wrap { overflow-x: auto; }
+  code { font-size: 0.92em; background: var(--soft); padding: 0.1em 0.35em; border-radius: 4px; }
+  .math, mjx-container { overflow-x: auto; overflow-y: hidden; }
+  main > p:first-of-type { color: var(--ink-2); }
+</style>
+</head>
+<body>
+<main>
+<h1>Hybrid generative models of the brain: when physics meets machine learning</h1>
+<p><strong>Daniel López-Montero</strong> — joint work with Lorenzo Liverani, Enrique Zuazua and Xenia Kobeleva<br>
+Chair for Dynamics, Control, Machine Learning and Numerics (Alexander von Humboldt Professorship), FAU Erlangen-Nürnberg · October 2026</p>
+<figure><img src="img/workflow.jpg" alt="From brain scans to a fitted brain model" loading="lazy"><figcaption>From brain scans to a brain model: the scan is cut into regions, every region becomes an oscillator wired to the others, and the model is tuned until its activity looks like the measured one.</figcaption></figure>
+<p>Even at rest, the brain is never quiet. Slow, coordinated waves of activity travel between its regions, and functional MRI can record them. <strong>Can we write equations that reproduce this activity</strong>, and can we trust them enough to one day test a treatment on a virtual copy of a patient's brain before trying it on the patient?</p>
+<p>This post accompanies a hands-on Jupyter notebook that explains, for a non-specialist audience, how <em>whole-brain models</em> work and why we propose <strong>hybrid models</strong>, which keep the physics we trust and let a neural network learn what we do not know. The notebook builds a small virtual brain with our open-source package and runs entirely on a laptop CPU in about a minute, with no data download and no model training.</p>
+<h2>One region, one oscillator</h2>
+<p>Brain activity is rhythmic, so each brain region is described by the simplest equation that can start to oscillate, the Stuart–Landau oscillator. Regions are then coupled through a connectome, a matrix that says how strongly each pair of regions interacts. In our study this is the <em>functional connectome</em>, which describes how strongly the fMRI signals of each pair of regions rise and fall together in the training data. This gives the classical <strong>Coupled Hopf model</strong>:</p>
+<div class="math">$$
+\mathrm{d}z_i=\Big[\big(a+i\omega_i-|z_i|^2\big)z_i+G\sum_{j} C_{ij}\big(z_j-z_i\big)\Big]\mathrm{d}t+\sigma\,\mathrm{d}W_i .
+$$</div>
+<p>Here <span class="math">\(a\)</span> says how close each region is to oscillating on its own, <span class="math">\(\omega_i\)</span> is its natural rhythm, <span class="math">\(G\)</span> is a single global coupling strength, and <span class="math">\(\sigma\,\mathrm{d}W_i\)</span> is random noise. Every parameter has a clear meaning, but the model is rigid. A single number <span class="math">\(G\)</span> and a fixed wiring cannot express everything a real brain does.</p>
+<figure><img src="img/nb_coupling.png" alt="Functional connectivity for three values of the coupling" loading="lazy"><figcaption>Functional connectivity (who moves together with whom) of the notebook's virtual brain for three coupling strengths. Only the intermediate value reproduces the brain's pattern at the right level.</figcaption></figure>
+<h2>Compare statistics, not curves</h2>
+<p>The most obvious way to judge a model, measuring the distance between simulated and recorded curves (the <span class="math">\(L^2\)</span> error), fails for random systems. The model's noise is independent of the brain's noise, so the cross term of the expansion vanishes and only the model's own energy is left:</p>
+<div class="math">$$
+\mathbb{E}\lVert\hat z-z\rVert^2\approx\mathbb{E}\lVert\hat z\rVert^2+\mathbb{E}\lVert z\rVert^2 .
+$$</div>
+<p>A model that does nothing therefore beats a perfect copy of the brain. The notebook demonstrates this in three lines of code:</p>
+<figure><img src="img/nb_l2_trap.png" alt="The L2 trap" loading="lazy"><figcaption>Three candidate models compared with the virtual brain. The pointwise <span class="math">\(L^2\)</span> error prefers a silent model and cannot tell the perfect &quot;twin&quot; from a wrongly wired brain; functional-connectivity similarity ranks them correctly.</figcaption></figure>
+<p>As in weather forecasting, we must compare the <em>climate</em> and not individual days. We therefore fit models to a combination of statistical descriptors that neuroscientists already use (functional connectivity, its phase-based version, how these patterns change over time, and metastability). Because all of them are differentiable, the model parameters can be optimised by gradient descent through the equation solver.</p>
+<h2>The hybrid model</h2>
+<figure><img src="img/architectures.jpg" alt="Three model architectures" loading="lazy"><figcaption>From interpretable to flexible: the physics-based Coupled Hopf model, our Hybrid Hopf model, and a fully data-driven Neural stochastic differential equation (Neural SDE).</figcaption></figure>
+<p>Neural SDEs learn the whole dynamics with neural networks. They are flexible, but they are data hungry and their parameters mean nothing. Our <strong>Hybrid Hopf model</strong> keeps the oscillator in every region and replaces only the coupling, the least certain ingredient, with a small learned network that operates on a learnable wiring initialised from the functional connectome. Trained on resting-state fMRI from 94 subjects of the Human Connectome Project, it reproduced both the static and the dynamic descriptors of brain activity better than the physics-based and the purely data-driven models, and it did so consistently across repeated trainings:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+  <th>Model</th>
+  <th>Learnable parameters</th>
+  <th>FC corr ↑</th>
+  <th>phase FC corr ↑</th>
+  <th>phase FCD KS ↓</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>Coupled Hopf</td>
+  <td>2</td>
+  <td>0.913</td>
+  <td>0.783</td>
+  <td>0.208</td>
+</tr>
+<tr>
+  <td>Neural SDE</td>
+  <td>≈ 220 000</td>
+  <td>0.787</td>
+  <td>0.729</td>
+  <td>0.217</td>
+</tr>
+<tr>
+  <td><strong>Hybrid Hopf</strong></td>
+  <td>≈ 2 200</td>
+  <td><strong>0.926</strong></td>
+  <td><strong>0.923</strong></td>
+  <td><strong>0.101</strong></td>
+</tr>
+</tbody>
+</table></div>
+<p><em>Means over 10 trainings, evaluated on held-out subjects; see the notebook for the full table.</em></p>
+<p>The open questions are where mathematics comes in: how to balance many objectives at once (a Pareto front), and how to <em>control</em> a learned brain model, which is the path towards personalised stimulation therapies.</p>
+<h2>Reproducibility statement</h2>
+<p>The notebook <code>hybrid_brain_models.ipynb</code> is fully reproducible. It uses no external data (the virtual brain is generated inside the notebook) and trains no model. All random seeds are fixed, and it runs in about one minute on a CPU (tested with Python 3.13 and PyTorch 2.10). The simulations, preprocessing and descriptors all use our package <a href="https://github.com/DCN-FAU-AvH/neuroscience-modeling"><code>neuroscience-modeling</code></a>; the results quoted for real brains are taken from the accompanying paper.</p>
+<p><strong>Repository with the notebook and code available at FAU DCN-AvH GitHub:</strong> <a href="https://github.com/DCN-FAU-AvH/neuroscience-modeling">https://github.com/DCN-FAU-AvH/neuroscience-modeling</a></p>
+<h2>References</h2>
+<ol>
+<li>D. López-Montero, L. Liverani, E. Zuazua, X. Kobeleva. <em>Hybrid generative models of whole-brain dynamics balance data fidelity and interpretability.</em> Manuscript under review (2026).</li>
+<li>G. Deco, M. L. Kringelbach, V. K. Jirsa, P. Ritter. The dynamics of resting fluctuations in the brain: metastability and its dynamical cortical core. <em>Sci. Rep.</em> 7, 3095 (2017).</li>
+<li>M. Breakspear. Dynamic models of large-scale brain activity. <em>Nat. Neurosci.</em> 20, 340–352 (2017).</li>
+<li>P. Kidger, J. Foster, X. Li, T. Lyons. Neural SDEs as infinite-dimensional GANs. <em>ICML</em> (2021).</li>
+<li>G. E. Karniadakis et al. Physics-informed machine learning. <em>Nat. Rev. Phys.</em> 3, 422–440 (2021).</li>
+</ol>
+
+</main>
+</body>
+</html>
