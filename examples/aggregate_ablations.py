@@ -7,8 +7,8 @@ averages the requested metrics across seeds, and emits a booktabs ``tabular``
 matching the style of ``paper/sections/<ds>_model_table.tex``.
 
 Usage:
-    python examples/aggregate_ablations.py --ds ts_young \
-        --out paper/sections/ts_young_ablation_table.tex
+    python examples/aggregate_ablations.py --ds ts_young --seeds 42-44 \
+        --out paper_submission/sections/ts_young_ablation_table.tex
 """
 
 from __future__ import annotations
@@ -16,7 +16,10 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 from pathlib import Path
+
+from aggregate_seeds import _parse_seeds
 
 # Metric columns: (json_key, header, higher_is_better)
 COLUMNS = [
@@ -27,7 +30,6 @@ COLUMNS = [
     ("phfcd_ks",               r"phFCD KS $\downarrow$", False),
     ("metastability_diff",     r"Meta $|\Delta|$ $\downarrow$", False),
     ("temporal_correlation",   r"TS corr $\uparrow$",   True),
-    ("power_spectrum_distance", r"TS PSD $\downarrow$", False),
     ("autocorr_distance",      r"Autocorr $\downarrow$", False),
 ]
 
@@ -39,7 +41,8 @@ ROWS = [
     ("scshuffle",      "hybrid_hopf", r"\quad + shuffled connectome",          True),
     ("scrandom",       "hybrid_hopf", r"\quad + random connectome",            False),
     ("fixedcoupling",  "hybrid_hopf", r"\quad + fixed connectivity",           False),
-    ("nolocal",        "hybrid_hopf", r"\quad $-$ Hopf local term",            False),
+    # The "- Hopf local term" ablation (ablkey "nolocal") was run but is not
+    # reported in the paper table.
     ("nofdm",          "hybrid_hopf", r"\quad $-$ FDM loss",                   True),
     ("nodyn",          "hybrid_hopf", r"\quad $-$ dyn.\ connectivity losses",  False),
 ]
@@ -61,11 +64,18 @@ def _fmt(mean: float, std: float, best: bool) -> str:
     return f"\\bf{{{body}}}" if best else body
 
 
-def collect(ds: str, runs_dir: Path) -> dict:
-    """Return {ablkey: {metric: [per-seed values]}} for present result files."""
+def collect(ds: str, runs_dir: Path, seeds: set[int]) -> dict:
+    """Return {ablkey: {metric: [per-seed values]}} for present result files.
+
+    Only files whose seed is in *seeds* are read, so runs from another sweep
+    sitting in the same directory never enter the table.
+    """
     data: dict[str, dict[str, list[float]]] = {}
     for ablkey, model_key, _label, _sep in ROWS:
-        files = sorted(runs_dir.glob(f"{ds}_{model_key}_{ablkey}_seed*.json"))
+        files = [
+            fp for fp in sorted(runs_dir.glob(f"{ds}_{model_key}_{ablkey}_seed*.json"))
+            if int(re.search(r"_seed(\d+)\.json$", fp.name).group(1)) in seeds
+        ]
         if not files:
             continue
         metrics: dict[str, list[float]] = {k: [] for k, _, _ in COLUMNS}
@@ -96,7 +106,8 @@ def build_table(ds: str, data: dict) -> str:
 
     col_spec = "l" + " c" * len(COLUMNS)
     header = " & ".join(["Model"] + [h for _, h, _ in COLUMNS]) + r" \\"
-    lines = [f"\\begin{{tabular}}{{{col_spec}}}", "\\toprule", header, "\\midrule"]
+    lines = ["% !TEX root = ../main.tex",
+             f"\\begin{{tabular}}{{{col_spec}}}", "\\toprule", header, "\\midrule"]
 
     for ablkey, model_key, label, sep in ROWS:
         if ablkey not in agg:
@@ -117,10 +128,12 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Aggregate ablation JSONs into a LaTeX table.")
     ap.add_argument("--ds", default="ts_young")
     ap.add_argument("--runs-dir", default="results/runs")
+    ap.add_argument("--seeds", default="42-44",
+                    help="Seed set for the table, e.g. '42-44' (default: the paper's three seeds).")
     ap.add_argument("--out", default=None, help="Output .tex path (default: print only).")
     args = ap.parse_args()
 
-    data = collect(args.ds, Path(args.runs_dir))
+    data = collect(args.ds, Path(args.runs_dir), _parse_seeds(args.seeds))
     if not data:
         raise SystemExit(f"No ablation result files found under {args.runs_dir} for ds={args.ds}")
 

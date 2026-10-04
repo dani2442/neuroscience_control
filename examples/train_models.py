@@ -19,10 +19,12 @@ are in examples/postprocess.py.
 from __future__ import annotations
 
 import argparse
+import copy
 import dataclasses
 import json
+import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import matplotlib
@@ -36,7 +38,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from examples.cli_args import add_dataset_args, DATASET_ARG_NAMES
 from src.dataset import compute_omega_from_timeseries, load_dataset
-from src.dataset import compute_split_indices, create_data_loaders
+from src.dataset import create_data_loaders, resolve_split
 from src.metrics import fisher_batch_average
 from src.models import build_model
 from src.training import (
@@ -224,6 +226,9 @@ def _make_backprop_namespace_from_paper_args(args: argparse.Namespace, model_nam
         "seed": getattr(args, "seed", None),
         "run_suffix": getattr(args, "run_suffix", None),
         "tr": getattr(args, "tr", None),
+        "exclude_subjects": getattr(args, "exclude_subjects", None),
+        "split_seed": getattr(args, "split_seed", None),
+        "train_subset": getattr(args, "train_subset", None),
     }
     for name in DATASET_ARG_NAMES:
         payload[name] = getattr(args, name, None)
@@ -394,6 +399,11 @@ def _run_backprop(args: argparse.Namespace) -> dict[str, object]:
 
     print_section("STEP 1: Loading and Processing Data")
     dataset = load_dataset(cfg, device)
+    exclude_subjects = getattr(args, "exclude_subjects", None)
+    split_seed = getattr(args, "split_seed", None)
+    train_subset = getattr(args, "train_subset", None)
+    _record_provenance(cfg, dataset, exclude_subjects=exclude_subjects,
+                       split_seed=split_seed, train_subset=train_subset)
     window_size = min(cfg.window_size, dataset.n_timepoints // 2)
     train_loader, val_loader, test_inter_loader, test_intra_loader = create_data_loaders(
         dataset=dataset,
@@ -405,21 +415,36 @@ def _run_backprop(args: argparse.Namespace) -> dict[str, object]:
         seed=cfg.seed,
         device=device,
         use_full_timeseries=cfg.use_full_timeseries,
+        exclude_subjects=exclude_subjects,
+        split_seed=split_seed,
+        train_subset=train_subset,
     )
     intra_info = "N/A (full TS)" if test_intra_loader is None else len(test_intra_loader)
     print(f"  window_size={window_size}  train={len(train_loader)}  val={len(val_loader)}"
           f"  test_inter={len(test_inter_loader)}  test_intra={intra_info}")
 
+    # With --train-subset the group-level quantities (connectome C, intrinsic
+    # frequencies) are estimated from the training subjects only, so a fit on
+    # K subjects has seen K subjects' data and nothing from val/test.
+    cohort = dataset
+    if train_subset is not None:
+        train_idx, _, _ = resolve_split(
+            dataset, cfg.train_ratio, cfg.val_ratio, cfg.seed,
+            exclude_subjects=exclude_subjects, split_seed=split_seed, train_subset=train_subset,
+        )
+        cohort = _training_cohort(dataset, train_idx)
+        print(f"  Group connectome and omega estimated from {len(train_idx)} training subjects")
+
     print_section("STEP 2: Training Model (Backpropagation)")
     sc_mode = getattr(args, "sc_mode", "real")
-    structural_connectivity = _transform_sc(dataset.fc_mean, sc_mode, cfg.seed)
+    structural_connectivity = _transform_sc(cohort.fc_mean, sc_mode, cfg.seed)
     if sc_mode != "real":
         print(f"  Structural connectivity ablation: sc_mode={sc_mode} (seed={cfg.seed})")
-    model = build_model(args.model, dataset, cfg, device,
+    model = build_model(args.model, cohort, cfg, device,
                         structural_connectivity=structural_connectivity,
                         n_control_dims=dataset.n_control_dims)
-    ref_amplitude = compute_ref_amplitude(dataset.timeseries)
-    ref_omega = compute_ref_omega(dataset.timeseries, tr=cfg.tr, f_lo=cfg.f_lo, f_hi=cfg.f_hi)
+    ref_amplitude = compute_ref_amplitude(cohort.timeseries)
+    ref_omega = compute_ref_omega(cohort.timeseries, tr=cfg.tr, f_lo=cfg.f_lo, f_hi=cfg.f_hi)
     print(f"  ref_amplitude=[{ref_amplitude.min():.4f}, {ref_amplitude.max():.4f}]")
     print(f"  ref_omega=[{ref_omega.min() / 6.2832:.4f}, {ref_omega.max() / 6.2832:.4f}] Hz")
 
@@ -453,6 +478,11 @@ def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
 
     print_section("STEP 1: Loading and Processing Data")
     dataset = load_dataset(cfg, device)
+    exclude_subjects = getattr(args, "exclude_subjects", None)
+    split_seed = getattr(args, "split_seed", None)
+    if getattr(args, "train_subset", None) is not None:
+        raise NotImplementedError("--train-subset is only supported for backprop runs.")
+    _record_provenance(cfg, dataset, exclude_subjects=exclude_subjects, split_seed=split_seed)
     omega = compute_omega_from_timeseries(
         dataset.timeseries, dt=dataset.dt, f_lo=cfg.f_lo, f_hi=cfg.f_hi, method="peak",
     )
@@ -471,10 +501,13 @@ def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
         seed=cfg.seed,
         device=device,
         use_full_timeseries=cfg.use_full_timeseries,
+        exclude_subjects=exclude_subjects,
+        split_seed=split_seed,
     )
     # Also get raw train indices for grid_search_hopf inputs
-    train_idx, _, _ = compute_split_indices(
-        dataset, train_ratio=cfg.train_ratio, val_ratio=cfg.val_ratio, seed=cfg.seed,
+    train_idx, _, _ = resolve_split(
+        dataset, cfg.train_ratio, cfg.val_ratio, cfg.seed,
+        exclude_subjects=exclude_subjects, split_seed=split_seed,
     )
     intra_info = "N/A (full TS)" if test_intra_loader is None else len(test_intra_loader)
     print(f"  window_size={window_size}  train={len(train_loader)}  val={len(val_loader)}"
@@ -591,6 +624,80 @@ def _print_paper_report(report: dict[str, dict[str, float]]) -> None:
         print(_line(row))
 
 
+# ---------------------------------------------------------------------------
+# Run provenance
+#
+# Every run JSON records the exact conditions it was produced under, so a table
+# can be traced back to the runs behind it without consulting job logs. The
+# subject-level split is included because ``cfg.seed`` seeds the split as well
+# as initialisation, so two seeds are two different partitions (unless
+# --split-seed fixes the partition).
+# ---------------------------------------------------------------------------
+
+_RUN_PROVENANCE: dict[str, object] = {}
+
+
+def _git_commit() -> str | None:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=PROJECT_ROOT, text=True, stderr=subprocess.DEVNULL,
+        ).strip()
+    except Exception:
+        return None
+
+
+def _record_provenance(cfg, dataset, exclude_subjects=None,
+                       split_seed=None, train_subset=None) -> None:
+    """Capture the split and solver settings this run is conditioned on."""
+    train_idx, val_idx, test_idx = resolve_split(
+        dataset, cfg.train_ratio, cfg.val_ratio, cfg.seed,
+        exclude_subjects=exclude_subjects, split_seed=split_seed, train_subset=train_subset,
+    )
+    _RUN_PROVENANCE.clear()
+    _RUN_PROVENANCE.update({
+        "seed": int(cfg.seed),
+        "split_seed": int(cfg.seed if split_seed is None else split_seed),
+        "train_subset": None if train_subset is None else int(train_subset),
+        "exclude_subjects": (sorted(int(i) for i in exclude_subjects)
+                             if exclude_subjects else None),
+        "max_subjects": getattr(cfg, "max_subjects", None),
+        "n_subjects": int(dataset.n_subjects),
+        "train_ratio": float(cfg.train_ratio),
+        "val_ratio": float(cfg.val_ratio),
+        "split_sizes": {
+            "train": int(len(train_idx)),
+            "val": int(len(val_idx)),
+            "test": int(len(test_idx)),
+        },
+        "split_indices": {
+            "train": sorted(int(i) for i in train_idx),
+            "val": sorted(int(i) for i in val_idx),
+            "test": sorted(int(i) for i in test_idx),
+        },
+        "n_epochs": int(cfg.n_epochs),
+        "dt_min": cfg.dt_min,
+        "sde_method": cfg.sde_method,
+        "noise_sigma": getattr(cfg, "noise_sigma", None),
+        "git_commit": _git_commit(),
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    })
+
+
+def _training_cohort(dataset, train_idx):
+    """Shallow copy of *dataset* whose group-level statistics use only *train_idx*.
+
+    ``build_model`` estimates the intrinsic frequencies from ``timeseries`` and
+    the coupling prior is ``fc_mean``; both otherwise average over every subject,
+    validation and test included.
+    """
+    cohort = copy.copy(dataset)
+    cohort.timeseries = dataset.timeseries[train_idx]
+    cohort.fc_matrices = dataset.fc_matrices[train_idx]
+    cohort.fc_mean = cohort.fc_matrices.mean(dim=0)
+    return cohort
+
+
 def _save_individual_metrics(
     model_key: str,
     test_inter: dict[str, object],
@@ -617,6 +724,7 @@ def _save_individual_metrics(
             "test_inter": {k: float(v) for k, v in as_numeric_metrics(test_inter).items()},
             "test_intra": {k: float(v) for k, v in as_numeric_metrics(test_intra).items()},
         },
+        "provenance": dict(_RUN_PROVENANCE) or None,
     }
     with output.open("w", encoding="utf-8") as fh:
         json.dump(data, fh, indent=2, sort_keys=True)
@@ -660,6 +768,34 @@ def _build_parser() -> argparse.ArgumentParser:
         p.add_argument("--group-size", type=int, default=None, help="Samples per group for metric evaluation (0 = full batch)")
         p.add_argument("--seed", type=int, default=None, help="Override cfg.seed (default leaves cfg.seed=42)")
         p.add_argument("--tr", type=float, default=None, help="Override repetition time in seconds.")
+        p.add_argument(
+            "--exclude-subjects",
+            nargs="+",
+            type=int,
+            default=None,
+            metavar="IDX",
+            help="Subject indices to hold out of the train, val AND test splits. Used to "
+                 "pretrain a base model on a pool disjoint from the personalization "
+                 "targets, so that fine-tuning starts from weights that have never seen "
+                 "the subject being personalised to.",
+        )
+        p.add_argument(
+            "--split-seed",
+            type=int,
+            default=None,
+            help="Seed for the subject-level train/val/test partition. Default: the fit "
+                 "--seed, so every seed is also a different partition. Fixing it holds the "
+                 "validation and test subjects constant across fits.",
+        )
+        p.add_argument(
+            "--train-subset",
+            type=int,
+            default=None,
+            metavar="K",
+            help="Train on K subjects drawn (with --seed) from the training pool; val/test "
+                 "are unchanged. The group connectome and intrinsic frequencies are then "
+                 "estimated from those K subjects only. Subsets with one seed are nested.",
+        )
         p.add_argument(
             "--run-suffix",
             type=str,

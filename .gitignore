@@ -212,3 +212,12 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Experiment launch bookkeeping: SLURM job-id records, launcher scripts and
+# scratch sweep directories. Files stay on disk and remain runnable; these
+# patterns only keep them out of git status. Entries under logs/ that are
+# already tracked (e.g. logs/revision/launch_generative.sh) are unaffected,
+# since .gitignore does not apply to tracked files.
+logs/rerun/
+logs/**/*_jobids.txt
+logs/**/launch_*.sh

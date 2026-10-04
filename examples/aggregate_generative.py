@@ -28,18 +28,15 @@ over subjects. Top-1 identification accuracy is reported per seed against the
 ``1/n`` chance level.
 
 Crucially, ``delta > 0`` on its own is **not** evidence of a personalized model.
-Every simulation is seeded with the subject's own initial condition, which is a
-subject-specific input, so a purely group-level model can score a large positive
-delta simply by propagating that state. The Coupled Hopf demonstrates exactly
-this: it shares a, kappa, G, sigma and a group-average connectome across the
-whole cohort, yet still reaches delta ~ +0.18 and ~42% top-1 identification
-against ~1.5% chance -- more than any learned-coupling architecture achieves. It
-is therefore the *reference* for initial-condition carryover, and ``delta -
-delta_IC`` is reported alongside the raw delta. Every learned model scores a
-negative increment, i.e. it preserves *less* subject-specific structure than a
-model that cannot be personalized at all. That is evidence against a
-personalization claim for these architectures, not weak evidence for one, and it
-is why the manuscript no longer claims personalized digital-twin capability.
+Every architecture here is fitted at the cohort level, so its parameters are
+shared across all subjects and a positive delta need not reflect anything the
+fit learned about the individual -- the Coupled Hopf reaches delta ~ +0.18 and
+~42% top-1 identification against ~1.5% chance despite sharing every parameter
+across the whole cohort. This contrast is therefore a diagnostic only and is not
+reported in the manuscript; the personalization claim rests on the N=1 design of
+``aggregate_personalization.py``, where each subject gets its own fit and the
+target is held fixed, so that the fitted parameters are the only thing that
+varies.
 
 Usage::
 

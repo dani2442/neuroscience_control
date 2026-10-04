@@ -109,13 +109,26 @@ def restrict_to_common(
     return restricted, dropped
 
 
-def collect(ds: str, runs_dir: Path, suffix: str) -> dict[str, dict[int, dict[str, float]]]:
-    """Return {model_key: {seed: {metric: value}}}."""
+def collect(
+    ds: str,
+    runs_dir: Path,
+    suffix: str,
+    seeds: set[int] | None = None,
+) -> dict[str, dict[int, dict[str, float]]]:
+    """Return {model_key: {seed: {metric: value}}}.
+
+    ``seeds`` restricts the scan to an explicit seed set. The run directory can
+    hold more than one sweep, and a bare ``seed*`` glob would silently pool them
+    into a single analysis, so the caller states which sweep a table is built
+    from rather than inheriting whatever happens to be on disk.
+    """
     out: dict[str, dict[int, dict[str, float]]] = {}
     for model_key, _label in ROWS:
         per_seed: dict[int, dict[str, float]] = {}
         for fp in sorted(runs_dir.glob(f"{ds}_{model_key}_{suffix}_seed*.json")):
             seed = int(fp.stem.split("seed")[-1])
+            if seeds is not None and seed not in seeds:
+                continue
             payload = json.loads(fp.read_text(encoding="utf-8"))
             inter = payload.get("metrics", {}).get("test_inter")
             if not inter:
@@ -187,9 +200,39 @@ def paired_tests(
     models: list[str],
 ) -> dict[str, float]:
     """Holm-corrected paired Wilcoxon p-values vs *reference*, paired on seed."""
+    return {mk: rec["p_holm"] for mk, rec in
+            paired_tests_detail(data, metric, reference, models).items()}
+
+
+def paired_tests_detail(
+    data: dict[str, dict[int, dict[str, float]]],
+    metric: str,
+    reference: str,
+    models: list[str],
+) -> dict[str, dict[str, float]]:
+    """Per-comparison test record vs *reference*, paired on seed.
+
+    Returns ``{model: {n, statistic, p_raw, p_holm, family_size}}``. The Holm
+    family is the set of architectures compared against the reference *within
+    this metric* -- not the set of metrics in the table. Each column therefore
+    answers "which architectures differ from the reference on this descriptor",
+    which is the question the table is read for; metrics are separate questions
+    and are not pooled into one family. ``family_size`` is recorded per record so
+    the correction is auditable from the emitted table alone.
+
+    The test is the exact (permutation) two-sided Wilcoxon signed-rank test.
+    ``method="exact"`` is pinned rather than left to scipy's ``"auto"`` so the
+    reported p-values cannot silently switch to the normal approximation if the
+    seed count later grows past scipy's auto threshold; with n=9 and no zero
+    differences or ties the two agree exactly, so pinning changes no published
+    value. Note the resolution floor this imposes: with n nonzero pairs the
+    smallest attainable two-sided p is 2/2**n (0.0039 at n=9), so a Holm family
+    of size m cannot report below m * 2/2**n.
+    """
     from scipy.stats import wilcoxon
 
     raw: dict[str, float] = {}
+    detail: dict[str, dict[str, float]] = {}
     if reference not in data:
         return {}
     ref_seeds = data[reference]
@@ -202,16 +245,29 @@ def paired_tests(
         pairs = [
             (x, y) for x, y in zip(a, b) if not (math.isnan(x) or math.isnan(y))
         ]
-        if len(pairs) < 5 or all(abs(x - y) < 1e-12 for x, y in pairs):
+        nonzero = [(x, y) for x, y in pairs if abs(x - y) >= 1e-12]
+        if len(pairs) < 5 or not nonzero:
             raw[mk] = float("nan")
+            detail[mk] = {"n": len(nonzero), "statistic": float("nan"),
+                          "p_raw": float("nan")}
             continue
         try:
-            _, p = wilcoxon([x for x, _ in pairs], [y for _, y in pairs],
-                            zero_method="wilcox", alternative="two-sided")
+            stat, p = wilcoxon([x for x, _ in pairs], [y for _, y in pairs],
+                               zero_method="wilcox", alternative="two-sided",
+                               method="exact")
             raw[mk] = float(p)
+            detail[mk] = {"n": len(nonzero), "statistic": float(stat),
+                          "p_raw": float(p)}
         except ValueError:
             raw[mk] = float("nan")
-    return _holm(raw)
+            detail[mk] = {"n": len(nonzero), "statistic": float("nan"),
+                          "p_raw": float("nan")}
+    adjusted = _holm(raw)
+    family_size = sum(1 for v in raw.values() if not math.isnan(v))
+    for mk, rec in detail.items():
+        rec["p_holm"] = adjusted.get(mk, float("nan"))
+        rec["family_size"] = float(family_size)
+    return detail
 
 
 def _sig(p: float) -> str:
@@ -290,9 +346,11 @@ def build_table(
     ) + r" \\"
     lines = [f"\\begin{{tabular}}{{l{n_col}}}", "\\toprule", header, "\\midrule"]
 
+    # Per-row seed counts are only informative when they differ; in a balanced
+    # (complete-case) table the count is stated once in the caption instead.
+    balanced = len({len(data[mk]) for mk, _ in rows}) == 1
     for mk, label in rows:
-        n_seeds = len(data[mk])
-        cells = [f"{label} ({n_seeds})"]
+        cells = [label if balanced else f"{label} ({len(data[mk])})"]
         for key, _hdr, _hb in cols:
             mean, std = agg[mk][key]
             cells.append(_fmt(mean, std, bold=best.get(key) == mk,
@@ -329,17 +387,123 @@ def build_table(
     return "\n".join(lines) + "\n", summary
 
 
+def _p(v: float) -> str:
+    """Enough digits to show the 2/2**n resolution floor of the exact test."""
+    return "---" if math.isnan(v) else f"{v:.4f}"
+
+
+def build_pvalue_table(
+    data: dict[str, dict[int, dict[str, float]]],
+    *,
+    main: bool,
+) -> str:
+    """Every annotation in the corresponding table, with its raw and adjusted p.
+
+    Reviewer point: the stars have to be reproducible from the reported
+    procedure. One row per (metric, comparison) carries n, the signed-rank
+    statistic, the exact raw p, the Holm family size, the adjusted p, and the
+    resulting annotation -- so each superscript can be checked end to end.
+    """
+    rows = [(k, lbl) for k, lbl in ROWS if k in data and (not main or k in MAIN_ROWS)]
+    keep = MAIN_COLUMNS if main else [c[0] for c in ALL_COLUMNS
+                                      if c[0] not in FULL_EXCLUDE]
+    cols = [c for c in ALL_COLUMNS if c[0] in keep]
+    models = [k for k, _ in rows]
+    labels = dict(ROWS)
+
+    comp_data = {
+        mk: {s: {"composite": composite_error(data[mk][s])} for s in sorted(data[mk])}
+        for mk in models
+    }
+    blocks = [(hdr, paired_tests_detail(data, key, REFERENCE, models))
+              for key, hdr, _hb in cols]
+    blocks.append((r"Composite $\downarrow$",
+                   paired_tests_detail(comp_data, "composite", REFERENCE, models)))
+
+    lines = [r"\begin{tabular}{l l c c c c c c}", r"\toprule",
+             r"Metric & Comparison & $n$ & $W$ & raw $p$ & $m$ "
+             r"& Holm $p$ & Annot. \\",
+             r"\midrule"]
+    for hdr, recs in blocks:
+        first = True
+        for mk in models:
+            if mk == REFERENCE or mk not in recs:
+                continue
+            r = recs[mk]
+            nn = int(r["n"])
+            stat = "---" if math.isnan(r["statistic"]) else f"{r['statistic']:.0f}"
+            fam = "---" if math.isnan(r["family_size"]) else f"{int(r['family_size'])}"
+            annot = _sig(r["p_holm"]).replace("$^{", "").replace("}$", "") or "n.s."
+            lines.append(
+                f"{hdr if first else ''} & {labels[mk]} vs.\\ {labels[REFERENCE]} "
+                f"& {nn} & {stat} & {_p(r['p_raw'])} & {fam} "
+                f"& {_p(r['p_holm'])} & {annot} \\\\"
+            )
+            first = False
+        lines.append(r"\midrule")
+    lines[-1] = r"\bottomrule"
+    lines.append(r"\end{tabular}")
+    return "\n".join(lines) + "\n"
+
+
+def build_per_seed_table(data: dict[str, dict[int, dict[str, float]]], *,
+                         main: bool) -> str:
+    """Per-seed composite error: the paired input behind the composite tests."""
+    rows = [(k, lbl) for k, lbl in ROWS if k in data and (not main or k in MAIN_ROWS)]
+    models = [k for k, _ in rows]
+    seeds = sorted(set.intersection(*(set(data[mk]) for mk in models))) if models else []
+
+    lines = [r"\begin{tabular}{l" + " c" * len(seeds) + " c}", r"\toprule",
+             " & ".join(["Model"] + [str(s) for s in seeds] + [r"Mean $\pm$ SD"])
+             + r" \\", r"\midrule"]
+    for mk, label in rows:
+        vals = [composite_error(data[mk][s]) for s in seeds]
+        cells = [f"{v:.3f}" for v in vals]
+        mean, sd = float(np.mean(vals)), float(np.std(vals, ddof=1))
+        lines.append(" & ".join([label] + cells + [f"{mean:.3f} $\\pm$ {sd:.3f}"])
+                     + r" \\")
+    lines += [r"\bottomrule", r"\end{tabular}"]
+    return "\n".join(lines) + "\n"
+
+
+def _parse_seeds(spec: str | None) -> set[int] | None:
+    """Parse '1-10' / '1,2,3' / '1-3,7' into a seed set; None means every seed."""
+    if not spec:
+        return None
+    seeds: set[int] = set()
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            lo, hi = part.split("-", 1)
+            seeds.update(range(int(lo), int(hi) + 1))
+        else:
+            seeds.add(int(part))
+    return seeds
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--ds", default="ts_young")
     ap.add_argument("--runs-dir", default="results/runs")
+    ap.add_argument("--seeds", default=None,
+                    help="Explicit seed set for this table, e.g. '1-10' or "
+                         "'1,2,3'. Required whenever results/runs holds more "
+                         "than one sweep, so a table names the runs behind it.")
     ap.add_argument("--suffix", default="n94",
                     help="Run-suffix family to aggregate (default: n94).")
     ap.add_argument("--main", action="store_true",
                     help="Emit the 3-architecture main-text table instead of all five.")
     ap.add_argument("--out", default=None)
     ap.add_argument("--summary-out", default=None)
+    ap.add_argument("--pvalues-out", default=None,
+                    help="Emit the raw/Holm-adjusted p-value table backing every "
+                         "superscript in the corresponding results table.")
+    ap.add_argument("--per-seed-out", default=None,
+                    help="Emit the per-seed composite errors (the paired input "
+                         "to the composite tests).")
     ap.add_argument("--common-seeds", action="store_true",
                     help="Restrict every architecture to the seeds all of them "
                          "completed (balanced complete-case design). Use for the "
@@ -349,7 +513,7 @@ def main() -> None:
                          "(silently skipped when absent).")
     args = ap.parse_args()
 
-    data = collect(args.ds, Path(args.runs_dir), args.suffix)
+    data = collect(args.ds, Path(args.runs_dir), args.suffix, _parse_seeds(args.seeds))
     merge_ari(data, Path(args.ari_json) if args.ari_json else None)
     if not data:
         raise SystemExit(f"No runs found under {args.runs_dir} for ds={args.ds}")
@@ -391,6 +555,14 @@ def main() -> None:
         so.parent.mkdir(parents=True, exist_ok=True)
         so.write_text(json.dumps(summary, indent=1), encoding="utf-8")
         print(f"Wrote {so}")
+    for path, builder in ((args.pvalues_out, build_pvalue_table),
+                          (args.per_seed_out, build_per_seed_table)):
+        if not path:
+            continue
+        out = Path(path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(builder(data, main=args.main), encoding="utf-8")
+        print(f"Wrote {out}")
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ from .data_loader import (
 from .preprocessing import (
     RandomWindowDataset,
     compute_split_indices,
+    resolve_split,
     create_data_loaders,
     compute_omega_from_timeseries,
 )
@@ -30,6 +31,7 @@ __all__ = [
     "LSD_N_CONTROL_DIMS",
     "RandomWindowDataset",
     "compute_split_indices",
+    "resolve_split",
     "create_data_loaders",
     "compute_omega_from_timeseries",
 ]
