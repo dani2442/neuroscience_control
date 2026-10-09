@@ -3,7 +3,6 @@ import numpy as np
 from pathlib import Path
 import sys
 import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
 from matplotlib.collections import LineCollection
 import matplotlib.animation as animation
 from scipy.interpolate import CubicSpline
@@ -13,7 +12,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.models import CoupledHopfModel, NeuralSDE
+from src.models import CoupledHopfModel
 from src.dataset import NeuroscienceDataset, compute_omega_from_timeseries
 
 # ── Config ──────────────────────────────────────────────────────────────────
@@ -24,7 +23,7 @@ SIM_DT = 0.72          # keep original dt to avoid Brownian tree overflow
 SIM_DT_MIN = 0.05      # sub-step for the SDE solver
 FPS = 20               # gif frame rate
 FRAME_SKIP = 2         # render every N-th interpolated point
-OUTPUT = "paper/images/trajectory3.gif"
+OUTPUT = "figures/trajectory3.gif"
 
 # ── Data & model ────────────────────────────────────────────────────────────
 dataset = NeuroscienceDataset(

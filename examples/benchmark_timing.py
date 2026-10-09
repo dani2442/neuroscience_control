@@ -382,7 +382,6 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> dict[str, object]:
-    import dataclasses
     import json
 
     args = _build_parser().parse_args(argv)

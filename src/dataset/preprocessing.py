@@ -3,7 +3,10 @@
 import torch
 import numpy as np
 from torch.utils.data import Dataset, DataLoader
-from typing import Tuple, List, Optional, Sequence
+from typing import TYPE_CHECKING, Optional, Sequence, Tuple
+
+if TYPE_CHECKING:  # pragma: no cover - import only for type annotations
+    from .data_loader import NeuroscienceDataset
 
 
 def compute_omega_from_timeseries(

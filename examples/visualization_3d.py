@@ -3,9 +3,9 @@
 
 Maps per-ROI amplitude onto the Schaefer 100-ROI atlas projected onto
 fsaverage, producing:
-  1. A GIF animation  (paper/images/brain_activity_3d.gif)
+  1. A GIF animation  (figures/brain_activity_3d.gif)
      – both hemispheres merged, with face colours that update each frame.
-  2. An interactive HTML (paper/images/brain_activity_3d.html)
+  2. An interactive HTML (figures/brain_activity_3d.html)
      – both hemispheres, with a time-slider + auto-play button.
 
 Requires: torch, nilearn, nibabel, matplotlib, Pillow, plotly
@@ -17,8 +17,6 @@ from pathlib import Path
 import matplotlib
 matplotlib.use("Agg")  # non-interactive backend for rendering
 
-import matplotlib.pyplot as plt
-import matplotlib.animation as animation
 import numpy as np
 import nibabel as nib
 import torch
@@ -27,7 +25,6 @@ from nilearn import datasets, surface
 from nilearn.surface import load_surf_mesh
 from matplotlib.colors import Normalize
 from matplotlib import cm
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 # ── Path setup ──────────────────────────────────────────────────────────────
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -43,8 +40,8 @@ SIM_DT = 0.72          # TR in seconds
 PATIENT = 0            # subject index
 N_ROIS = 100           # Schaefer atlas parcellation size
 FPS = 6                # gif frame rate
-OUTPUT_GIF = PROJECT_ROOT / "paper/images/brain_activity_3d.gif"
-OUTPUT_HTML = PROJECT_ROOT / "paper/images/brain_activity_3d.html"
+OUTPUT_GIF = PROJECT_ROOT / "figures/brain_activity_3d.gif"
+OUTPUT_HTML = PROJECT_ROOT / "figures/brain_activity_3d.html"
 
 # ── Data & model ────────────────────────────────────────────────────────────
 print("Loading dataset …")

@@ -4,7 +4,7 @@
 Reads per-seed result files written by ``train_models.py backprop`` with
 ``--run-suffix <ablkey>_seed<N>`` (i.e. ``results/runs/<ds>_<model>_<ablkey>_seed<N>.json``),
 averages the requested metrics across seeds, and emits a booktabs ``tabular``
-matching the style of ``paper/sections/<ds>_model_table.tex``.
+matching the style of ``paper_submission/sections/<ds>_model_table.tex``.
 
 Usage:
     python examples/aggregate_ablations.py --ds ts_young --seeds 42-44 \

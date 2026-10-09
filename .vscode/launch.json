@@ -5,27 +5,25 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Python Debugger: SDE train",
+            "name": "Python Debugger: train hopf (backprop)",
             "type": "debugpy",
             "request": "launch",
-            "program": "examples/train_sde.py",
-            "env" : {"PYTHONPATH": "${workspaceFolder}"},
+            "program": "examples/train_models.py",
+            "args": ["backprop", "--model", "hopf", "--no-wandb"],
+            "env": {"PYTHONPATH": "${workspaceFolder}"},
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
-            "purpose":["debug-in-terminal"],
-            
+            "purpose": ["debug-in-terminal"]
         },
         {
             "name": "Python Debugger: Current File",
             "type": "debugpy",
             "request": "launch",
             "program": "${file}",
-            "env" : {"PYTHONPATH": "${workspaceFolder}"},
+            "env": {"PYTHONPATH": "${workspaceFolder}"},
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
-            "purpose":["debug-in-terminal"],
-            
+            "purpose": ["debug-in-terminal"]
         }
-    ],
-    
+    ]
 }

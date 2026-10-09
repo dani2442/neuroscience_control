@@ -2,7 +2,7 @@
 # Launch the full ablation batch on ts_young: 8 configs x 3 seeds = 24 GPU jobs.
 # Writes results to results/runs/ts_young_<model>_<ablkey>_seed<seed>.json
 set -euo pipefail
-cd /home/hpc/dsaa/dsaa110h/projects/neuroscience_control
+cd "$(dirname "${BASH_SOURCE[0]}")/../.."  # repository root
 
 DATA="data/ts_young/ts_young_TR0.72.mat"
 COMMON="--dataset-type ts_young --data-path $DATA --no-wandb --skip-figures"

@@ -32,7 +32,6 @@ jobs:
         run: |
           uv run pytest \
             --cov=src \
-            --cov=neuroscience_control \
             --cov-report=term-missing \
             --cov-report=xml
 

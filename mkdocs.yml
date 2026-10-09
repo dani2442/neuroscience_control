@@ -1,8 +1,8 @@
-site_name: Neuroscience Control
+site_name: Neuroscience Modeling
 site_description: Whole-brain dynamics simulation and control with Hopf and Neural SDE models.
-site_url: https://dani2442.github.io/neuroscience_control/
-repo_url: https://github.com/dani2442/neuroscience_control
-repo_name: dani2442/neuroscience_control
+site_url: https://dcn-fau-avh.github.io/neuroscience-modeling/
+repo_url: https://github.com/DCN-FAU-AvH/neuroscience-modeling
+repo_name: DCN-FAU-AvH/neuroscience-modeling
 
 theme:
   name: material
@@ -23,7 +23,6 @@ nav:
       - Metrics Evaluation: tutorials/metrics-evaluation.md
   - API Overview: api/index.md
   - Website Deployment: website.md
-  - Publishing: publishing.md
 
 plugins:
   - search

@@ -7,7 +7,7 @@ This project publishes docs to GitHub Pages from the `main` branch via the Docs 
 Default GitHub Pages URL for this repository:
 
 ```text
-https://dani2442.github.io/neuroscience_control/
+https://dcn-fau-avh.github.io/neuroscience-modeling/
 ```
 
 ## How deployment works

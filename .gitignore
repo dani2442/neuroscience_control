@@ -213,11 +213,11 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-# Experiment launch bookkeeping: SLURM job-id records, launcher scripts and
-# scratch sweep directories. Files stay on disk and remain runnable; these
-# patterns only keep them out of git status. Entries under logs/ that are
-# already tracked (e.g. logs/revision/launch_generative.sh) are unaffected,
-# since .gitignore does not apply to tracked files.
+# Generated analysis artefacts (notebooks regenerate these on demand)
+cache/
+figures/
+
+# Experiment bookkeeping: SLURM job-id records and scratch sweep directories.
+# Launch scripts under logs/ are tracked because the README refers to them.
 logs/rerun/
 logs/**/*_jobids.txt
-logs/**/launch_*.sh

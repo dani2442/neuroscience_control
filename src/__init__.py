@@ -1,5 +1,5 @@
 """
-Neuroscience Control - Brain dynamics simulation and optimization.
+Neuroscience Modeling - whole-brain dynamics simulation and model fitting.
 
 This package provides tools for:
 - Loading and processing neuroscience timeseries data

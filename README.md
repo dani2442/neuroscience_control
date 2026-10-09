@@ -1,15 +1,14 @@
-# Neuroscience Control
+# Neuroscience Modeling
 
-[![CI](https://github.com/dani2442/neuroscience_control/actions/workflows/ci.yml/badge.svg)](https://github.com/dani2442/neuroscience_control/actions/workflows/ci.yml)
-[![Docs](https://github.com/dani2442/neuroscience_control/actions/workflows/docs.yml/badge.svg)](https://github.com/dani2442/neuroscience_control/actions/workflows/docs.yml)
-[![PyPI version](https://img.shields.io/pypi/v/neuroscience-control.svg)](https://pypi.org/project/neuroscience-control/)
-[![Python versions](https://img.shields.io/pypi/pyversions/neuroscience-control.svg)](https://pypi.org/project/neuroscience-control/)
+[![CI](https://github.com/DCN-FAU-AvH/neuroscience-modeling/actions/workflows/ci.yml/badge.svg)](https://github.com/DCN-FAU-AvH/neuroscience-modeling/actions/workflows/ci.yml)
+[![Docs](https://github.com/DCN-FAU-AvH/neuroscience-modeling/actions/workflows/docs.yml/badge.svg)](https://github.com/DCN-FAU-AvH/neuroscience-modeling/actions/workflows/docs.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Coverage](https://codecov.io/gh/dani2442/neuroscience_control/branch/main/graph/badge.svg)](https://app.codecov.io/gh/dani2442/neuroscience_control)
 
 <p align="center">
-  <b>Brain dynamics simulation and control using Coupled Hopf and Neural SDE models</b>
+  <b>Hybrid generative whole-brain models: Coupled Hopf, Neural SDE, and hybrid architectures fitted by gradient descent</b>
 </p>
+
+Code accompanying the manuscript *Hybrid generative models of whole-brain dynamics balance data fidelity and interpretability* (D. López-Montero, L. Liverani, E. Zuazua, X. Kobeleva). The manuscript sources live in [`paper_submission/`](paper_submission/), and every table and figure panel can be regenerated with the scripts listed under [Reproducing the paper analyses](#reproducing-the-paper-analyses).
 
 <p align="center">
   <a href="#overview">Overview</a> •
@@ -26,14 +25,15 @@
 
 ## Overview
 
-A PyTorch framework for **whole-brain modeling** of resting-state fMRI BOLD signals. It provides three main training workflows and an additional experimental model class:
+A PyTorch framework for **whole-brain modeling** of resting-state fMRI BOLD signals. It implements the five whole-brain model (WBM) architectures compared in the manuscript: three are discussed in the main text and two further hybrid variants are reported in the Supplementary Material.
 
-| Model | Description |
-|-------|-------------|
-| **Coupled Hopf** | Physics-based coupled oscillators at the supercritical Hopf bifurcation, informed by structural connectivity |
-| **Hybrid Hopf** | Hopf oscillators with a learnable complex-valued graph-coupling network replacing fixed linear diffusive coupling |
-| **Neural SDE** | Data-driven neural networks parameterizing stochastic differential equations |
-| **GNN Hopf** | A node-wise neural coupling variant of the Hopf model, exposed as a model class and covered by tests |
+| Model | CLI name | Description |
+|-------|----------|-------------|
+| **Coupled Hopf** | `hopf` | Physics-based coupled oscillators at the supercritical Hopf bifurcation, coupled through a connectome prior; fitted by grid search or by gradient descent |
+| **Neural SDE** | `nsde` | Data-driven neural networks parameterizing the drift and diffusion of a stochastic differential equation |
+| **Hybrid Hopf** | `hybrid_hopf` | Hopf oscillators with a learnable complex-valued coupling network replacing the fixed linear diffusive coupling |
+| **GNN Hopf** (supplement) | `gnn_hopf` | Hopf oscillators with node-wise neural coupling |
+| **Hopf + Neural** (supplement) | `hybrid_neural` | Hopf drift plus a neural drift correction, with a learnable noise amplitude |
 
 All model families operate in **complex-valued** space — state, drift, diffusion, and Brownian motion are complex tensors. The observed BOLD signal is the real part of the complex state.
 
@@ -52,24 +52,13 @@ All model families operate in **complex-valued** space — state, drift, diffusi
 
 Requires **Python ≥ 3.13** and **PyTorch ≥ 2.2**.
 
-### From PyPI
-
-```bash
-pip install neuroscience-control
-```
-
-Or with `uv`:
-
-```bash
-uv add neuroscience-control
-```
-
 ### From source
 
 ```bash
-git clone https://github.com/dani2442/neuroscience_control.git
-cd neuroscience_control
-uv sync
+git clone https://github.com/DCN-FAU-AvH/neuroscience-modeling.git
+cd neuroscience-modeling
+uv sync               # creates .venv with the pinned dependencies
+uv sync --group dev   # also installs pytest and ruff
 ```
 
 ### Optional dataset integrations
@@ -77,17 +66,16 @@ uv sync
 `nilearn` is included by default. For OpenNeuro/DataLad dataset download support:
 
 ```bash
-pip install "neuroscience-control[datasets]"
-# or
 uv sync --group datasets
 ```
 
 ### Verify
 
-The distribution is named `neuroscience-control`, but the importable package in this repository is currently `src`.
+The importable package is `src`.
 
 ```bash
-python -c "import src; print(src.__version__)"
+uv run python -c "import src; print(src.__version__)"
+uv run pytest
 ```
 
 > **Note:** The project depends on a [complex-valued fork of `torchsde`](https://github.com/dani2442/torchsde). When installing from source with `uv`, this is resolved automatically via the `[tool.uv.sources]` override in `pyproject.toml`.
@@ -201,9 +189,12 @@ model = NeuralSDE(
 )
 ```
 
-### GNN Hopf Model
+### Supplementary hybrid variants: GNN Hopf and Hopf + Neural
 
-The repository also exports `GNNHopfModel`, a node-wise neural coupling variant of the Hopf model. It is covered by tests and checkpoint loading, but it is not currently exposed through the main `examples/train_models.py backprop --model ...` CLI.
+Two further hybrid architectures are reported in the Supplementary Material. Both are trained with the same CLI (`--model gnn_hopf`, `--model hybrid_neural`) and the same losses.
+
+- `GNNHopfModel` replaces the diffusive coupling with a node-wise neural coupling.
+- `HybridHopfNeuralModel` keeps the Hopf drift and adds a neural drift correction (near-zero initialization, same network as the Neural SDE) with a learnable noise amplitude.
 
 ```python
 from src.models import GNNHopfModel
@@ -218,7 +209,7 @@ model = GNNHopfModel(
 
 ### Common Forward Interface
 
-`CoupledHopfModel`, `HybridHopfModel`, `GNNHopfModel`, and `NeuralSDE` share the same `forward()` signature:
+`CoupledHopfModel`, `HybridHopfModel`, `HybridHopfNeuralModel`, `GNNHopfModel`, and `NeuralSDE` share the same `forward()` signature:
 
 ```python
 timeseries = model.forward(
@@ -332,10 +323,12 @@ Training is orchestrated by [`examples/train_models.py`](examples/train_models.p
 # Hopf grid search over (G, a, κ)
 python examples/train_models.py hopf-grid
 
-# Backprop training for the CLI-supported models
-python examples/train_models.py backprop --model nsde
+# Backprop training (one architecture per call)
 python examples/train_models.py backprop --model hopf
+python examples/train_models.py backprop --model nsde
 python examples/train_models.py backprop --model hybrid_hopf
+python examples/train_models.py backprop --model gnn_hopf
+python examples/train_models.py backprop --model hybrid_neural
 
 # Full paper suite: grid search + all backprop models + metrics JSON
 python examples/train_models.py paper --output-json results/paper_metrics.json
@@ -343,7 +336,7 @@ python examples/train_models.py paper --output-json results/paper_metrics.json
 
 **Common flags:** `--no-wandb`, `--device {auto,cuda,cpu}`, `--skip-figures`, `--n-epochs N`
 
-**Ablation flags** (`backprop`): `--sc-mode`, `--no-learnable-coupling`, `--disable-local`, `--zero-loss`, `--hidden-dim/--n-layers` — see [Reproducing the Appendix Ablations](#reproducing-the-appendix-ablations).
+**Ablation flags** (`backprop`): `--sc-mode`, `--no-learnable-coupling`, `--disable-local`, `--zero-loss`, `--hidden-dim/--n-layers` — see [Ablations](#4-ablations).
 
 Training hyperparameters (learning rate, loss weights, dataset backend, solver settings, atlas settings, and split ratios) are configured via the `TrainingConfig` dataclasses in `src/training/config.py`.
 
@@ -467,32 +460,40 @@ from src.training import Trainer, TrainingConfig
 ## Project Structure
 
 ```text
-neuroscience_control/
+neuroscience-modeling/
 ├── src/
 │   ├── dataset/                   # Data loading, preprocessing, alternate dataset backends
 │   ├── metrics/                   # FC, dynamics, phase, spectrum, and auxiliary losses
-│   ├── models/                    # Coupled Hopf, Hybrid Hopf, GNN Hopf, Neural SDE, checkpoint loading
+│   ├── models/                    # Coupled Hopf, Hybrid Hopf, Hopf+Neural, GNN Hopf, Neural SDE
 │   ├── training/                  # Config dataclasses, grid search, trainer, composite loss
 │   └── utils/                     # Evaluation helpers, plotting, runtime/W&B utilities
 ├── examples/
 │   ├── train_models.py            # Training entry point: backprop, hopf-grid, paper
-│   ├── postprocess.py             # Table updates, model comparison, LSD condition comparisons
+│   ├── train_personalized.py      # Single-subject (N = 1) personalization fits
+│   ├── postprocess.py             # Table updates, model comparison, metric curves
+│   ├── cli_args.py                # Shared dataset-related CLI flags
 │   ├── aggregate_seeds.py         # Seed-level model tables + paired Wilcoxon/Holm + composite
+│   ├── aggregate_grid_vs_gradient.py  # Grid search vs gradient descent table
+│   ├── aggregate_ablations.py     # Ablation table from per-seed ablation runs
 │   ├── evaluate_generative.py     # Repeated-realization, coverage and personalization evaluation
 │   ├── aggregate_generative.py    # Variance decomposition, coverage, personalization tables
+│   ├── aggregate_personalization.py  # Within- vs between-subject contrasts of the N = 1 fits
 │   ├── coupling_diagnostics.py    # Learned-coupling vs connectome-initialization diagnostics
-│   ├── aggregate_ablations.py     # Ablation table from per-seed ablation runs
-│   ├── cli_args.py                # Shared dataset-related CLI flags
-│   ├── visualization.py           # 2D latent-trajectory animation example
-│   ├── visualization_3d.py        # Surface-mapped 3D animation example
-│   ├── example.ipynb              # Notebook demo
-│   └── pipeline_visualization.ipynb
-├── tests/                         # Model and grid-search unit tests
+│   ├── compute_ari.py             # FC adjusted Rand index per (model, seed)
+│   ├── benchmark_timing.py        # Training / grid-search / inference runtime benchmark
+│   ├── build_run_manifest.py      # One row per run behind every table and figure
+│   ├── plot_fig4_panels.py        # Figure 4 panels (d) and (e)
+│   ├── plot_grid_search_fc_similarity.py
+│   ├── visualization.py, visualization_3d.py   # Trajectory animation examples
+│   └── *.ipynb                    # Figure-panel notebooks (outputs stripped)
+├── tests/                         # Unit tests (pytest)
 ├── docs/                          # MkDocs Material documentation site
-├── paper/                         # Figures, LaTeX tables, manuscript sources
-├── data/                          # Local datasets (.mat, LSD, downloaded BIDS derivatives)
-├── checkpoints/                   # Saved model checkpoints
-├── results/                       # Metrics JSON, comparison outputs, metrics-store runs
+├── logs/                          # SLURM launch scripts used for the paper experiments
+├── paper_submission/              # Manuscript sources (git submodule synced with Overleaf)
+├── data/                          # Local datasets (ignored by git)
+├── checkpoints/                   # Saved model checkpoints (ignored by git)
+├── results/                       # Metrics JSON, per-seed run records (ignored by git)
+├── figures/                       # Default output directory for generated figures (ignored by git)
 ├── mkdocs.yml
 └── pyproject.toml
 ```
@@ -602,11 +603,95 @@ python examples/coupling_diagnostics.py \
 
 ### 4. Ablations
 
+The controls-and-ablations table in the supplement isolates **why** the Hybrid
+Hopf model performs well by changing one ingredient at a time. All runs use the
+`backprop` subcommand with the flags below; each run also takes `--seed S` and
+`--run-suffix TAG` and writes `results/runs/<dataset>_<model>_<TAG>.json`.
+
+| Flag | Effect |
+| --- | --- |
+| `--hidden-dim N` `--n-layers L` | Override the Neural SDE drift/diffusion size (used for the **parameter-matched** baseline). |
+| `--sc-mode {real,shuffled,random}` | Connectome used to seed the coupling: unchanged, edge-weight **shuffled** (topology destroyed), or a **random** symmetric graph. Seeded by `--seed`. |
+| `--no-learnable-coupling` | Freeze the coupling `C` at its connectome initialization (**fixed** vs. learnable connectivity; Hybrid Hopf only). |
+| `--disable-local` | Zero the mechanistic **Hopf local term**, keeping the learned coupling architecture (Hybrid Hopf only). |
+| `--zero-loss KEY [KEY ...]` | Set the listed loss weights to 0. Keys: `fc_correlation fc_mse l2 amplitude omega power_spectrum temporal_correlation autocorrelation fcd phfcd phase_fc_correlation metastability fdm`. |
+
+The eight configurations (one seed shown; the table uses seeds 42, 43, 44):
+
 ```bash
-./logs/ablation/launch_full.sh          # 8 configs x 3 seeds
+DATA=data/ts_young/ts_young_TR0.72.mat
+COMMON="--dataset-type ts_young --data-path $DATA --no-wandb --skip-figures --seed 42"
+PY="python examples/train_models.py backprop"
+
+$PY --model hybrid_hopf $COMMON --run-suffix baseline_seed42                            # reference
+$PY --model nsde        $COMMON --hidden-dim 4 --n-layers 1 --run-suffix pmatch_seed42  # parameter-matched Neural SDE
+$PY --model hybrid_hopf $COMMON --sc-mode shuffled --run-suffix scshuffle_seed42
+$PY --model hybrid_hopf $COMMON --sc-mode random   --run-suffix scrandom_seed42
+$PY --model hybrid_hopf $COMMON --no-learnable-coupling --run-suffix fixedcoupling_seed42
+$PY --model hybrid_hopf $COMMON --disable-local --run-suffix nolocal_seed42
+$PY --model hybrid_hopf $COMMON --zero-loss fdm --run-suffix nofdm_seed42
+$PY --model hybrid_hopf $COMMON \
+  --zero-loss fcd phfcd phase_fc_correlation metastability --run-suffix nodyn_seed42
+```
+
+[`logs/ablation/launch_full.sh`](logs/ablation/launch_full.sh) submits the full
+8 × 3 batch as SLURM jobs (adjust `-M`/partition for your cluster). Once the
+`results/runs/*.json` files exist, build the table:
+
+```bash
+bash logs/ablation/launch_full.sh
 python examples/aggregate_ablations.py --ds ts_young \
   --out paper_submission/sections/ts_young_ablation_table.tex
 ```
+
+### 5. Grid search vs. gradient descent (Supplementary Table S2)
+
+Compares the Coupled Hopf fitted by exhaustive grid search (`train_models.py hopf-grid`,
+one run per seed written to `results/runs/ts_young_hopf_grid_seed<s>.json`) against the
+gradient-fitted Coupled Hopf runs of Table 1, paired on the seed:
+
+```bash
+python examples/aggregate_grid_vs_gradient.py --seeds 42-51 \
+  --out paper_submission/sections/grid_vs_gradient_table.tex
+```
+
+### 6. Personalization (N = 1 fits)
+
+`train_personalized.py` fits one model to a single subject and evaluates it on the
+held-out second half of that subject's scan (`test_intra`) and on every other subject
+(`test_inter`). `aggregate_personalization.py` turns the per-subject records into the
+within- vs. between-subject contrasts reported in the supplement.
+
+```bash
+python examples/train_personalized.py --model hybrid_hopf --subject 0 \
+  --dataset-type ts_young --data-path data/ts_young/ts_young_TR0.72.mat \
+  --no-wandb --skip-figures
+python examples/aggregate_personalization.py --ds ts_young
+```
+
+### 7. Figure panels, ARI, timing, and run bookkeeping
+
+```bash
+# Figure 4 panels (d) data efficiency and (e) personalization
+python examples/plot_fig4_panels.py --panel e
+python examples/plot_fig4_panels.py --panel d --seeds 42-51
+
+# FC adjusted Rand index per (model, seed), behind the modularity claim
+python examples/compute_ari.py --checkpoints "checkpoints/ts_young_*_n94_seed*.pt" \
+  --out results/ari_per_seed.json
+
+# Runtime cost of every model (training s/epoch, grid-search s/trial, inference s)
+python examples/benchmark_timing.py --dataset-type ts_young \
+  --data-path data/ts_young/ts_young_TR0.72.mat
+
+# One row per (table/figure, model, seed) with inclusion status and exclusion reason
+python examples/build_run_manifest.py --out results/run_manifest.csv
+```
+
+The remaining figure panels (brain maps, FC/FCD/phFCD matrices, clustering,
+stacked trajectories, pipeline illustrations) are produced by the notebooks under
+`examples/`. Their outputs are stripped from the repository; run a notebook to
+regenerate its panels.
 
 ### A note on the connectivity matrix
 
@@ -625,7 +710,7 @@ Methods and Limitations.
 ## Documentation Website
 
 Docs are built with [MkDocs Material](https://squidfunk.github.io/mkdocs-material/).  
-Live site: **https://dani2442.github.io/neuroscience_control/**
+Live site: **https://dcn-fau-avh.github.io/neuroscience-modeling/**
 
 ```bash
 # Install docs dependencies
@@ -649,18 +734,10 @@ uv run pytest --cov=src --cov-report=term-missing
 
 ---
 
-## Release and Publishing
+## Continuous Integration
 
-Automated workflows:
-
-- **CI** (`.github/workflows/ci.yml`): tests + coverage
-- **Docs** (`.github/workflows/docs.yml`): docs build + GitHub Pages deploy
-- **Publish** (`.github/workflows/publish.yml`): manual dispatch → TestPyPI; GitHub release → PyPI
-
-```bash
-uv run python -m build
-uv run twine check dist/*
-```
+- **CI** (`.github/workflows/ci.yml`): runs the test suite with coverage on every push and pull request.
+- **Docs** (`.github/workflows/docs.yml`): builds the MkDocs site and deploys it to GitHub Pages.
 
 ---
 
@@ -674,14 +751,20 @@ uv run twine check dist/*
 
 ## Citation
 
-If you use this project in academic work, please cite this repository and the accompanying paper:
+If you use this code in academic work, please cite the manuscript and the repository:
 
 ```bibtex
-@software{neuroscience_control,
-  author = {López Montero, Daniel and Kobeleva, Xenia and Liverani, Lorenzo},
-  title  = {Neuroscience Control: Brain Dynamics Simulation and Control
-            with Coupled Hopf and Neural SDE Models},
-  url    = {https://github.com/dani2442/neuroscience_control},
+@article{lopezmontero2026hybrid,
+  author = {L{\'o}pez-Montero, Daniel and Liverani, Lorenzo and Zuazua, Enrique and Kobeleva, Xenia},
+  title  = {Hybrid generative models of whole-brain dynamics balance data fidelity and interpretability},
+  year   = {2026},
+  note   = {Manuscript submitted for publication},
+}
+
+@software{neuroscience_modeling,
+  author = {L{\'o}pez-Montero, Daniel and Liverani, Lorenzo and Zuazua, Enrique and Kobeleva, Xenia},
+  title  = {neuroscience-modeling: hybrid generative whole-brain models fitted by gradient descent},
+  url    = {https://github.com/DCN-FAU-AvH/neuroscience-modeling},
   year   = {2026},
 }
 ```
@@ -691,111 +774,3 @@ If you use this project in academic work, please cite this repository and the ac
 ## License
 
 MIT License — see [LICENSE](LICENSE) for details.
-
----
-
-## Paper Commands (`.venv`)
-
-Run from the repository root. See each script's docstring for full usage details.
-
-```bash
-# 1) Paper suite — train all models on a dataset and generate metrics JSON
-#    LSD dataset:
-.venv/bin/python examples/train_models.py paper \
-  --dataset-type lsd --lsd-data-dir data/lsd
-
-#    ts_young dataset:
-.venv/bin/python examples/train_models.py paper \
-  --dataset-type ts_young --data-path data/ts_young/ts_young_TR0.72.mat
-
-# 2) Update paper LaTeX tables from metrics JSON
-.venv/bin/python examples/postprocess.py update-tables \
-  --metrics results/lsd_paper_metrics_<timestamp>.json
-
-.venv/bin/python examples/postprocess.py update-tables \
-  --metrics results/ts_young_paper_metrics_<timestamp>.json
-
-# 3) Compare LSD control conditions
-.venv/bin/python examples/postprocess.py compare-conditions \
-  --checkpoints checkpoints/hopf_grid_lsd_best_*.pt \
-                checkpoints/hopf_backprop_lsd_best_*.pt \
-                checkpoints/nsde_backprop_lsd_best_*.pt \
-                checkpoints/hybrid_hopf_backprop_lsd_best_*.pt \
-                checkpoints/gnn_hopf_backprop_lsd_best_*.pt \
-  --lsd-data-dir data/lsd
-
-# 4) Or run the full post-training pipeline
-.venv/bin/python examples/postprocess.py pipeline \
-  --dataset-type lsd \
-  --lsd-data-dir data/lsd
-```
-
-## Reproducing the Appendix Ablations
-
-The controls/ablations in the appendix (Table: *Controls and ablations*) isolate
-**why** the Hybrid Hopf model performs well by changing one ingredient at a time.
-They are driven by the same `backprop` entry point via a set of ablation flags.
-
-### Ablation flags (`backprop` subcommand)
-
-| Flag | Effect |
-| --- | --- |
-| `--hidden-dim N` `--n-layers L` | Override the Neural SDE drift/diffusion size (used for the **parameter-matched** baseline). |
-| `--sc-mode {real,shuffled,random}` | Structural connectome used to seed the coupling: unchanged, edge-weight **shuffled** (topology destroyed), or a **random** symmetric graph. Seeded by `--seed`. |
-| `--no-learnable-coupling` | Freeze the coupling `C` at its connectome initialization (**fixed** vs. learnable connectivity; Hybrid Hopf only). |
-| `--disable-local` | Zero the mechanistic **Hopf local term**, keeping the learned coupling architecture (Hybrid Hopf only). |
-| `--zero-loss KEY [KEY ...]` | Set the listed loss weights to 0. Keys: `fc_correlation fc_mse l2 amplitude omega power_spectrum temporal_correlation autocorrelation fcd phfcd phase_fc_correlation metastability fdm`. |
-
-Each run also takes `--seed S` and `--run-suffix TAG`; results are written to
-`results/runs/<dataset>_<model>_<TAG>.json`.
-
-### The eight configurations (HCP / `ts_young`, one seed shown)
-
-```bash
-DATA=data/ts_young/ts_young_TR0.72.mat
-COMMON="--dataset-type ts_young --data-path $DATA --no-wandb --skip-figures --seed 42"
-PY=".venv/bin/python examples/train_models.py backprop"
-
-# Reference Hybrid Hopf
-$PY --model hybrid_hopf $COMMON --run-suffix baseline_seed42
-# Parameter-matched Neural SDE (~2.8k params, matches Hybrid Hopf's ~2.2k)
-$PY --model nsde        $COMMON --hidden-dim 4 --n-layers 1 --run-suffix pmatch_seed42
-# Shuffled / random connectome
-$PY --model hybrid_hopf $COMMON --sc-mode shuffled --run-suffix scshuffle_seed42
-$PY --model hybrid_hopf $COMMON --sc-mode random   --run-suffix scrandom_seed42
-# Fixed (frozen) connectivity
-$PY --model hybrid_hopf $COMMON --no-learnable-coupling --run-suffix fixedcoupling_seed42
-# Ablate the Hopf local term
-$PY --model hybrid_hopf $COMMON --disable-local --run-suffix nolocal_seed42
-# Loss ablations: FDM, and the dynamic-connectivity surrogates
-$PY --model hybrid_hopf $COMMON --zero-loss fdm --run-suffix nofdm_seed42
-$PY --model hybrid_hopf $COMMON \
-  --zero-loss fcd phfcd phase_fc_correlation metastability --run-suffix nodyn_seed42
-```
-
-The paper table uses **three seeds** (42, 43, 44); vary `--seed` and the
-`_seed<N>` suffix accordingly.
-
-### GPU batch launcher (SLURM)
-
-The full 8-config × 3-seed batch is scripted in
-[`logs/ablation/launch_full.sh`](logs/ablation/launch_full.sh), which submits one
-`sbatch -M tinygpu` job per run (adjust `-M`/partition for your cluster):
-
-```bash
-bash logs/ablation/launch_full.sh
-```
-
-### Aggregate into the LaTeX table
-
-Once the `results/runs/*.json` files exist, build the appendix table
-([`paper/sections/ts_young_ablation_table.tex`](paper/sections/ts_young_ablation_table.tex)):
-
-```bash
-.venv/bin/python examples/aggregate_ablations.py \
-  --ds ts_young --out paper/sections/ts_young_ablation_table.tex
-```
-
-The script reports per-configuration seed coverage and writes the mean ± std
-`tabular`. The section prose lives in
-[`paper/sections/05_ablations.tex`](paper/sections/05_ablations.tex).

@@ -7,7 +7,7 @@
 #
 # Usage: launch_generative.sh [model ...]   (default: the three main architectures)
 set -euo pipefail
-cd /home/hpc/dsaa/dsaa110h/projects/neuroscience_control
+cd "$(dirname "${BASH_SOURCE[0]}")/../.."  # repository root
 
 MODELS=("$@")
 if [ ${#MODELS[@]} -eq 0 ]; then MODELS=(hopf nsde hybrid_hopf); fi

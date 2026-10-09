@@ -1,6 +1,6 @@
-# Neuroscience Control
+# Neuroscience Modeling
 
-`neuroscience-control` is a PyTorch framework for **whole-brain modeling** of resting-state fMRI BOLD signals. The repository centers on three main training workflows:
+This repository is a PyTorch framework for **whole-brain modeling** of resting-state fMRI BOLD signals. The repository centers on three main training workflows:
 
 | Workflow / Model | Description |
 |------------------|-------------|
@@ -14,7 +14,7 @@ The observed BOLD signal is the real part of the complex state, $s_i(t) = \Re(z_
 
 ## Key Facts
 
-- The install name is `neuroscience-control`, but the current Python import namespace is `src`.
+- The project is installed from source with `uv`; the Python import namespace is `src`.
 - All model families operate on **complex-valued** analytic signals.
 - Training uses `examples/train_models.py`; post-training comparison and paper artefacts use `examples/postprocess.py`.
 - Dataset backends include local `.mat`, LSD, nilearn, OpenNeuro, DataLad, and local BIDS derivatives.
@@ -51,4 +51,3 @@ with torch.no_grad():
 | [First Training Run](tutorials/first-training-run.md) | Backprop, grid-search, and paper-suite entry points |
 | [Metrics & Evaluation](tutorials/metrics-evaluation.md) | Metric modules, composite loss, and loader-level evaluation helpers |
 | [API Overview](api/index.md) | Actual exported modules and common imports |
-| [Publishing](publishing.md) | Preflight checks and release workflow |

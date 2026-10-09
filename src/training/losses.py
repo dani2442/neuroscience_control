@@ -25,8 +25,6 @@ from ..metrics.timeseries_metrics import (
     L2Timeseries,
     AmplitudeLoss,
     OmegaLoss,
-    compute_ref_amplitude,
-    compute_ref_omega,
 )
 from ..metrics.dynamics_metrics import FCD, Metastability, PhaseFC, PhFCD
 

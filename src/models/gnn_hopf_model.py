@@ -138,7 +138,6 @@ class GNNHopfSDEFunc(nn.Module):
 
         # --- linear diffusive aggregation m_i = Σ_j C_ij (z_j − z_i) ---
         C = self.coupling_matrix  # (n_rois, n_rois) or extended
-        batch = y.shape[0]
 
         if self.n_control_dims > 0 and self.control_input is not None and self.control_coupling is not None:
             # Augmented-state coupling: [C | control_coupling]

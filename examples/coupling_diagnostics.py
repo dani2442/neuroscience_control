@@ -43,7 +43,6 @@ import sys
 from pathlib import Path
 
 import numpy as np
-import torch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:

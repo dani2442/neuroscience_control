@@ -8,15 +8,8 @@
     "python.testing.pytestArgs": [
         "tests"
     ],
-    "python.testing.unittestEnabled": true,
-    "python.testing.pytestEnabled": false,
-    "python.testing.unittestArgs": [
-        "-v",
-        "-s",
-        "./tests",
-        "-p",
-        "test_*.py"
-    ],
+    "python.testing.unittestEnabled": false,
+    "python.testing.pytestEnabled": true,
     "latex-workshop.view.pdf.viewer": "tab",
     "latex-workshop.latex.autoBuild.run": "onSave",
     "latex-workshop.latex.rootFile.useSubFile": true,

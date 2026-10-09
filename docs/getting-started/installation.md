@@ -7,45 +7,38 @@
 - Linux / macOS / Windows
 - Optional CUDA-enabled GPU for training speed
 
-## Install from PyPI
-
-```bash
-pip install neuroscience-control
-```
-
-Or with `uv`:
-
-```bash
-uv add neuroscience-control
-```
-
 ## Install from source
 
+The project is installed from the repository with [`uv`](https://docs.astral.sh/uv/):
+
 ```bash
-git clone https://github.com/dani2442/neuroscience_control.git
-cd neuroscience_control
+git clone https://github.com/DCN-FAU-AvH/neuroscience-modeling.git
+cd neuroscience-modeling
 uv sync
 ```
 
+`uv sync` creates `.venv/` with the pinned dependencies. Add `--group dev` for the
+test and lint tools and `--group docs` for the documentation site.
+
 ## Optional dataset integrations
 
-`nilearn` is included by default. For OpenNeuro and DataLad dataset download support, install the `datasets` extra:
+`nilearn` is included by default. For OpenNeuro and DataLad dataset download support,
+install the `datasets` group:
 
 ```bash
-pip install "neuroscience-control[datasets]"
-# or
 uv sync --group datasets
 ```
 
 ## Verify installation
 
 ```bash
-python -c "import src; print(src.__version__)"
+uv run python -c "import src; print(src.__version__)"
+uv run pytest
 ```
 
 ## Import namespace
 
-Install the package as `neuroscience-control`, but import from `src` in the current repository layout:
+The importable package is `src`:
 
 ```python
 from src.models import CoupledHopfModel, NeuralSDE
@@ -57,7 +50,7 @@ from src.training import Trainer, HopfConfig
 
 !!! note "Complex-valued `torchsde` fork"
     This project depends on a [fork of `torchsde`](https://github.com/dani2442/torchsde)
-    that adds complex Brownian motion support. When installing from source with `uv`, this
+    that adds complex Brownian motion support. When installing with `uv`, this
     is resolved automatically via the `[tool.uv.sources]` override in `pyproject.toml`.
-    If you install with plain `pip`, it will use the PyPI `torchsde` release (which may
-    lack complex-valued support).
+    If you install with plain `pip`, it will use the PyPI `torchsde` release (which
+    lacks complex-valued support).

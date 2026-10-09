@@ -8,31 +8,22 @@ Consolidates all post-training steps that produce publication artefacts:
    metrics JSON produced by ``train_models.py paper``.
 2. **compare** – generates FC/timeseries comparison figures for the
    best Hopf and Neural SDE checkpoints.
-3. **compare-conditions** *(LSD only)* – simulates all trained models
-   under pharmacological conditions
-   (u=(0,0) Placebo, u=(1,0) LSD, u=(0,1) LSD+Ketanserin) and
-   produces FC grids, ΔFC plots, bar charts, a metrics JSON and a
-   LaTeX table fragment.
-4. **plot-metrics** – plots validation metrics over epochs for each model.
-5. **pipeline** – runs all four steps above in sequence.
+3. **plot-metrics** – plots validation metrics over epochs for each model.
+4. **pipeline** – runs all three steps above in sequence.
 
-# Run the full post-training pipeline (tables + compare + conditions):
+# Run the full post-training pipeline (tables + compare + metric curves):
     python examples/postprocess.py pipeline \\
-        --dataset-type lsd --lsd-data-dir data/lsd
+        --dataset-type ts_young --data-path data/ts_young/ts_young_TR0.72.mat
 
 # Update LaTeX tables from a metrics JSON:
     python examples/postprocess.py update-tables \\
-        --metrics results/lsd_paper_metrics_<timestamp>.json
+        --metrics results/ts_young_paper_metrics_<timestamp>.json
 
 # Compare Hopf vs Neural SDE (figures):
     python examples/postprocess.py compare \\
         --hopf-checkpoint checkpoints/best_hopf_backprop_ts_young.pt \\
         --nsde-checkpoint checkpoints/best_nsde_backprop_ts_young.pt \\
         --data-path data/ts_young/ts_young_TR0.72.mat
-
-# Compare LSD control conditions (u=(0,0), u=(1,0), u=(0,1)):
-    python examples/postprocess.py compare-conditions \\
-        --lsd-data-dir data/lsd
 """
 
 from __future__ import annotations
@@ -67,14 +58,12 @@ from src.utils.runtime import (
     seed_all,
     wandb_log,
     wandb_log_figure,
-    wandb_summary_update,
 )
 from src.utils.evaluation import (
     EVAL_METRIC_KEYS,
     as_numeric_metrics,
     evaluate_model_loader_metrics,
     format_metrics_mean_std,
-    to_float_metric,
 )
 from src.utils.visualization import (
     FIGURES_DIR,
@@ -178,8 +167,7 @@ HIGHER_BETTER: dict[str, bool] = {
 }
 
 TABLE_TARGET_BY_LABEL: dict[str, Path] = {
-    "tab:model_comparison": Path("paper/sections/ts_young_model_table.tex"),
-    "tab:lsd_model_comparison": Path("paper/sections/lsd_model_table.tex"),
+    "tab:model_comparison": Path("paper_submission/sections/ts_young_model_table.tex"),
 }
 
 
@@ -519,7 +507,7 @@ def run_update_tables(
     if tex_target is not None:
         tex_path = Path(tex_target)
     else:
-        tex_path = TABLE_TARGET_BY_LABEL.get(table_label, Path("paper/sections/03_results.tex"))
+        tex_path = TABLE_TARGET_BY_LABEL.get(table_label, Path("paper_submission/sections/2_results.tex"))
     print(f"Target file: {tex_path}")
 
     per_batch_values = _load_per_batch_values(comparison_json)
@@ -878,7 +866,7 @@ def run_compare_models(
 
 
 # ===================================================================
-# 3. compare_control_conditions
+# 3. Figure helpers shared by the comparison step
 # ===================================================================
 
 _MODEL_TAGS = [
@@ -900,100 +888,9 @@ def _short_model_label(stem: str) -> str:
     return stem
 
 
-#: 2-D pharmacological control encoding: (LSD, Ketanserin) indicators.
-CtrlVec = tuple[int, int]
-
-CONDITION_LABELS: dict[CtrlVec, str] = {
-    (0, 0): "Placebo (u=(0,0))",
-    (1, 0): "LSD (u=(1,0))",
-    (0, 1): "LSD+Ketanserin (u=(0,1))",
-}
-
-CONDITION_COLORS: dict[CtrlVec, str] = {
-    (0, 0): "#4878CF",
-    (1, 0): "#6ACC65",
-    (0, 1): "#D65F5F",
-}
-
-
 def _fc_to_numpy(fc: torch.Tensor) -> np.ndarray:
     arr = fc.detach().cpu().numpy()
     return arr.real if np.iscomplexobj(arr) else arr
-
-
-def _plot_fc_grid(fc_per_model, empirical_fc_per_ctrl, *, save_path: Path) -> None:
-    model_names = list(fc_per_model.keys())
-    ctrl_vals = sorted(CONDITION_LABELS.keys())
-    n_models, n_conds = len(model_names), len(ctrl_vals)
-    n_rows = n_models + 1
-    fig, axes = plt.subplots(n_rows, n_conds, figsize=(4 * n_conds, 4 * n_rows))
-    if n_rows == 1:
-        axes = axes[np.newaxis, :]
-    if n_conds == 1:
-        axes = axes[:, np.newaxis]
-    vmin, vmax = -1.0, 1.0
-
-    for col, cv in enumerate(ctrl_vals):
-        ax = axes[0, col]
-        emp_fc = empirical_fc_per_ctrl.get(cv)
-        if emp_fc is not None:
-            im = ax.imshow(_fc_to_numpy(emp_fc), cmap="coolwarm", vmin=vmin, vmax=vmax)
-            plt.colorbar(im, ax=ax, fraction=0.046)
-        else:
-            ax.text(0.5, 0.5, "N/A", ha="center", va="center", transform=ax.transAxes)
-        ax.set_title(CONDITION_LABELS[cv], fontsize=9)
-        if col == 0:
-            ax.set_ylabel("Empirical", fontsize=9)
-
-    for row, mname in enumerate(model_names):
-        for col, cv in enumerate(ctrl_vals):
-            ax = axes[row + 1, col]
-            fc = fc_per_model[mname].get(cv)
-            if fc is not None:
-                im = ax.imshow(_fc_to_numpy(fc), cmap="coolwarm", vmin=vmin, vmax=vmax)
-                plt.colorbar(im, ax=ax, fraction=0.046)
-            else:
-                ax.text(0.5, 0.5, "N/A", ha="center", va="center", transform=ax.transAxes)
-            if col == 0:
-                ax.set_ylabel(mname, fontsize=9)
-
-    plt.suptitle("FC under pharmacological conditions (rows=model, cols=condition)", fontsize=11)
-    plt.tight_layout()
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(save_path, bbox_inches="tight", dpi=150)
-    plt.close(fig)
-    print(f"  Saved FC grid → {save_path}")
-
-
-def _plot_fc_diff(fc_per_ctrl, model_name: str, *, baseline_ctrl: CtrlVec = (0, 0), save_path: Path) -> None:
-    ctrl_vals = [cv for cv in sorted(CONDITION_LABELS.keys()) if cv != baseline_ctrl]
-    if not ctrl_vals:
-        return
-    fig, axes = plt.subplots(1, len(ctrl_vals), figsize=(5 * len(ctrl_vals), 4.5))
-    if len(ctrl_vals) == 1:
-        axes = [axes]
-    baseline_fc = fc_per_ctrl.get(baseline_ctrl)
-    if baseline_fc is None:
-        plt.close(fig)
-        return
-    base_np = _fc_to_numpy(baseline_fc)
-    for ax, cv in zip(axes, ctrl_vals):
-        fc = fc_per_ctrl.get(cv)
-        if fc is None:
-            ax.text(0.5, 0.5, "N/A", ha="center", va="center", transform=ax.transAxes)
-            continue
-        diff = _fc_to_numpy(fc) - base_np
-        im = ax.imshow(diff, cmap="RdBu_r", vmin=-0.5, vmax=0.5)
-        plt.colorbar(im, ax=ax, fraction=0.046)
-        ax.set_title(f"ΔFC: {CONDITION_LABELS[cv]} − {CONDITION_LABELS[baseline_ctrl]}", fontsize=9)
-        ax.set_xlabel("ROI")
-        ax.set_ylabel("ROI")
-    plt.suptitle(f"{model_name} — FC change under drug conditions", fontsize=11)
-    plt.tight_layout()
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(save_path, bbox_inches="tight", dpi=150)
-    plt.close(fig)
-    print(f"  Saved ΔFC plot → {save_path}")
 
 
 def _plot_fc_per_roi(
@@ -1026,318 +923,6 @@ def _plot_fc_per_roi(
     fig.savefig(save_path, bbox_inches="tight", dpi=150)
     plt.close(fig)
     print(f"  Saved per-ROI FC comparison → {save_path}")
-
-
-def _plot_fc_delta_per_roi(
-    fc_per_ctrl: dict[CtrlVec, torch.Tensor],
-    model_name: str,
-    *,
-    baseline_ctrl: CtrlVec = (0, 0),
-    save_path: Path,
-) -> None:
-    """Single plot: mean ΔFC per ROI (condition − baseline) for one model.
-
-    X-axis = ROI index, y-axis = mean delta-FC of that ROI's row.
-    """
-    baseline_fc = fc_per_ctrl.get(baseline_ctrl)
-    if baseline_fc is None:
-        return
-    base_np = _fc_to_numpy(baseline_fc)
-    ctrl_vals = [cv for cv in sorted(CONDITION_LABELS.keys()) if cv != baseline_ctrl]
-    if not ctrl_vals:
-        return
-
-    fig, ax = plt.subplots(figsize=(10, 4))
-    x = np.arange(base_np.shape[0])
-
-    for cv in ctrl_vals:
-        fc = fc_per_ctrl.get(cv)
-        if fc is None:
-            continue
-        delta = _fc_to_numpy(fc) - base_np          # (n_rois, n_rois)
-        label = CONDITION_LABELS[cv].split("(")[0].strip()
-        ax.plot(x, delta.mean(axis=1), color=CONDITION_COLORS[cv],
-                linewidth=1.1, label=f"Δ{label}")
-
-    ax.axhline(0, color="gray", linewidth=0.5, linestyle="--")
-    ax.set_ylim(-0.5, 0.5)
-    ax.set_xlabel("ROI")
-    ax.set_ylabel("Mean ΔFC")
-    ax.legend(fontsize=8)
-    ax.grid(True, alpha=0.25)
-    plt.suptitle(
-        f"{model_name} — Mean ΔFC per ROI (vs {CONDITION_LABELS[baseline_ctrl]})", fontsize=12
-    )
-    plt.tight_layout()
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(save_path, bbox_inches="tight", dpi=150)
-    plt.close(fig)
-    print(f"  Saved mean ΔFC per-ROI → {save_path}")
-
-
-def _plot_fc_corr_bar(metrics, *, save_path: Path) -> None:
-    model_names = list(metrics.keys())
-    ctrl_vals = sorted(CONDITION_LABELS.keys())
-    x = np.arange(len(model_names))
-    width = 0.25
-    fig, ax = plt.subplots(figsize=(max(6, 2 * len(model_names)), 4))
-    for i, cv in enumerate(ctrl_vals):
-        corrs = [metrics[m].get(cv, {}).get("fc_correlation", float("nan")) for m in model_names]
-        ax.bar(x + (i - 1) * width, corrs, width, label=CONDITION_LABELS[cv], color=CONDITION_COLORS[cv], alpha=0.85)
-    ax.set_ylabel("FC Pearson correlation ↑")
-    ax.set_title("FC fit per model and pharmacological condition")
-    ax.set_xticks(x)
-    ax.set_xticklabels(model_names, rotation=15, ha="right")
-    ax.legend()
-    ax.set_ylim(bottom=0)
-    ax.axhline(0, color="k", linewidth=0.5)
-    plt.tight_layout()
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(save_path, bbox_inches="tight", dpi=150)
-    plt.close(fig)
-    print(f"  Saved FC corr bar chart → {save_path}")
-
-
-def _fmt_cond(val: float | None, decimals: int = 3) -> str:
-    if val is None or (isinstance(val, float) and np.isnan(val)):
-        return "—"
-    return f"{val:.{decimals}f}"
-
-
-def _build_lsd_latex_table(metrics) -> str:
-    ctrl_vals = sorted(CONDITION_LABELS.keys())
-    short: dict[CtrlVec, str] = {(0, 0): "Placebo", (1, 0): "LSD", (0, 1): "LSD+Ket."}
-    col_header = " & ".join(
-        [f"FC corr $\\uparrow$ ({short[cv]}) & FC MSE $\\downarrow$ ({short[cv]})" for cv in ctrl_vals]
-    )
-    header = f"Model & {col_header} \\\\\n\\midrule\n"
-    body = ""
-    for mname, cond_metrics in metrics.items():
-        row = mname.replace("_", " ")
-        for cv in ctrl_vals:
-            m = cond_metrics.get(cv, {})
-            row += f" & {_fmt_cond(m.get('fc_correlation'))} & {_fmt_cond(m.get('fc_mse'))}"
-        body += row + " \\\\\n"
-    col_spec = "l" + "".join([" c c" for _ in ctrl_vals])
-    return (
-        "\\begin{tabular}{" + col_spec + "}\n\\toprule\n"
-        + header + body + "\\bottomrule\n\\end{tabular}\n"
-    )
-
-
-def run_compare_conditions(
-    checkpoints: list[str] | None = None,
-    lsd_data_dir: str = "data/lsd",
-    n_steps: int = 240,
-    n_paths: int = 10,
-    device: str | None = None,
-    model_labels: list[str] | None = None,
-    ctrl_values: list[CtrlVec] | None = None,
-    output_dir: str | None = None,
-    group_size: int = 0,
-) -> None:
-    """Compare model-simulated FC under different LSD control conditions.
-
-    For each condition (control value), the evaluation:
-    1. Selects only subjects belonging to that condition.
-    2. Simulates the model from those subjects' initial states with the
-       matching control input.
-    3. Computes the full metric suite (FC, timeseries, dynamics) by
-       comparing simulated trajectories against empirical target windows,
-       using the same ``build_eval_metrics`` + ``accumulate_timeseries_metrics``
-       pattern as :func:`evaluate_model_loader_metrics`.
-    """
-    from src.dataset import NeuroscienceDataset
-    from src.metrics import compute_static_fc
-    from src.models import load_model_from_checkpoint
-    from src.training.evaluation import (
-        build_eval_metrics,
-        accumulate_timeseries_metrics,
-        MetricAccumulator,
-        rollout_model,
-        EVAL_METRIC_KEYS,
-    )
-
-    device = resolve_device(device)
-    seed_all(42)
-
-    ctrl_values = ctrl_values or sorted(CONDITION_LABELS.keys())
-    # Ensure every ctrl vector is a plain tuple[int, int] (usable as dict key).
-    ctrl_values = [tuple(cv) for cv in ctrl_values]  # type: ignore[assignment]
-    figures_dir = Path(output_dir) if output_dir else FIGURES_DIR
-    results_dir = Path("results")
-    latex_dir = Path("paper/sections")
-
-    print_section("Loading LSD dataset")
-    dataset = NeuroscienceDataset.from_lsd(data_dir=lsd_data_dir, normalize=True, device=device)
-    print(f"  subjects={dataset.n_subjects}  ROIs={dataset.n_rois}  T={dataset.n_timepoints}")
-
-    # Group subjects by condition (match all control dimensions).
-    subjects_per_ctrl: dict[CtrlVec, torch.Tensor] = {}   # indices
-    empirical_fc_per_ctrl: dict[CtrlVec, torch.Tensor] = {}
-    for cv in ctrl_values:
-        cv_tensor = torch.tensor(cv, dtype=dataset.control.dtype, device=dataset.control.device)
-        mask = (dataset.control == cv_tensor).all(dim=1)
-        if mask.sum() == 0:
-            print(f"  Warning: no subjects for ctrl={cv}, skipping.")
-            continue
-        subjects_per_ctrl[cv] = mask.nonzero(as_tuple=True)[0]
-        empirical_fc_per_ctrl[cv] = fisher_batch_average(dataset.fc_matrices[mask])
-        print(f"  ctrl={cv}: {mask.sum().item()} subjects")
-
-    eval_modules = build_eval_metrics(tr=dataset.dt)
-
-    print_section("Loading model checkpoints")
-    if not checkpoints:
-        ckpt_dir = Path("checkpoints")
-        found = sorted(ckpt_dir.glob("*.pt")) if ckpt_dir.exists() else []
-        if not found:
-            print("No checkpoints specified or found. Exiting.")
-            return
-        checkpoints = [str(p) for p in found]
-        print(f"  Auto-discovered {len(checkpoints)} checkpoint(s).")
-
-    labels = model_labels or [_short_model_label(Path(c).stem) for c in checkpoints]
-    if len(labels) < len(checkpoints):
-        labels += [_short_model_label(Path(c).stem) for c in checkpoints[len(labels):]]
-
-    models: dict[str, Any] = {}
-    for ckpt_path, label in zip(checkpoints, labels):
-        p = Path(ckpt_path)
-        if not p.exists():
-            print(f"  Warning: checkpoint not found: {p}")
-            continue
-        try:
-            model, mtype, _ = load_model_from_checkpoint(str(p), device=device)
-            models[label] = model
-            print(f"  Loaded '{label}' ({mtype}) from {p.name}")
-        except Exception as exc:
-            print(f"  Warning: failed to load {p.name}: {exc}")
-
-    if not models:
-        print("No models loaded. Exiting.")
-        return
-
-    print_section("Evaluating per condition (full metric suite)")
-    fc_per_model: dict[str, dict[CtrlVec, torch.Tensor]] = {}
-    cond_metrics: dict[str, dict[CtrlVec, dict[str, float]]] = {}
-
-    sim_steps = min(n_steps, dataset.n_timepoints)
-
-    for mname, model in models.items():
-        fc_per_model[mname] = {}
-        cond_metrics[mname] = {}
-        for cv in ctrl_values:
-            if cv not in subjects_per_ctrl:
-                continue
-            idx = subjects_per_ctrl[cv]
-            n_subj = min(n_paths, len(idx))
-            subj_idx = idx[:n_subj]
-
-            target_ts = dataset.timeseries[subj_idx, :, :sim_steps]
-            initial_state = target_ts[:, :, 0]
-
-            # Build control tensor matching the condition (2-D encoding).
-            model_n_ctrl = int(getattr(model, "n_control_dims", 0) or 0)
-            if model_n_ctrl > 0:
-                cv_vec = torch.tensor(cv, dtype=torch.float32, device=device)
-                if cv_vec.numel() != model_n_ctrl:
-                    raise ValueError(
-                        f"Model expects n_control_dims={model_n_ctrl} but ctrl vector has "
-                        f"{cv_vec.numel()} dims: {cv}"
-                    )
-                ctrl = cv_vec.unsqueeze(0).expand(n_subj, -1).contiguous()
-            else:
-                ctrl = None
-
-            print(f"  {mname}: ctrl={cv} ({n_subj} subjects, {sim_steps} steps) …",
-                  end=" ", flush=True)
-
-            with torch.no_grad():
-                simulated = rollout_model(
-                    model, initial_state, sim_steps, dataset.dt,
-                    control=ctrl,
-                )
-                # Compute aggregate FC for grid plots
-                fc_per_subject = compute_static_fc(simulated)
-                fc_per_model[mname][cv] = fisher_batch_average(fc_per_subject)
-
-                # Full metric suite against empirical target timeseries
-                accumulator = MetricAccumulator()
-                accumulate_timeseries_metrics(
-                    accumulator, simulated, target_ts, eval_modules,
-                    group_size=group_size,
-                )
-                all_keys = sorted(set(EVAL_METRIC_KEYS) | set(accumulator.sums.keys()))
-                batch_metrics = accumulator.summary(keys=all_keys, include_std=True)
-
-            cond_metrics[mname][cv] = {
-                k: v for k, v in batch_metrics.items()
-                if v is not None and not (isinstance(v, float) and math.isnan(v))
-            }
-            fc_corr = batch_metrics.get("fc_correlation", float("nan"))
-            fc_mse = batch_metrics.get("fc_mse", float("nan"))
-            print(f"FC corr={fc_corr:.3f}  MSE={fc_mse:.4f}")
-
-    print_section("Generating figures")
-    _plot_fc_grid(fc_per_model, empirical_fc_per_ctrl, save_path=figures_dir / "lsd" / "control_fc_grid.pdf")
-    for mname in models:
-        _plot_fc_diff(
-            fc_per_model[mname], model_name=mname, baseline_ctrl=(0, 0),
-            save_path=figures_dir / "lsd" / f"fc_delta_{mname.lower().replace(' ', '_')}.pdf",
-        )
-    _plot_fc_diff(
-        empirical_fc_per_ctrl, model_name="Empirical", baseline_ctrl=(0, 0),
-        save_path=figures_dir / "lsd" / "fc_delta_empirical.pdf",
-    )
-    for mname in models:
-        _plot_fc_delta_per_roi(
-            fc_per_model[mname], model_name=mname, baseline_ctrl=(0, 0),
-            save_path=figures_dir / "lsd" / f"fc_delta_per_roi_{mname.lower().replace(' ', '_')}.pdf",
-        )
-    _plot_fc_delta_per_roi(
-        empirical_fc_per_ctrl, model_name="Empirical", baseline_ctrl=(0, 0),
-        save_path=figures_dir / "lsd" / "fc_delta_per_roi_empirical.pdf",
-    )
-    _plot_fc_corr_bar(cond_metrics, save_path=figures_dir / "lsd" / "control_fc_corr.pdf")
-
-    print_section("Saving metrics and LaTeX table")
-    results_dir.mkdir(parents=True, exist_ok=True)
-    metrics_path = results_dir / "lsd_control_metrics.json"
-    # Convert to JSON-safe format (drop non-serializable values)
-    json_metrics: dict[str, dict[str, dict[str, float]]] = {}
-    for mname, per_cv in cond_metrics.items():
-        json_metrics[mname] = {}
-        for cv, m in per_cv.items():
-            key = ",".join(str(int(x)) for x in cv)
-            json_metrics[mname][key] = {
-                k: round(v, 6) for k, v in m.items() if isinstance(v, (int, float))
-            }
-    with metrics_path.open("w", encoding="utf-8") as fh:
-        json.dump(json_metrics, fh, indent=2, sort_keys=True)
-    print(f"  Metrics → {metrics_path}")
-
-    latex = _build_lsd_latex_table(cond_metrics)
-    latex_dir.mkdir(parents=True, exist_ok=True)
-    latex_path = latex_dir / "lsd_control_table.tex"
-    latex_path.write_text(latex, encoding="utf-8")
-    print(f"  LaTeX table → {latex_path}")
-
-    print_section("Results summary")
-    ctrl_short: dict[CtrlVec, str] = {(0, 0): "Placebo", (1, 0): "LSD", (0, 1): "LSD+Ket."}
-    header = f"{'Model':<35}" + "".join(
-        f"  {ctrl_short.get(cv, str(cv)):>14}" for cv in ctrl_values if cv in subjects_per_ctrl
-    )
-    print(header + "  (FC corr ↑)")
-    print("-" * len(header))
-    for mname in models:
-        row = f"{mname:<35}"
-        for cv in ctrl_values:
-            if cv not in subjects_per_ctrl:
-                continue
-            corr = cond_metrics[mname].get(cv, {}).get("fc_correlation", float("nan"))
-            row += f"  {corr:>14.4f}"
-        print(row)
 
 
 # ===================================================================
@@ -1600,22 +1185,16 @@ def run_paper_pipeline(
     data_path: str | None = None,
     lsd_data_dir: str | None = None,
     output_path: str = "results/comparison_results.json",
-    n_steps: int = 240,
-    n_paths: int = 10,
-    group_size: int = 4,
     n_eval_seeds: int = 10,
 ) -> dict[str, Any]:
     """Run the full post-training paper pipeline."""
     print_section("POST-TRAINING PAPER PIPELINE")
     results: dict[str, Any] = {}
 
-    if dataset_type == "lsd":
-        table_label = "tab:lsd_model_comparison"
-    else:
-        table_label = "tab:model_comparison"
+    table_label = "tab:model_comparison"
     dataset_figures_dir = FIGURES_DIR / dataset_type
 
-    print_section("Step 1/4: Comparing models (inter + intra patient)")
+    print_section("Step 1/3: Comparing models (inter + intra patient)")
     checkpoints = _discover_checkpoints(dataset_type, checkpoint_dir, explicit_checkpoints)
 
     if checkpoints:
@@ -1640,7 +1219,7 @@ def run_paper_pipeline(
         print("  Skipped: no checkpoints found.")
         results["compare_models"] = "skipped"
 
-    print_section("Step 2/4: Updating LaTeX tables")
+    print_section("Step 2/3: Updating LaTeX tables")
     try:
         run_update_tables(
             metrics_json=metrics_json,
@@ -1652,30 +1231,7 @@ def run_paper_pipeline(
         print(f"  Warning: update_paper_tables failed: {exc}")
         results["update_tables"] = f"error: {exc}"
 
-    if dataset_type == "lsd":
-        print_section("Step 3/4: Comparing control conditions (LSD)")
-        if checkpoints:
-            try:
-                run_compare_conditions(
-                    checkpoints=checkpoints,
-                    lsd_data_dir=lsd_data_dir or "data/lsd",
-                    n_steps=n_steps,
-                    n_paths=n_paths,
-                    device=device,
-                    group_size=group_size,
-                )
-                results["compare_control_conditions"] = "ok"
-            except Exception as exc:
-                print(f"  Warning: compare_control_conditions failed: {exc}")
-                results["compare_control_conditions"] = f"error: {exc}"
-        else:
-            print("  Skipped: no LSD checkpoints found.")
-            results["compare_control_conditions"] = "skipped"
-    else:
-        print_section("Step 3/4: Compare control conditions — skipped (not LSD)")
-        results["compare_control_conditions"] = "skipped (not LSD)"
-
-    print_section("Step 4/4: Plotting metrics over epochs")
+    print_section("Step 3/3: Plotting metrics over epochs")
     try:
         run_plot_metrics(dataset_type=dataset_type, save_dir=dataset_figures_dir)
         results["plot_metrics"] = "ok"
@@ -1704,9 +1260,6 @@ def _run_pipeline(args: argparse.Namespace) -> dict[str, object]:
         data_path=getattr(args, "data_path", None),
         lsd_data_dir=getattr(args, "lsd_data_dir", None),
         output_path=getattr(args, "output_path", "results/comparison_results.json"),
-        n_steps=getattr(args, "n_steps", 240),
-        n_paths=getattr(args, "n_paths", 10),
-        group_size=getattr(args, "group_size", 4),
         n_eval_seeds=getattr(args, "n_eval_seeds", 10),
     )
     return {"pipeline_results": result}
@@ -1750,37 +1303,9 @@ def _run_plot_metrics(args: argparse.Namespace) -> dict[str, object]:
     return {"plot_metrics": "done"}
 
 
-def _run_compare_conditions(args: argparse.Namespace) -> dict[str, object]:
-    run_compare_conditions(
-        checkpoints=getattr(args, "checkpoints", None),
-        lsd_data_dir=getattr(args, "lsd_data_dir", None) or "data/lsd",
-        n_steps=getattr(args, "n_steps", 240),
-        n_paths=getattr(args, "n_paths", 10),
-        device=args.device,
-        model_labels=getattr(args, "model_labels", None),
-        ctrl_values=getattr(args, "ctrl_values", None),
-        output_dir=getattr(args, "output_dir", None),
-        group_size=getattr(args, "group_size", 0),
-    )
-    return {"compare_conditions": "done"}
-
-
 # ---------------------------------------------------------------------------
 # Argument parser
 # ---------------------------------------------------------------------------
-
-def _parse_ctrl_vec(s: str) -> CtrlVec:
-    """Parse a comma-separated 2-D control vector, e.g. '1,0' -> (1, 0)."""
-    parts = [p.strip() for p in s.split(",") if p.strip()]
-    if len(parts) != 2:
-        raise argparse.ArgumentTypeError(
-            f"Expected a comma-separated pair (e.g. '1,0'), got {s!r}"
-        )
-    try:
-        return (int(parts[0]), int(parts[1]))
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError(f"Invalid ctrl vector {s!r}: {exc}") from exc
-
 
 def _add_pipeline_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--device", type=str, default=None, help="Device (auto, cuda, cpu)")
@@ -1803,13 +1328,11 @@ def _build_parser() -> argparse.ArgumentParser:
     # pipeline: run all post-training steps
     pipeline = subparsers.add_parser(
         "pipeline",
-        help="Run post-training pipeline (update tables, compare models, compare conditions)",
+        help="Run post-training pipeline (compare models, update tables, plot metrics)",
     )
     _add_pipeline_args(pipeline)
     pipeline.add_argument("--metrics", type=str, default=None, help="Path to paper metrics JSON")
     pipeline.add_argument("--output-path", type=str, default="results/comparison_results.json")
-    pipeline.add_argument("--n-steps", type=int, default=100, help="Simulation length for compare_conditions")
-    pipeline.add_argument("--n-paths", type=int, default=32, help="Initial conditions for compare_conditions")
 
     # update-tables
     update_tables = subparsers.add_parser("update-tables", help="Patch LaTeX tables from metrics JSON")
@@ -1838,26 +1361,6 @@ def _build_parser() -> argparse.ArgumentParser:
     plot_metrics.add_argument("--output-dir", type=str, default=None)
     add_dataset_args(plot_metrics)
 
-    # compare-conditions
-    compare_cond = subparsers.add_parser("compare-conditions", help="Compare model FC under LSD control conditions")
-    compare_cond.add_argument("--checkpoints", nargs="+", type=str, default=None)
-    compare_cond.add_argument("--model-labels", nargs="+", type=str, default=None)
-    compare_cond.add_argument("--n-steps", type=int, default=240)
-    compare_cond.add_argument("--n-paths", type=int, default=10)
-    compare_cond.add_argument(
-        "--ctrl-values",
-        nargs="+",
-        type=_parse_ctrl_vec,
-        default=None,
-        help=(
-            "LSD control vectors to compare, e.g. '0,0 1,0 0,1'. "
-            "Each entry is a comma-separated tuple matching the 2-D encoding "
-            "(LSD, Ketanserin)."
-        ),
-    )
-    compare_cond.add_argument("--output-dir", type=str, default=None)
-    _add_pipeline_args(compare_cond)
-
     return parser
 
 
@@ -1874,7 +1377,6 @@ def main(argv: list[str] | None = None) -> dict[str, object]:
         "pipeline": _run_pipeline,
         "update-tables": _run_update_tables,
         "compare": _run_compare,
-        "compare-conditions": _run_compare_conditions,
         "plot-metrics": _run_plot_metrics,
     }
     return dispatch[args.command](args)

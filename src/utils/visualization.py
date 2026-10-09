@@ -11,12 +11,12 @@ from ..metrics.metrics_store import MetricsStore
 from ..metrics._utils import fisher_batch_average, upper_tri_vec
 
 # Default figures directory for paper
-FIGURES_DIR = Path("paper/images")
+FIGURES_DIR = Path("figures")
 
 
 def _get_save_path(save_path: Optional[str], default_name: str, use_pdf: bool = True) -> Optional[Path]:
     """
-    Get the save path, defaulting to paper/images/ with PDF format.
+    Get the save path, defaulting to figures/ with PDF format.
     
     Args:
         save_path: Explicit save path or None
@@ -54,7 +54,7 @@ def plot_fc_comparison(
         fc_pred: Predicted FC (n_rois x n_rois)
         fc_target: Target FC (n_rois x n_rois)
         title: Plot title
-        save_path: Path to save figure (None uses paper/images/)
+        save_path: Path to save figure (None uses figures/)
         figsize: Figure size
         use_pdf: Whether to save as PDF
         default_name: Default filename if save_path is None
@@ -585,14 +585,14 @@ def create_comparison_report(
         target_fc: Target functional connectivity
         n_timepoints: Timepoints to simulate
         initial_state: Complex initial condition (1, n_rois). Required.
-        save_dir: Directory to save results (defaults to paper/images/)
+        save_dir: Directory to save results (defaults to figures/)
         figsize: Figure size
         use_pdf: Whether to save as PDF
         
     Returns:
         Matplotlib figure
     """
-    # Default to paper/images for save directory
+    # Default to figures for save directory
     if save_dir is None:
         save_dir = FIGURES_DIR
     else:

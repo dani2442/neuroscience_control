@@ -70,7 +70,7 @@ This runs:
 ## 5. Outputs
 
 - Checkpoints are written to `checkpoints/`.
-- Figures are written under `paper/images/<dataset_type>/`.
+- Figures are written under `figures/<dataset_type>/`.
 - Per-run metrics stores are written under `results/metrics/<experiment_name>/`.
 - The `paper` command writes an aggregated JSON report to `results/`.
 
@@ -88,5 +88,5 @@ python examples/postprocess.py compare \
 Other subcommands:
 
 - `update-tables`: patch LaTeX tables from a metrics JSON.
-- `compare-conditions`: LSD control-condition comparison.
+- `plot-metrics`: plot validation metrics over epochs.
 - `pipeline`: run all post-training steps in sequence.

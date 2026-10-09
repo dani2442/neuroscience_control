@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 
 from ..dataset import NeuroscienceDataset, compute_omega_from_timeseries
-from ..training.config import HopfConfig, HybridHopfConfig, HybridNeuralConfig, GNNHopfConfig, NeuralSDEConfig, TrainingConfig
+from ..training.config import HopfConfig, HybridHopfConfig, HybridNeuralConfig, GNNHopfConfig, TrainingConfig
 from .hopf_model import CoupledHopfModel
 from .hybrid_hopf_model import HybridHopfModel
 from .hybrid_neural_model import HybridHopfNeuralModel

@@ -50,7 +50,7 @@ from src.training import (
     grid_search_hopf,
     Trainer,
 )
-from src.training.losses import compute_ref_amplitude, compute_ref_omega
+from src.metrics import compute_ref_amplitude, compute_ref_omega
 from src.utils import (
     FIGURES_DIR,
     EVAL_METRIC_KEYS,

@@ -11,7 +11,7 @@
 #
 # Writes results/runs/ts_young_<model>_n94_seed<seed>.json
 set -euo pipefail
-cd /home/hpc/dsaa/dsaa110h/projects/neuroscience_control
+cd "$(dirname "${BASH_SOURCE[0]}")/../.."  # repository root
 
 DATA_ARGS="--dataset-type ts_young --data-path data/ts_young/ts_young_TR0.72.mat"
 COMMON="$DATA_ARGS --no-wandb --skip-figures --max-subjects 94"
