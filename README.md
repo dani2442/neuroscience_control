@@ -529,6 +529,23 @@ The aggregation scripts read every matching file in `results/runs/`,
 glob `checkpoints/`. Start a rerun from empty directories (move earlier
 outputs into an archive folder), or old and new runs are pooled.
 
+Every GPU step has a SLURM launcher under `logs/` (written for the FAU
+`tinygpu` cluster; adjust `-M`/partition for yours). Training jobs are
+independent and can be submitted together; the evaluation launchers read the
+checkpoints of `launch_seeds.sh`, so submit them once those jobs have finished:
+
+```bash
+./logs/revision/launch_seeds.sh            # Table 1, S1, S2   (60 jobs)
+./logs/ablation/launch_full.sh             # ablations         (24 jobs)
+./logs/fig4d/launch_fig4d.sh               # Figure 4d         (60 jobs)
+./logs/revision/launch_personalization.sh  # personalization   (30 jobs)
+./logs/revision/launch_timing.sh           # timing table      (1 job)
+# after launch_seeds.sh has finished:
+./logs/revision/launch_generative.sh hopf nsde hybrid_hopf gnn_hopf hybrid_neural
+./logs/revision/launch_ari.sh
+./logs/revision/link_figure_inputs.sh      # figure inputs, no GPU (step 7)
+```
+
 ### 1. Seed sweep (the unit of analysis for every architecture comparison)
 
 Each architecture is refitted from scratch under 10 random seeds (42–51) at the
@@ -689,22 +706,33 @@ python examples/aggregate_personalization.py --ds ts_young
 python examples/plot_fig4_panels.py --panel e
 python examples/plot_fig4_panels.py --panel d --seeds 42-51
 
-# FC adjusted Rand index per (model, seed), behind the modularity claim
-python examples/compute_ari.py --checkpoints "checkpoints/ts_young_*_n94_seed*.pt" \
-  --out results/ari_per_seed.json
+# FC adjusted Rand index per (model, seed), behind the modularity claim (GPU,
+# after step 1); writes results/ari_per_seed.json
+./logs/revision/launch_ari.sh
 
 # Runtime cost of every model (training s/epoch, grid-search s/trial, inference s)
-python examples/benchmark_timing.py --dataset-type ts_young \
-  --data-path data/ts_young/ts_young_TR0.72.mat
+# on the RTX 2080 Ti the paper reports; writes results/timing_benchmark.json
+./logs/revision/launch_timing.sh
 
 # One row per (table/figure, model, seed) with inclusion status and exclusion reason
 python examples/build_run_manifest.py --out results/run_manifest.csv
 ```
 
-The remaining figure panels (brain maps, FC/FCD/phFCD matrices, clustering,
-stacked trajectories, pipeline illustrations) are produced by the notebooks under
-`examples/`. Their outputs are stripped from the repository; run a notebook to
-regenerate its panels.
+The remaining figure panels (training curves, brain maps, FC/FCD/phFCD
+matrices, clustering, stacked trajectories, pipeline illustrations) are produced
+by the notebooks under `examples/`, and the grid-search landscape of Figure 2a by
+`plot_grid_search_fc_similarity.py`. They show the seed-42 fit of each
+architecture. The notebooks load every checkpoint in their directory, so they
+read `checkpoints/figures/` and `results/metrics_figures/`, which
+`link_figure_inputs.sh` fills with links to the seed-42 runs of step 1:
+
+```bash
+./logs/revision/link_figure_inputs.sh      # after launch_seeds.sh has finished
+python examples/plot_grid_search_fc_similarity.py
+```
+
+Their outputs are stripped from the repository; run a notebook to regenerate its
+panels.
 
 ### A note on the connectivity matrix
 

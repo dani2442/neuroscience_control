@@ -206,7 +206,11 @@ def _setup_run(cfg_cls, args: argparse.Namespace, exp_prefix: str):
     _apply_dataset_cfg_overrides(cfg, args)
     _apply_dataset_time_defaults(cfg, args)
     ds_tag = cfg.dataset_type
-    cfg.experiment_name = f"{exp_prefix}_{ds_tag}"
+    # The run suffix gives every run of a sweep its own results/metrics/
+    # directory; without it the per-epoch histories of all seeds and ablations
+    # of a model land in one directory.
+    suffix = _resolve_run_suffix(args)
+    cfg.experiment_name = f"{exp_prefix}_{ds_tag}" + (f"_{suffix}" if suffix else "")
     cfg.run_name = f"{cfg.experiment_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     ensure_proxy_env()
     print(f"Config: {dataclasses.asdict(cfg)}")
@@ -518,6 +522,11 @@ def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
         wandb.define_metric("train/*", step_metric="epoch")
         wandb.define_metric("validation/*", step_metric="epoch")
 
+    # One results directory per run, so parallel seed runs do not overwrite
+    # each other's grid_search_results.json.
+    suffix = _resolve_run_suffix(args)
+    grid_dir = f"results/grid_search/{suffix}" if suffix else "results/grid_search"
+
     best_params: dict[str, float] = {}
     try:
         # Grid-search targets come from the training view too: the training
@@ -555,6 +564,7 @@ def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
             fdm_n_pairs=cfg.fdm_n_pairs,
             fdm_max_lag=cfg.fdm_max_lag,
             fdm_sigma=cfg.fdm_sigma,
+            save_dir=grid_dir,
         )
 
         # Log grid-search-specific wandb info before _post_training

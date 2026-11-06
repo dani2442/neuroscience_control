@@ -280,6 +280,7 @@ def grid_search_hopf(
     fdm_n_pairs: int = 32,
     fdm_max_lag: int = 50,
     fdm_sigma: float = 1.0,
+    save_dir: str = "results/grid_search",
 ) -> Tuple[Dict[str, Any], CoupledHopfModel]:
     """Grid search for Hopf model parameters.
 
@@ -303,6 +304,7 @@ def grid_search_hopf(
             with *target_timeseries*, grid search ranks candidates by the same
             composite loss used for backpropagation.
         noise_sigma: Noise scale for SDE diffusion (0.0 = deterministic ODE).
+        save_dir: Directory that receives ``grid_search_results.json``.
 
     Returns:
         (best_params, fitted_model)
@@ -321,6 +323,7 @@ def grid_search_hopf(
     grid_search = GridSearch(
         param_grid=param_grid,
         device=device,
+        save_dir=save_dir,
     )
 
     model_kwargs = {
