@@ -11,6 +11,11 @@ from .data_loader import (
     LSD_CONDITION_MAP,
     LSD_N_CONTROL_DIMS,
 )
+from .group_prior import (
+    GroupLeakageError,
+    training_segment_stop,
+    training_view,
+)
 from .preprocessing import (
     RandomWindowDataset,
     compute_split_indices,
@@ -34,4 +39,7 @@ __all__ = [
     "resolve_split",
     "create_data_loaders",
     "compute_omega_from_timeseries",
+    "GroupLeakageError",
+    "training_segment_stop",
+    "training_view",
 ]

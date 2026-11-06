@@ -533,7 +533,8 @@ reported the spread across held-out test batches of a *single* fit, which does
 not.
 
 ```bash
-# Submits the missing (model, seed) jobs; writes results/runs/ts_young_<model>_n94_seed<seed>.json
+# Submits every (model, seed) job, including the hopf-grid runs of step 5;
+# writes results/runs/ts_young_<model>_n94_seed<seed>.json and ts_young_hopf_grid_seed<seed>.json
 ./logs/revision/launch_seeds.sh
 
 # Main-text table (3 architectures) and full supplementary table (all 5)
@@ -647,7 +648,8 @@ python examples/aggregate_ablations.py --ds ts_young \
 ### 5. Grid search vs. gradient descent (Supplementary Table S2)
 
 Compares the Coupled Hopf fitted by exhaustive grid search (`train_models.py hopf-grid`,
-one run per seed written to `results/runs/ts_young_hopf_grid_seed<s>.json`) against the
+one run per seed written to `results/runs/ts_young_hopf_grid_seed<s>.json` by
+`logs/revision/launch_seeds.sh`) against the
 gradient-fitted Coupled Hopf runs of Table 1, paired on the seed:
 
 ```bash
@@ -662,10 +664,12 @@ held-out second half of that subject's scan (`test_intra`) and on every other su
 (`test_inter`). `aggregate_personalization.py` turns the per-subject records into the
 within- vs. between-subject contrasts reported in the supplement.
 
+The group connectome prior of every fit is that of the split-seed-42 cohort fit,
+so the ten targets are subjects outside its training pool (the script refuses any
+other target and lists the eligible ones).
+
 ```bash
-python examples/train_personalized.py --model hybrid_hopf --subject 0 \
-  --dataset-type ts_young --data-path data/ts_young/ts_young_TR0.72.mat \
-  --no-wandb --skip-figures
+./logs/revision/launch_personalization.sh   # 3 architectures x 10 targets, seed 42
 python examples/aggregate_personalization.py --ds ts_young
 ```
 
@@ -695,9 +699,10 @@ regenerate its panels.
 
 ### A note on the connectivity matrix
 
-The `structural_connectivity` argument threaded through the models is populated
-from `dataset.fc_mean`, i.e. the **group-averaged functional connectome** of the
-training subjects. The HCP release in `data/` contains BOLD time series only and
+The `structural_connectivity` argument threaded through the models is the
+**group-averaged functional connectome** of the training subjects, computed over
+their training segments (first halves) by `src.dataset.training_view`; the
+intrinsic frequencies use the same segments. The HCP release in `data/` contains BOLD time series only and
 no diffusion-weighted data, so despite the argument name there is no tractogram
 anywhere in this repository. The models are unaffected — all architectures
 receive the same matrix — but the connectome ablations should be read as testing

@@ -400,15 +400,31 @@ def metastability_value(ts: torch.Tensor) -> torch.Tensor:
     return order.std(dim=1).mean()
 
 
+def sorted_entry_mse(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """MSE between the sorted strict upper-triangular entries of two batched matrices.
+
+    For ``(B, M, M)`` inputs, sorts the ``M(M-1)/2`` entries of each matrix and
+    averages the squared differences of matched order statistics, then averages
+    over the batch. This is the squared 1-D Wasserstein-2 distance between the
+    two entry distributions: it compares distributions, as the KS distance does,
+    and does not pair entries by position (window pair or time pair), which two
+    independent stochastic realizations do not share.
+    """
+    a = upper_tri_vec(pred, k=1).sort(dim=-1).values
+    b = upper_tri_vec(target, k=1).sort(dim=-1).values
+    return (a - b).pow(2).mean(dim=-1).mean()
+
+
 # ---------------------------------------------------------------------------
 # nn.Module metric/loss classes
 # ---------------------------------------------------------------------------
 
 class FCD(nn.Module):
-    """FCD (Functional Connectivity Dynamics) MSE loss + KS evaluation metric.
+    """FCD (Functional Connectivity Dynamics) sorted-entry MSE loss + KS evaluation metric.
 
-    ``forward()`` returns the differentiable FCD MSE loss (surrogate for KS).
-    ``evaluate()`` returns ``{"fcd_mse": float, "fcd_ks": float}``.
+    ``forward()`` returns the differentiable sorted-entry MSE (surrogate for KS).
+    ``evaluate()`` returns ``{"fcd_mse": float, "fcd_ks": float}``, where
+    ``fcd_mse`` is the same sorted-entry MSE.
 
     Args:
         tr: Repetition time in seconds.
@@ -433,7 +449,7 @@ class FCD(nn.Module):
         targ_fcd = _batched_fcd_matrices(target.transpose(1, 2), win_len, win_step)
         if pred_fcd is None or targ_fcd is None:
             return torch.zeros((), device=pred.device, dtype=pred.dtype)
-        return (pred_fcd - targ_fcd).pow(2).mean(dim=(-1, -2)).mean()
+        return sorted_entry_mse(pred_fcd, targ_fcd)
 
     @torch.no_grad()
     def evaluate(self, ts_pred: torch.Tensor, ts_target: torch.Tensor, group_size: int = 0) -> dict:
@@ -451,7 +467,7 @@ class FCD(nn.Module):
             pred_fcd = _batched_fcd_matrices(pred_real.transpose(1, 2), win_len, win_step)
             targ_fcd = _batched_fcd_matrices(targ_real.transpose(1, 2), win_len, win_step)
             if pred_fcd is not None and targ_fcd is not None:
-                fcd_mse = (pred_fcd - targ_fcd).pow(2).mean(dim=(-1, -2)).mean()
+                fcd_mse = sorted_entry_mse(pred_fcd, targ_fcd)
                 if (T - win_len) > 10:
                     pred_dists = upper_tri_vec(pred_fcd, k=1)
                     targ_dists = upper_tri_vec(targ_fcd, k=1)
@@ -464,10 +480,11 @@ class FCD(nn.Module):
 
 
 class PhFCD(nn.Module):
-    """Phase FCD (phFCD) MSE loss + KS evaluation metric.
+    """Phase FCD (phFCD) sorted-entry MSE loss + KS evaluation metric.
 
-    ``forward()`` returns the differentiable phFCD MSE loss (surrogate for KS).
-    ``evaluate()`` returns ``{"phfcd_mse": float, "phfcd_ks": float}``.
+    ``forward()`` returns the differentiable sorted-entry MSE (surrogate for KS).
+    ``evaluate()`` returns ``{"phfcd_mse": float, "phfcd_ks": float}``, where
+    ``phfcd_mse`` is the same sorted-entry MSE.
     """
 
     def forward(self, ts_pred: torch.Tensor, ts_target: torch.Tensor) -> torch.Tensor:
@@ -482,7 +499,7 @@ class PhFCD(nn.Module):
         targ_phfcd = _batched_phfcd_matrices(torch.angle(target).transpose(1, 2))
         if pred_phfcd is None or targ_phfcd is None:
             return torch.zeros((), device=pred.device, dtype=pred.real.dtype)
-        return (pred_phfcd - targ_phfcd).pow(2).mean(dim=(-1, -2)).mean()
+        return sorted_entry_mse(pred_phfcd, targ_phfcd)
 
     @torch.no_grad()
     def evaluate(self, ts_pred: torch.Tensor, ts_target: torch.Tensor, group_size: int = 0) -> dict:
@@ -497,7 +514,7 @@ class PhFCD(nn.Module):
             pred_phfcd = _batched_phfcd_matrices(torch.angle(pred).transpose(1, 2))
             targ_phfcd = _batched_phfcd_matrices(torch.angle(target).transpose(1, 2))
             if pred_phfcd is not None and targ_phfcd is not None:
-                phfcd_mse = (pred_phfcd - targ_phfcd).pow(2).mean(dim=(-1, -2)).mean()
+                phfcd_mse = sorted_entry_mse(pred_phfcd, targ_phfcd)
                 pred_ph_dists = upper_tri_vec(pred_phfcd, k=1)
                 targ_ph_dists = upper_tri_vec(targ_phfcd, k=1)
                 if pred_ph_dists.numel() > 0 and targ_ph_dists.numel() > 0:

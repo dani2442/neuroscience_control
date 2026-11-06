@@ -19,7 +19,6 @@ are in examples/postprocess.py.
 from __future__ import annotations
 
 import argparse
-import copy
 import dataclasses
 import json
 import subprocess
@@ -29,6 +28,7 @@ from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")
+import numpy as np
 import torch
 import wandb
 
@@ -39,6 +39,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from examples.cli_args import add_dataset_args, DATASET_ARG_NAMES
 from src.dataset import compute_omega_from_timeseries, load_dataset
 from src.dataset import create_data_loaders, resolve_split
+from src.dataset import training_segment_stop, training_view
 from src.metrics import fisher_batch_average
 from src.models import build_model
 from src.training import (
@@ -50,7 +51,6 @@ from src.training import (
     grid_search_hopf,
     Trainer,
 )
-from src.metrics import compute_ref_amplitude, compute_ref_omega
 from src.utils import (
     FIGURES_DIR,
     EVAL_METRIC_KEYS,
@@ -423,17 +423,11 @@ def _run_backprop(args: argparse.Namespace) -> dict[str, object]:
     print(f"  window_size={window_size}  train={len(train_loader)}  val={len(val_loader)}"
           f"  test_inter={len(test_inter_loader)}  test_intra={intra_info}")
 
-    # With --train-subset the group-level quantities (connectome C, intrinsic
-    # frequencies) are estimated from the training subjects only, so a fit on
-    # K subjects has seen K subjects' data and nothing from val/test.
-    cohort = dataset
-    if train_subset is not None:
-        train_idx, _, _ = resolve_split(
-            dataset, cfg.train_ratio, cfg.val_ratio, cfg.seed,
-            exclude_subjects=exclude_subjects, split_seed=split_seed, train_subset=train_subset,
-        )
-        cohort = _training_cohort(dataset, train_idx)
-        print(f"  Group connectome and omega estimated from {len(train_idx)} training subjects")
+    train_idx, val_idx, test_idx = resolve_split(
+        dataset, cfg.train_ratio, cfg.val_ratio, cfg.seed,
+        exclude_subjects=exclude_subjects, split_seed=split_seed, train_subset=train_subset,
+    )
+    cohort = _group_view(dataset, cfg, train_idx, val_idx, test_idx)
 
     print_section("STEP 2: Training Model (Backpropagation)")
     sc_mode = getattr(args, "sc_mode", "real")
@@ -443,10 +437,6 @@ def _run_backprop(args: argparse.Namespace) -> dict[str, object]:
     model = build_model(args.model, cohort, cfg, device,
                         structural_connectivity=structural_connectivity,
                         n_control_dims=dataset.n_control_dims)
-    ref_amplitude = compute_ref_amplitude(cohort.timeseries)
-    ref_omega = compute_ref_omega(cohort.timeseries, tr=cfg.tr, f_lo=cfg.f_lo, f_hi=cfg.f_hi)
-    print(f"  ref_amplitude=[{ref_amplitude.min():.4f}, {ref_amplitude.max():.4f}]")
-    print(f"  ref_omega=[{ref_omega.min() / 6.2832:.4f}, {ref_omega.max() / 6.2832:.4f}] Hz")
 
     trainer = None
     try:
@@ -483,8 +473,14 @@ def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
     if getattr(args, "train_subset", None) is not None:
         raise NotImplementedError("--train-subset is only supported for backprop runs.")
     _record_provenance(cfg, dataset, exclude_subjects=exclude_subjects, split_seed=split_seed)
+    # Same split as backprop (patient-aware when applicable).
+    train_idx, val_idx, test_idx = resolve_split(
+        dataset, cfg.train_ratio, cfg.val_ratio, cfg.seed,
+        exclude_subjects=exclude_subjects, split_seed=split_seed,
+    )
+    cohort = _group_view(dataset, cfg, train_idx, val_idx, test_idx)
     omega = compute_omega_from_timeseries(
-        dataset.timeseries, dt=dataset.dt, f_lo=cfg.f_lo, f_hi=cfg.f_hi, method="peak",
+        cohort.timeseries, dt=dataset.dt, f_lo=cfg.f_lo, f_hi=cfg.f_hi, method="peak",
     )
     print(f"  omega: shape={omega.shape}, "
           f"range=[{omega.min().item() / 6.2832:.4f}, {omega.max().item() / 6.2832:.4f}] Hz")
@@ -503,11 +499,6 @@ def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
         use_full_timeseries=cfg.use_full_timeseries,
         exclude_subjects=exclude_subjects,
         split_seed=split_seed,
-    )
-    # Also get raw train indices for grid_search_hopf inputs
-    train_idx, _, _ = resolve_split(
-        dataset, cfg.train_ratio, cfg.val_ratio, cfg.seed,
-        exclude_subjects=exclude_subjects, split_seed=split_seed,
     )
     intra_info = "N/A (full TS)" if test_intra_loader is None else len(test_intra_loader)
     print(f"  window_size={window_size}  train={len(train_loader)}  val={len(val_loader)}"
@@ -529,11 +520,13 @@ def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
 
     best_params: dict[str, float] = {}
     try:
-        n_timepoints = min(dataset.n_timepoints, 200)
-        train_fc = fisher_batch_average(dataset.fc_matrices[train_idx])
-        eval_train_idx = train_idx[:min(cfg.n_simulations, len(train_idx))]
-        initial_states = dataset.timeseries[eval_train_idx, :, 0]
-        target_ts = dataset.timeseries[eval_train_idx, :, :n_timepoints]
+        # Grid-search targets come from the training view too: the training
+        # subjects' training segments only, never their held-out second halves.
+        n_timepoints = min(cohort.n_timepoints, 200)
+        train_fc = fisher_batch_average(cohort.fc_matrices)
+        n_eval = min(cfg.n_simulations, cohort.n_subjects)
+        initial_states = cohort.timeseries[:n_eval, :, 0]
+        target_ts = cohort.timeseries[:n_eval, :, :n_timepoints]
 
         n_combos = len(cfg.g_values) * len(cfg.a_values) * len(cfg.kappa_values)
         print(f"Grid search over {n_combos} combinations  (train={len(train_idx)} timeseries)")
@@ -542,7 +535,7 @@ def _run_hopf_grid(args: argparse.Namespace) -> dict[str, object]:
             target_fc=train_fc,
             n_rois=dataset.n_rois,
             initial_states=initial_states,
-            structural_connectivity=dataset.fc_mean,
+            structural_connectivity=cohort.fc_mean,
             omega=omega,
             g_values=cfg.g_values,
             a_values=cfg.a_values,
@@ -679,23 +672,34 @@ def _record_provenance(cfg, dataset, exclude_subjects=None,
         "dt_min": cfg.dt_min,
         "sde_method": cfg.sde_method,
         "noise_sigma": getattr(cfg, "noise_sigma", None),
+        # Connectome prior and omega: training subjects' training segments only.
+        "group_stats_source": "train_subjects_train_segment",
+        # FCD/phFCD training loss; older JSONs lack this field (entrywise MSE).
+        "dynamics_loss": "sorted_entry_mse",
         "git_commit": _git_commit(),
         "timestamp_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     })
 
 
-def _training_cohort(dataset, train_idx):
-    """Shallow copy of *dataset* whose group-level statistics use only *train_idx*.
+def _group_view(dataset, cfg, train_idx, val_idx, test_idx):
+    """Training view for every group-level quantity of a cohort-level fit.
 
-    ``build_model`` estimates the intrinsic frequencies from ``timeseries`` and
-    the coupling prior is ``fc_mean``; both otherwise average over every subject,
-    validation and test included.
+    The connectome prior (``view.fc_mean``), the intrinsic frequencies that
+    ``build_model`` estimates from ``view.timeseries``, and the grid-search
+    targets all come from this view: the training subjects only, and within
+    them only the training segment. Validation and test subjects, and the
+    training subjects' held-out second halves, never enter. See
+    ``src/dataset/group_prior.py``.
     """
-    cohort = copy.copy(dataset)
-    cohort.timeseries = dataset.timeseries[train_idx]
-    cohort.fc_matrices = dataset.fc_matrices[train_idx]
-    cohort.fc_mean = cohort.fc_matrices.mean(dim=0)
-    return cohort
+    t_stop = training_segment_stop(dataset.n_timepoints, cfg.use_full_timeseries)
+    view = training_view(
+        dataset, train_idx, t_stop=t_stop,
+        held_out_idx=np.concatenate([np.asarray(val_idx), np.asarray(test_idx)]),
+    )
+    _RUN_PROVENANCE["group_prior"] = {"n_subjects": int(view.n_subjects), "t_stop": int(t_stop)}
+    print(f"  Group connectome and omega estimated from {view.n_subjects} training subjects, "
+          f"timepoints [0, {t_stop})")
+    return view
 
 
 def _save_individual_metrics(

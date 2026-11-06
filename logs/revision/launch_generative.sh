@@ -24,7 +24,9 @@ for m in "${MODELS[@]}"; do
     [ -e "$ckpt" ] || continue
     stem=$(basename "$ckpt" .pt)
     out="results/generative/${stem}.json"
-    [ -e "$out" ] && { echo "skip (exists): $stem"; continue; }
+    # Skip only if the output is newer than the checkpoint; a retrained
+    # checkpoint is always re-evaluated.
+    [ "$out" -nt "$ckpt" ] && { echo "skip (up to date): $stem"; continue; }
     jid=$(sbatch -M tinygpu --gres=gpu:1 --time=01:30:00 \
       -o "logs/revision/gen_${stem}_%j.log" \
       --wrap="$PY --checkpoint $ckpt --data-path $DATA --n-realizations 20 --out $out" \

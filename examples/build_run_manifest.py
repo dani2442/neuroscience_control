@@ -81,7 +81,7 @@ def main() -> None:
                              "yes" if used else "no", reason])
 
     for model in MAIN3:
-        for subj in range(10):
+        for subj in (1, 2, 14, 20, 21, 23, 29, 32, 37, 41):  # logs/revision/launch_personalization.sh
             path = PERS / f"{args.ds}_{model}_sub{subj}_seed42.json"
             rows.append(["Supp. table tab:personalization_n1 / Figure 4e", "aggregate_personalization.py",
                          f"{model}_sub{subj}", 42, path if path.exists() else "",

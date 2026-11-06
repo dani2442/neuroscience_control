@@ -23,8 +23,12 @@ Only the training segment of the target subject shapes the fit: the FC target,
 the Hopf ``omega`` initialisation and the reported reference statistics are all
 recomputed from it, so no held-out timepoint leaks into training. The one
 group-level prior that remains is the structural connectivity (``--sc-source
-group``, the 94-subject mean FC), kept by default so N = 1 and N = 94 runs stay
-comparable; ``--sc-source subject`` makes the fit fully individual.
+group``, default): the connectome prior of the cohort-level fit with split seed
+``--prior-split-seed`` (42), i.e. the mean FC over the first halves of that
+split's training subjects. The target must not be one of those subjects, so no
+data of the personalized subject enters the prior; the script refuses such a
+target and lists the eligible ones. ``--sc-source subject`` makes the fit fully
+individual.
 
 **Why per-subject scores are also recorded.** A raw intra-minus-inter gap
 confounds personalization with subject difficulty: if the target subject simply
@@ -107,9 +111,15 @@ from examples.train_models import (
     _apply_dataset_cfg_overrides,
     _apply_dataset_time_defaults,
 )
-from src.dataset import compute_omega_from_timeseries, load_dataset
+from src.dataset import (
+    compute_omega_from_timeseries,
+    load_dataset,
+    resolve_split,
+    training_segment_stop,
+    training_view,
+)
 from src.dataset.preprocessing import RandomWindowDataset
-from src.metrics import compute_static_fc, compute_ref_amplitude, compute_ref_omega
+from src.metrics import compute_static_fc
 from src.models import build_model
 from src.training import Trainer
 from src.utils import (
@@ -162,6 +172,26 @@ def _build_splits(dataset, subject: int, window_size: int, val_frac: float):
         "others": others,
         "n_timepoints": T,
     }
+
+
+def _group_prior(dataset, cfg, subject: int, split_seed: int):
+    """Connectome prior shared by every personalized fit.
+
+    The training view of the cohort-level split with *split_seed*: mean FC over
+    the training segments (first halves) of that split's training subjects,
+    i.e. the same prior as the cohort-level fit with that seed. Raises if
+    *subject* is one of those training subjects.
+    """
+    train_idx, _, _ = resolve_split(dataset, cfg.train_ratio, cfg.val_ratio, split_seed)
+    if subject in set(int(i) for i in train_idx):
+        eligible = sorted(set(range(int(dataset.n_subjects))) - set(int(i) for i in train_idx))
+        raise SystemExit(
+            f"Subject {subject} is one of the {len(train_idx)} training subjects whose data "
+            f"build the group connectome prior (split seed {split_seed}), so its own data "
+            f"would enter the prior. Personalize a subject outside that pool: {eligible}"
+        )
+    t_stop = training_segment_stop(dataset.n_timepoints, cfg.use_full_timeseries)
+    return training_view(dataset, train_idx, t_stop=t_stop, held_out_idx=[subject])
 
 
 def _loader(ts, fc, ctrl, window_size, n_windows, batch_size, device, shuffle):
@@ -349,9 +379,18 @@ def run(args: argparse.Namespace) -> dict[str, object]:
           f"  ({len(inter_loader)} batches)  [between-subject]")
 
     print_section("STEP 2: Training on the Single Target Subject")
-    if args.sc_source == "group":
-        sc = dataset.fc_mean
-        print("  structural connectivity: group mean FC (shared prior, as in the N=94 runs)")
+    group_prior = None
+    if args.init_checkpoint is not None:
+        # Placeholder only: loading the base checkpoint below overwrites it with
+        # the base model's own connectome prior.
+        sc = fc_train[0]
+    elif args.sc_source == "group":
+        prior_view = _group_prior(dataset, cfg, s, args.prior_split_seed)
+        sc = prior_view.fc_mean
+        group_prior = {"split_seed": int(args.prior_split_seed), **prior_view.group_prior_info}
+        print(f"  structural connectivity: group connectome prior of the split-seed "
+              f"{args.prior_split_seed} cohort fit ({prior_view.n_subjects} training subjects, "
+              f"timepoints [0, {prior_view.n_timepoints}))")
     else:
         sc = fc_train[0]
         print("  structural connectivity: target-subject training-segment FC (fully individual)")
@@ -395,10 +434,6 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     print(f"  adapting {n_trainable}/{n_total} parameters  (lr={cfg.lr}, "
           f"n_epochs={cfg.n_epochs})")
 
-    ref_amplitude = compute_ref_amplitude(ts_train)
-    ref_omega = compute_ref_omega(ts_train, tr=cfg.tr, f_lo=cfg.f_lo, f_hi=cfg.f_hi)
-    print(f"  ref_amplitude=[{ref_amplitude.min():.4f}, {ref_amplitude.max():.4f}]")
-    print(f"  ref_omega=[{ref_omega.min() / 6.2832:.4f}, {ref_omega.max() / 6.2832:.4f}] Hz")
 
     # Only build an explicit optimizer when freezing, so the un-frozen path stays
     # byte-identical to the Trainer default it used before.
@@ -473,6 +508,11 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         "n_train_subjects": 1,
         "n_inter_subjects": len(splits["others"]),
         "sc_source": args.sc_source,
+        # Training subjects and segment behind the group prior (None if unused).
+        # Older JSONs lack this field: their prior was the all-94-subject mean FC.
+        "group_prior": group_prior,
+        # FCD/phFCD training loss; older JSONs lack this field (entrywise MSE).
+        "dynamics_loss": "sorted_entry_mse",
         "arm": ("base" if args.no_train
                 else "finetune" if args.init_checkpoint is not None
                 else "scratch"),
@@ -560,8 +600,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--n-subject-windows", type=int, default=128,
                    help="Windows drawn per subject for the per-subject matrix (default 128).")
     p.add_argument("--sc-source", type=str, default="group", choices=["group", "subject"],
-                   help="Structural connectivity prior: group mean FC (default, comparable to "
-                        "the N=94 runs) or the target subject's training-segment FC.")
+                   help="Structural connectivity prior: the group prior of the cohort-level "
+                        "fit (default, see --prior-split-seed) or the target subject's "
+                        "training-segment FC.")
+    p.add_argument("--prior-split-seed", type=int, default=42,
+                   help="Split seed of the cohort-level fit whose connectome prior is used "
+                        "with --sc-source group (default 42). The target must not be one of "
+                        "that split's training subjects.")
     p.add_argument("--init-checkpoint", type=str, default=None,
                    help="Pretrained base checkpoint to fine-tune from. The base MUST have "
                         "been trained with --exclude-subjects covering every subject that "
