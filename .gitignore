@@ -217,7 +217,6 @@ __marimo__/
 cache/
 figures/
 
-# Experiment bookkeeping: SLURM job-id records and scratch sweep directories.
+# Experiment bookkeeping: SLURM job-id records.
 # Launch scripts under logs/ are tracked because the README refers to them.
-logs/rerun/
 logs/**/*_jobids.txt

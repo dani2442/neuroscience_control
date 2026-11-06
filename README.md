@@ -524,6 +524,11 @@ The manuscript in `paper_submission/` is generated from the artifacts below. All
 statistics use an explicit replication unit — see *Statistical reporting* in the
 paper's Methods, and the note at the end of this section.
 
+The aggregation scripts read every matching file in `results/runs/`,
+`results/personalization/` and `results/generative/`, and the evaluation scripts
+glob `checkpoints/`. Start a rerun from empty directories (move earlier
+outputs into an archive folder), or old and new runs are pooled.
+
 ### 1. Seed sweep (the unit of analysis for every architecture comparison)
 
 Each architecture is refitted from scratch under 10 random seeds (42–51) at the
@@ -676,6 +681,10 @@ python examples/aggregate_personalization.py --ds ts_young
 ### 7. Figure panels, ARI, timing, and run bookkeeping
 
 ```bash
+# Figure 4d runs: 3 architectures x {10, 65} training subjects x seeds 42-51,
+# all scored on the same 15 test subjects (--split-seed 42)
+./logs/fig4d/launch_fig4d.sh
+
 # Figure 4 panels (d) data efficiency and (e) personalization
 python examples/plot_fig4_panels.py --panel e
 python examples/plot_fig4_panels.py --panel d --seeds 42-51
