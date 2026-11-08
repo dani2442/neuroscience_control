@@ -603,7 +603,7 @@ subject identification accuracy against a `1/n` chance level.
 > subject-specific input, so `delta > 0` alone does not show that a model is
 > personalized. The Coupled Hopf makes this concrete: it shares all parameters
 > across the cohort and uses a group-average connectome, yet reaches
-> `delta = +0.184` and 43% top-1 identification (chance 1.1%) — more than either
+> `delta = +0.186` and 43% top-1 identification (chance 1.5%) — more than either
 > learned architecture. `aggregate_generative.py` therefore reports
 > `delta - delta_IC` against the Coupled Hopf, and both learned models score
 > *negative* increments. The conclusion the paper draws is subject-specific
